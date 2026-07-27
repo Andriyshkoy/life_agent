@@ -13,7 +13,8 @@ from typing import Any, Callable
 from urllib.parse import urldefrag, urljoin
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from jsonschema import Draft202012Validator, FormatChecker, RefResolver
+from jsonschema import Draft202012Validator, FormatChecker
+from referencing import Registry, Resource
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -366,7 +367,7 @@ def assert_semantic_rejects(
 def main() -> int:
     schema_paths = sorted(SCHEMA_DIR.glob("*.schema.json"))
     schemas = {path.name: load_json(path) for path in schema_paths}
-    registry = {schema["$id"]: schema for schema in schemas.values()}
+    schema_store = {schema["$id"]: schema for schema in schemas.values()}
 
     for name, schema in schemas.items():
         Draft202012Validator.check_schema(schema)
@@ -378,7 +379,7 @@ def main() -> int:
                 reference = value.get("$ref")
                 if reference and not reference.startswith("#"):
                     target, _ = urldefrag(urljoin(base_id, reference))
-                    if target not in registry:
+                    if target not in schema_store:
                         raise AssertionError(
                             f"{name}: unregistered cross-file $ref target {target}"
                         )
@@ -387,12 +388,15 @@ def main() -> int:
                 pending.extend(value)
 
     format_checker = FormatChecker()
+    registry = Registry().with_resources(
+        (uri, Resource.from_contents(schema))
+        for uri, schema in schema_store.items()
+    )
     validators: dict[str, Draft202012Validator] = {}
     for name, schema in schemas.items():
-        resolver = RefResolver.from_schema(schema, store=registry)
         validators[name] = Draft202012Validator(
             schema,
-            resolver=resolver,
+            registry=registry,
             format_checker=format_checker,
         )
 

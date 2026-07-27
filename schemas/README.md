@@ -22,7 +22,10 @@ revision with the authenticated `device_id` and derives its internal
 Run from the repository root:
 
 ```bash
-python3 scripts/validate_schemas.py
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install -r requirements-ci.txt
+python scripts/validate_schemas.py
 ```
 
 The harness:
