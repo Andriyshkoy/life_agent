@@ -1,0 +1,3 @@
+item_id,name,aliases,item_type,form,active_ingredient,strength_value,strength_unit,strength_per_quantity,strength_per_unit,is_active,started_on,ended_on,notes
+example_med_001,"Витамин D3","витамин д;D3",supplement,capsule,cholecalciferol,2000,IU,1,capsule,true,,,"Удалите или замените эту example_* строку"
+example_med_002,"Магний","магний",supplement,tablet,magnesium,200,mg,1,tablet,true,,,"Удалите или замените эту example_* строку"

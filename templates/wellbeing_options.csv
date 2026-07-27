@@ -1,0 +1,10 @@
+option_id,dimension_id,label,aliases,sort_order,is_active,notes
+example_mood_low,example_wellbeing_mood,"Ниже обычного","плохое;ниже нормы",10,true,"Удалите или замените эту example_* строку"
+example_mood_normal,example_wellbeing_mood,"Обычное","нормальное;норм",20,true,"Удалите или замените эту example_* строку"
+example_mood_high,example_wellbeing_mood,"Хорошее","хорошо;отличное",30,true,"Удалите или замените эту example_* строку"
+example_energy_low,example_wellbeing_energy,"Низкая","нет сил;устал",10,true,"Удалите или замените эту example_* строку"
+example_energy_normal,example_wellbeing_energy,"Обычная","нормальная",20,true,"Удалите или замените эту example_* строку"
+example_energy_high,example_wellbeing_energy,"Высокая","много сил",30,true,"Удалите или замените эту example_* строку"
+example_stress_low,example_wellbeing_stress,"Низкий","нет стресса;спокойно",10,true,"Удалите или замените эту example_* строку"
+example_stress_medium,example_wellbeing_stress,"Средний","умеренный",20,true,"Удалите или замените эту example_* строку"
+example_stress_high,example_wellbeing_stress,"Высокий","сильный стресс",30,true,"Удалите или замените эту example_* строку"

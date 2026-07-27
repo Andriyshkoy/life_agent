@@ -1,0 +1,82 @@
+name: ci
+
+on:
+  push:
+    branches:
+      - main
+      - "agent/**"
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  contracts:
+    name: contracts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-ci.txt
+
+      - name: Install schema validator
+        run: python -m pip install --disable-pip-version-check -r requirements-ci.txt
+
+      - name: Validate schemas, fixtures, docs, and seed files
+        run: |
+          python scripts/validate_schemas.py
+          python scripts/validate_repository.py
+          bash -n infra/nginx/install-life-vhost.sh
+          (
+            cd android/health-probe/dist
+            sha256sum --check SHA256SUMS
+          )
+
+  android-probe:
+    name: android-probe
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Build pinned Android toolchain image
+        run: |
+          docker build \
+            --file android/health-probe/Dockerfile.build \
+            --tag life-agent-health-probe-builder:ci \
+            android/health-probe
+
+      - name: Lint, test, and assemble the Day-0 probe
+        run: |
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            --env HOME=/tmp \
+            --env GRADLE_USER_HOME=/tmp/gradle-home \
+            --volume "$GITHUB_WORKSPACE/android/health-probe:/workspace" \
+            life-agent-health-probe-builder:ci \
+            gradle --no-daemon --stacktrace \
+              :app:lintDebug \
+              :app:testDebugUnitTest \
+              :app:assembleDebug
+
+      - name: Verify published APK payload matches the source build
+        run: |
+          python3 scripts/validate_apk_payload.py \
+            android/health-probe/dist/life-agent-health-probe-day0-v0.2.0.apk \
+            android/health-probe/app/build/outputs/apk/debug/app-debug.apk

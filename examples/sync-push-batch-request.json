@@ -1,0 +1,91 @@
+{
+  "protocol_version": "1.0.0",
+  "message_type": "push_batch_request",
+  "batch_id": "60000000-0000-4000-8000-000000000001",
+  "device_id": "10000000-0000-4000-8000-000000000003",
+  "batch_content_sha256": "9823d259bb3aa03cc2042087a6f025cbfd9b104d3a2a87ea3519136dcc6e0442",
+  "operations": [
+    {
+      "ordinal": 0,
+      "operation_id": "50000000-0000-4000-8000-000000000001",
+      "operation_kind": "append_event_revision",
+      "event_id": "20000000-0000-4000-8000-000000000001",
+      "revision_id": "30000000-0000-4000-8000-000000000001",
+      "base_revision_id": null,
+      "body_sha256": "99bda20f7ccd58037c25338a714cc413d5cfc22b375537761024ebfe2fd376c8",
+      "body": {
+        "schema_version": "4.0.0",
+        "persistence_state": "local_pending",
+        "identity": {
+          "installation_id": "10000000-0000-4000-8000-000000000001",
+          "local_owner_id": "10000000-0000-4000-8000-000000000002",
+          "device_id": "10000000-0000-4000-8000-000000000003"
+        },
+        "event_id": "20000000-0000-4000-8000-000000000001",
+        "revision_id": "30000000-0000-4000-8000-000000000001",
+        "revision_no": 1,
+        "kind": "note",
+        "assertion_status": "observed",
+        "lifecycle": null,
+        "record_status": "active",
+        "verification_status": "user_confirmed",
+        "source": {
+          "capture_id": "40000000-0000-4000-8000-000000000001",
+          "operation_id": "50000000-0000-4000-8000-000000000001",
+          "channel": "android_manual",
+          "source_record_id": null,
+          "source_record_version": null,
+          "source_modified_at": null,
+          "recorded_at": "2026-07-27T13:12:00+07:00",
+          "origin": {
+            "provider": null,
+            "app": "Life Agent Android",
+            "device": "OnePlus Open",
+            "user_entered": true
+          },
+          "collector": {
+            "name": "life-agent-android",
+            "version": "0.1.0"
+          }
+        },
+        "time": {
+          "effective_start_utc": "2026-07-27T06:12:00Z",
+          "effective_end_utc": null,
+          "original_local_start": "2026-07-27T13:12:00",
+          "original_local_end": null,
+          "timezone_id": "Asia/Novosibirsk",
+          "start_offset_seconds": 25200,
+          "end_offset_seconds": null,
+          "temporal_precision": "minute",
+          "local_date": "2026-07-27",
+          "source_expression": null
+        },
+        "payload": {
+          "text": "После обеда чувствую себя спокойно."
+        },
+        "evidence": [
+          {
+            "capture_ref": "#/source/capture_id",
+            "field_path": "/payload/text",
+            "artifact_id": null,
+            "locator": "android_form:/note/text",
+            "excerpt": null,
+            "human_confirmed": true
+          }
+        ],
+        "quality_flags": [],
+        "revision": {
+          "created_at": "2026-07-27T13:12:00+07:00",
+          "content_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+          "actor": "user",
+          "correction_reason": null,
+          "parents": []
+        },
+        "server": {
+          "received_at": null,
+          "server_sequence": null
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,23 @@
+{
+  "protocol_version": "1.0.0",
+  "message_type": "push_batch_response",
+  "batch_id": "60000000-0000-4000-8000-000000000001",
+  "device_id": "10000000-0000-4000-8000-000000000003",
+  "results": [
+    {
+      "ordinal": 0,
+      "operation_id": "50000000-0000-4000-8000-000000000001",
+      "status": "ack",
+      "body_sha256": "99bda20f7ccd58037c25338a714cc413d5cfc22b375537761024ebfe2fd376c8",
+      "result_code": "applied",
+      "replayed": false,
+      "event_id": "20000000-0000-4000-8000-000000000001",
+      "revision_id": "30000000-0000-4000-8000-000000000001",
+      "current_revision_id": "30000000-0000-4000-8000-000000000001",
+      "server_sequence": 42,
+      "committed_at": "2026-07-27T06:12:02Z"
+    }
+  ],
+  "server_high_watermark": "cursor:42",
+  "server_time": "2026-07-27T06:12:02Z"
+}

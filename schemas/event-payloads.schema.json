@@ -1,0 +1,675 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://life-agent.local/schemas/event-payloads.schema.json",
+  "title": "Life Agent event kinds and payloads",
+  "description": "Closed, versioned payload contracts. The kind catalog includes post-MVP extraction candidates; life-event.schema.json narrows canonical current-MVP kinds explicitly.",
+  "$defs": {
+    "kind": {
+      "type": "string",
+      "enum": [
+        "meal",
+        "sleep",
+        "wellbeing",
+        "workout",
+        "symptom",
+        "medication_intake",
+        "supplement_intake",
+        "measurement",
+        "routine",
+        "note"
+      ]
+    },
+    "nullableUuid": {
+      "oneOf": [
+        {
+          "type": "string",
+          "format": "uuid"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "nullableText": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1
+    },
+    "mealItem": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "catalog_item_id",
+        "name",
+        "quantity",
+        "unit"
+      ],
+      "properties": {
+        "catalog_item_id": {
+          "$ref": "#/$defs/nullableUuid",
+          "description": "Optional stable local catalog identifier; null when the item was free text."
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "quantity": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "exclusiveMinimum": 0
+        },
+        "unit": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "g",
+            "ml",
+            "piece",
+            "serving",
+            null
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "quantity": {
+                "type": "null"
+              }
+            },
+            "required": [
+              "quantity"
+            ]
+          },
+          "then": {
+            "properties": {
+              "unit": {
+                "type": "null"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "unit": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "meal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "meal_type",
+        "items",
+        "comment"
+      ],
+      "properties": {
+        "meal_type": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "breakfast",
+            "lunch",
+            "dinner",
+            "snack",
+            "other",
+            null
+          ]
+        },
+        "items": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/mealItem"
+          }
+        },
+        "comment": {
+          "$ref": "#/$defs/nullableText"
+        }
+      }
+    },
+    "sleep": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "duration_minutes",
+        "duration_original",
+        "duration_is_approximate"
+      ],
+      "properties": {
+        "duration_minutes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "duration_original": {
+          "$ref": "#/$defs/nullableText"
+        },
+        "duration_is_approximate": {
+          "type": "boolean"
+        }
+      }
+    },
+    "wellbeing": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "metric",
+        "value",
+        "scale_min",
+        "scale_max",
+        "scale_source",
+        "comment"
+      ],
+      "properties": {
+        "metric": {
+          "type": "string",
+          "enum": [
+            "overall",
+            "energy",
+            "mood",
+            "stress",
+            "fatigue",
+            "other"
+          ]
+        },
+        "value": {
+          "type": "number"
+        },
+        "scale_min": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "scale_max": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "scale_source": {
+          "type": "string",
+          "enum": [
+            "explicit",
+            "partially_explicit",
+            "configured"
+          ],
+          "description": "Whether both bounds, only part of the scale, or a versioned configured scale supplied the bounds."
+        },
+        "comment": {
+          "$ref": "#/$defs/nullableText"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "scale_source": {
+                "enum": [
+                  "explicit",
+                  "configured"
+                ]
+              }
+            },
+            "required": [
+              "scale_source"
+            ]
+          },
+          "then": {
+            "properties": {
+              "scale_min": {
+                "type": "number"
+              },
+              "scale_max": {
+                "type": "number"
+              }
+            }
+          },
+          "else": {
+            "anyOf": [
+              {
+                "properties": {
+                  "scale_min": {
+                    "type": "number"
+                  }
+                }
+              },
+              {
+                "properties": {
+                  "scale_max": {
+                    "type": "number"
+                  }
+                }
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "workout": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "activity",
+        "distance",
+        "distance_unit",
+        "duration_minutes",
+        "comment"
+      ],
+      "properties": {
+        "activity": {
+          "type": "string",
+          "minLength": 1
+        },
+        "distance": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "exclusiveMinimum": 0
+        },
+        "distance_unit": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "m",
+            "km",
+            null
+          ]
+        },
+        "duration_minutes": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "comment": {
+          "$ref": "#/$defs/nullableText"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "distance": {
+                "type": "null"
+              }
+            },
+            "required": [
+              "distance"
+            ]
+          },
+          "then": {
+            "properties": {
+              "distance_unit": {
+                "type": "null"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "distance_unit": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "symptom": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "symptom",
+        "original",
+        "severity",
+        "severity_scale_min",
+        "severity_scale_max",
+        "severity_scale_source",
+        "comment"
+      ],
+      "properties": {
+        "symptom": {
+          "type": "string",
+          "minLength": 1
+        },
+        "original": {
+          "type": "string",
+          "minLength": 1
+        },
+        "severity": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "severity_scale_min": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "severity_scale_max": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "severity_scale_source": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "explicit",
+            "configured",
+            null
+          ]
+        },
+        "comment": {
+          "$ref": "#/$defs/nullableText"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "severity": {
+                "type": "null"
+              }
+            },
+            "required": [
+              "severity"
+            ]
+          },
+          "then": {
+            "properties": {
+              "severity_scale_min": {
+                "type": "null"
+              },
+              "severity_scale_max": {
+                "type": "null"
+              },
+              "severity_scale_source": {
+                "type": "null"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "severity_scale_min": {
+                "type": "number"
+              },
+              "severity_scale_max": {
+                "type": "number"
+              },
+              "severity_scale_source": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "medication_intake": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "medication_id",
+        "medication_name",
+        "dose",
+        "dose_unit",
+        "comment"
+      ],
+      "properties": {
+        "medication_id": {
+          "$ref": "#/$defs/nullableUuid"
+        },
+        "medication_name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "dose": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "exclusiveMinimum": 0
+        },
+        "dose_unit": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "mg",
+            "g",
+            "mcg",
+            "ml",
+            "tablet",
+            "capsule",
+            "drop",
+            "dose",
+            null
+          ]
+        },
+        "comment": {
+          "$ref": "#/$defs/nullableText"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "dose": {
+                "type": "null"
+              }
+            },
+            "required": [
+              "dose"
+            ]
+          },
+          "then": {
+            "properties": {
+              "dose_unit": {
+                "type": "null"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "dose_unit": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "supplement_intake": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "supplement_id",
+        "supplement_name",
+        "dose",
+        "dose_unit",
+        "comment"
+      ],
+      "properties": {
+        "supplement_id": {
+          "$ref": "#/$defs/nullableUuid"
+        },
+        "supplement_name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "dose": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "exclusiveMinimum": 0
+        },
+        "dose_unit": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "mg",
+            "g",
+            "mcg",
+            "ml",
+            "tablet",
+            "capsule",
+            "drop",
+            "dose",
+            null
+          ]
+        },
+        "comment": {
+          "$ref": "#/$defs/nullableText"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "dose": {
+                "type": "null"
+              }
+            },
+            "required": [
+              "dose"
+            ]
+          },
+          "then": {
+            "properties": {
+              "dose_unit": {
+                "type": "null"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "dose_unit": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "measurement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "metric",
+        "value",
+        "unit"
+      ],
+      "properties": {
+        "metric": {
+          "type": "string",
+          "minLength": 1
+        },
+        "value": {
+          "type": "number"
+        },
+        "unit": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "routine": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "outcome",
+        "comment"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "outcome": {
+          "type": "string",
+          "enum": [
+            "planned",
+            "completed",
+            "skipped"
+          ]
+        },
+        "comment": {
+          "$ref": "#/$defs/nullableText"
+        }
+      }
+    },
+    "note": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "text"
+      ],
+      "properties": {
+        "text": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "payload": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/meal"
+        },
+        {
+          "$ref": "#/$defs/sleep"
+        },
+        {
+          "$ref": "#/$defs/wellbeing"
+        },
+        {
+          "$ref": "#/$defs/workout"
+        },
+        {
+          "$ref": "#/$defs/symptom"
+        },
+        {
+          "$ref": "#/$defs/medication_intake"
+        },
+        {
+          "$ref": "#/$defs/supplement_intake"
+        },
+        {
+          "$ref": "#/$defs/measurement"
+        },
+        {
+          "$ref": "#/$defs/routine"
+        },
+        {
+          "$ref": "#/$defs/note"
+        }
+      ]
+    }
+  }
+}

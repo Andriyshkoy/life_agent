@@ -1,0 +1,2 @@
+schedule_id,item_id,dose_preset_id,schedule_name,time_local,days_of_week,start_date,end_date,timezone,is_active,notes
+example_schedule_001,example_med_001,example_dose_001,"Утро",08:00,"mon;tue;wed;thu;fri;sat;sun",,,Asia/Novosibirsk,true,"Расписание — только preset, оно не создаёт факт приёма"

@@ -1,0 +1,61 @@
+# IDE and operating-system state
+.DS_Store
+.idea/
+.vscode/
+*.iml
+
+# Gradle and Android generated state
+.gradle/
+**/.gradle/
+**/build/
+local.properties
+
+# Python validation state
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+*.env
+!*.env.example
+.ssh/
+id_ed25519*
+id_rsa*
+id_ecdsa*
+*.ppk
+*.jks
+*.keystore
+*.p12
+*.pfx
+*.key
+*.pem
+*.mobileprovision
+credentials*.json
+client_secret*.json
+google-services.json
+secrets/
+
+# Runtime data, exports, backups, and diagnostics
+*.db
+*.db-*
+*.sqlite
+*.sqlite-*
+*.sqlite3
+*.sqlite3-*
+*.dump
+*.backup
+*.log
+exports/
+backups/
+
+# Android packages are generated artifacts unless explicitly allowlisted.
+*.apk
+*.aab
+
+# Local tool state
+.cache/
+.tmp/

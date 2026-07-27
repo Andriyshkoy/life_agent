@@ -1,0 +1,640 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://life-agent.local/schemas/sync-wire.schema.json",
+  "title": "Life Agent MVP mobile sync wire contracts",
+  "description": "Closed v1 contracts for push, per-operation ACK/error, frozen bootstrap and incremental pull. HTTP authentication, header equality, hashes, cross-object identities and cursor ordering are semantic checks described in schemas/README.md.",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/pushBatchRequest"
+    },
+    {
+      "$ref": "#/$defs/pushBatchResponse"
+    },
+    {
+      "$ref": "#/$defs/bootstrapRequest"
+    },
+    {
+      "$ref": "#/$defs/bootstrapResponse"
+    },
+    {
+      "$ref": "#/$defs/pullRequest"
+    },
+    {
+      "$ref": "#/$defs/pullResponse"
+    }
+  ],
+  "$defs": {
+    "uuid": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "nullableUuid": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/uuid"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "nullableSha256": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/sha256"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "cursor": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2048,
+      "description": "Opaque authenticated cursor scoped by the server to the owner and protocol stream."
+    },
+    "nullableCursor": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/cursor"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "localPendingEvent": {
+      "allOf": [
+        {
+          "$ref": "life-event.schema.json"
+        },
+        {
+          "properties": {
+            "persistence_state": {
+              "const": "local_pending"
+            },
+            "server": {
+              "properties": {
+                "received_at": {
+                  "type": "null"
+                },
+                "server_sequence": {
+                  "type": "null"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "serverCommittedEvent": {
+      "allOf": [
+        {
+          "$ref": "life-event.schema.json"
+        },
+        {
+          "properties": {
+            "persistence_state": {
+              "const": "server_committed"
+            },
+            "identity": {
+              "properties": {
+                "device_id": {
+                  "$ref": "#/$defs/uuid"
+                }
+              }
+            },
+            "server": {
+              "properties": {
+                "received_at": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "server_sequence": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "pushOperation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ordinal",
+        "operation_id",
+        "operation_kind",
+        "event_id",
+        "revision_id",
+        "base_revision_id",
+        "body_sha256",
+        "body"
+      ],
+      "properties": {
+        "ordinal": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 99
+        },
+        "operation_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "operation_kind": {
+          "const": "append_event_revision"
+        },
+        "event_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "revision_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "base_revision_id": {
+          "$ref": "#/$defs/nullableUuid"
+        },
+        "body_sha256": {
+          "$ref": "#/$defs/sha256",
+          "description": "SHA-256 of the RFC 8785/JCS bytes of body. Retry must preserve the exact body and digest."
+        },
+        "body": {
+          "$ref": "#/$defs/localPendingEvent"
+        }
+      }
+    },
+    "pushBatchRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "protocol_version",
+        "message_type",
+        "batch_id",
+        "device_id",
+        "batch_content_sha256",
+        "operations"
+      ],
+      "properties": {
+        "protocol_version": {
+          "const": "1.0.0"
+        },
+        "message_type": {
+          "const": "push_batch_request"
+        },
+        "batch_id": {
+          "$ref": "#/$defs/uuid",
+          "description": "HTTP Idempotency-Key MUST equal this exact UUID; equality is checked before any operation is processed."
+        },
+        "device_id": {
+          "$ref": "#/$defs/uuid",
+          "description": "Must equal the authenticated access-token device claim."
+        },
+        "batch_content_sha256": {
+          "$ref": "#/$defs/sha256",
+          "description": "SHA-256 of RFC 8785/JCS serialization of the request with only batch_content_sha256 omitted, avoiding a self-referential digest."
+        },
+        "operations": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 100,
+          "items": {
+            "$ref": "#/$defs/pushOperation"
+          },
+          "description": "For per-operation errors, ingress validates the closed batch envelope first, then validates each raw array item independently against pushOperation."
+        }
+      }
+    },
+    "fieldError": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "code"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$"
+        },
+        "code": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]*$"
+        }
+      }
+    },
+    "operationAck": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ordinal",
+        "operation_id",
+        "status",
+        "body_sha256",
+        "result_code",
+        "replayed",
+        "event_id",
+        "revision_id",
+        "current_revision_id",
+        "server_sequence",
+        "committed_at"
+      ],
+      "properties": {
+        "ordinal": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 99
+        },
+        "operation_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "status": {
+          "const": "ack"
+        },
+        "body_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "result_code": {
+          "type": "string",
+          "enum": [
+            "applied",
+            "conflict"
+          ]
+        },
+        "replayed": {
+          "type": "boolean",
+          "description": "A retry returns the original result_code, sequence and committed_at; only replayed changes."
+        },
+        "event_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "revision_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "current_revision_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "server_sequence": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "committed_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
+    "operationError": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ordinal",
+        "operation_id",
+        "status",
+        "body_sha256",
+        "error_code",
+        "retryable",
+        "field_errors"
+      ],
+      "properties": {
+        "ordinal": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 99
+        },
+        "operation_id": {
+          "$ref": "#/$defs/nullableUuid",
+          "description": "Null only when the raw item had no syntactically valid operation_id."
+        },
+        "status": {
+          "const": "error"
+        },
+        "body_sha256": {
+          "$ref": "#/$defs/nullableSha256"
+        },
+        "error_code": {
+          "type": "string",
+          "enum": [
+            "unsupported_schema_version",
+            "schema_invalid",
+            "operation_hash_mismatch",
+            "revision_id_collision",
+            "event_id_collision",
+            "missing_parent",
+            "invalid_parent",
+            "ownership_violation"
+          ]
+        },
+        "retryable": {
+          "type": "boolean"
+        },
+        "field_errors": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/fieldError"
+          }
+        }
+      }
+    },
+    "operationResult": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/operationAck"
+        },
+        {
+          "$ref": "#/$defs/operationError"
+        }
+      ]
+    },
+    "pushBatchResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "protocol_version",
+        "message_type",
+        "batch_id",
+        "device_id",
+        "results",
+        "server_high_watermark",
+        "server_time"
+      ],
+      "properties": {
+        "protocol_version": {
+          "const": "1.0.0"
+        },
+        "message_type": {
+          "const": "push_batch_response"
+        },
+        "batch_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "device_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "results": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 100,
+          "items": {
+            "$ref": "#/$defs/operationResult"
+          }
+        },
+        "server_high_watermark": {
+          "$ref": "#/$defs/cursor",
+          "description": "Informational server cursor hint after committed ACKs. It does not replace the client's applied pull cursor."
+        },
+        "server_time": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
+    "serverChange": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "server_sequence",
+        "change_kind",
+        "result_code",
+        "operation_id",
+        "event_id",
+        "revision_id",
+        "current_revision_id",
+        "body_sha256",
+        "event"
+      ],
+      "properties": {
+        "server_sequence": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "change_kind": {
+          "const": "event_revision_committed"
+        },
+        "result_code": {
+          "type": "string",
+          "enum": [
+            "applied",
+            "conflict"
+          ]
+        },
+        "operation_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "event_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "revision_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "current_revision_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "body_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "event": {
+          "$ref": "#/$defs/serverCommittedEvent"
+        }
+      }
+    },
+    "bootstrapRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "protocol_version",
+        "message_type",
+        "device_id",
+        "page_size",
+        "page_cursor"
+      ],
+      "properties": {
+        "protocol_version": {
+          "const": "1.0.0"
+        },
+        "message_type": {
+          "const": "bootstrap_request"
+        },
+        "device_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "page_size": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 500
+        },
+        "page_cursor": {
+          "$ref": "#/$defs/nullableCursor"
+        }
+      }
+    },
+    "bootstrapResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "protocol_version",
+        "message_type",
+        "snapshot_id",
+        "page_id",
+        "page_sha256",
+        "changes",
+        "next_page_cursor",
+        "incremental_cursor",
+        "complete",
+        "server_time"
+      ],
+      "properties": {
+        "protocol_version": {
+          "const": "1.0.0"
+        },
+        "message_type": {
+          "const": "bootstrap_response"
+        },
+        "snapshot_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "page_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "page_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "changes": {
+          "type": "array",
+          "maxItems": 500,
+          "items": {
+            "$ref": "#/$defs/serverChange"
+          }
+        },
+        "next_page_cursor": {
+          "$ref": "#/$defs/nullableCursor"
+        },
+        "incremental_cursor": {
+          "$ref": "#/$defs/cursor",
+          "description": "Frozen high-watermark cursor shared by all pages and persisted only with the final page."
+        },
+        "complete": {
+          "type": "boolean"
+        },
+        "server_time": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "complete": {
+                "const": true
+              }
+            },
+            "required": [
+              "complete"
+            ]
+          },
+          "then": {
+            "properties": {
+              "next_page_cursor": {
+                "type": "null"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "next_page_cursor": {
+                "type": "string"
+              },
+              "changes": {
+                "minItems": 1
+              }
+            }
+          }
+        }
+      ]
+    },
+    "pullRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "protocol_version",
+        "message_type",
+        "device_id",
+        "cursor",
+        "page_size"
+      ],
+      "properties": {
+        "protocol_version": {
+          "const": "1.0.0"
+        },
+        "message_type": {
+          "const": "pull_request"
+        },
+        "device_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "cursor": {
+          "$ref": "#/$defs/cursor"
+        },
+        "page_size": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 500
+        }
+      }
+    },
+    "pullResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "protocol_version",
+        "message_type",
+        "from_cursor",
+        "page_id",
+        "page_sha256",
+        "changes",
+        "next_cursor",
+        "has_more",
+        "server_time"
+      ],
+      "properties": {
+        "protocol_version": {
+          "const": "1.0.0"
+        },
+        "message_type": {
+          "const": "pull_response"
+        },
+        "from_cursor": {
+          "$ref": "#/$defs/cursor"
+        },
+        "page_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "page_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "changes": {
+          "type": "array",
+          "maxItems": 500,
+          "items": {
+            "$ref": "#/$defs/serverChange"
+          }
+        },
+        "next_cursor": {
+          "$ref": "#/$defs/cursor"
+        },
+        "has_more": {
+          "type": "boolean"
+        },
+        "server_time": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    }
+  }
+}

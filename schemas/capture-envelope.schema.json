@@ -1,0 +1,520 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://life-agent.local/schemas/capture-envelope.schema.json",
+  "title": "Life Agent local-first capture envelope",
+  "description": "Immutable capture provenance created before or after enrollment. installation_id and local_owner_id are opaque local namespaces, never server principals. person_id and subject_id are forbidden by the closed shape.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "persistence_state",
+    "capture_id",
+    "operation_id",
+    "identity",
+    "source",
+    "content",
+    "integrity"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "4.0.0"
+    },
+    "persistence_state": {
+      "type": "string",
+      "enum": [
+        "local_pending",
+        "authenticated_ingress"
+      ]
+    },
+    "capture_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "operation_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "installation_id",
+        "local_owner_id",
+        "device_id"
+      ],
+      "properties": {
+        "installation_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "local_owner_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "device_id": {
+          "oneOf": [
+            {
+              "type": "string",
+              "format": "uuid"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "source": {
+      "$ref": "#/$defs/source"
+    },
+    "content": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/textContent"
+        },
+        {
+          "$ref": "#/$defs/voiceContent"
+        },
+        {
+          "$ref": "#/$defs/photoContent"
+        },
+        {
+          "$ref": "#/$defs/documentContent"
+        },
+        {
+          "$ref": "#/$defs/structuredContent"
+        }
+      ]
+    },
+    "integrity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sha256",
+        "byte_size"
+      ],
+      "properties": {
+        "sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "byte_size": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 536870912,
+          "description": "Absolute schema safety bound. Endpoint-specific limits may be smaller."
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "persistence_state": {
+            "const": "authenticated_ingress"
+          }
+        },
+        "required": [
+          "persistence_state"
+        ]
+      },
+      "then": {
+        "properties": {
+          "identity": {
+            "properties": {
+              "device_id": {
+                "type": "string",
+                "format": "uuid"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "source": {
+            "properties": {
+              "channel": {
+                "const": "android_recording"
+              }
+            },
+            "required": [
+              "channel"
+            ]
+          }
+        },
+        "required": [
+          "source"
+        ]
+      },
+      "then": {
+        "properties": {
+          "content": {
+            "$ref": "#/$defs/voiceContent"
+          },
+          "source": {
+            "properties": {
+              "origin": {
+                "properties": {
+                  "source_record_id": {
+                    "type": "null"
+                  },
+                  "source_record_version": {
+                    "type": "null"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "source": {
+            "properties": {
+              "channel": {
+                "const": "health_connect"
+              }
+            },
+            "required": [
+              "channel"
+            ]
+          }
+        },
+        "required": [
+          "source"
+        ]
+      },
+      "then": {
+        "properties": {
+          "content": {
+            "$ref": "#/$defs/structuredContent"
+          },
+          "source": {
+            "properties": {
+              "origin": {
+                "properties": {
+                  "source_record_id": {
+                    "type": "string"
+                  },
+                  "source_record_version": {
+                    "type": "string"
+                  },
+                  "user_entered": {
+                    "const": false
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "source": {
+            "properties": {
+              "channel": {
+                "const": "connector"
+              }
+            },
+            "required": [
+              "channel"
+            ]
+          }
+        },
+        "required": [
+          "source"
+        ]
+      },
+      "then": {
+        "properties": {
+          "content": {
+            "$ref": "#/$defs/structuredContent"
+          },
+          "source": {
+            "properties": {
+              "origin": {
+                "properties": {
+                  "source_record_id": {
+                    "type": "string"
+                  },
+                  "user_entered": {
+                    "const": false
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "nullableText": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "channel",
+        "recorded_at",
+        "timezone_id",
+        "utc_offset_minutes",
+        "origin",
+        "collector"
+      ],
+      "properties": {
+        "channel": {
+          "type": "string",
+          "enum": [
+            "android_manual",
+            "android_recording",
+            "android_share_intent",
+            "health_connect",
+            "file_import",
+            "connector",
+            "system"
+          ]
+        },
+        "recorded_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "timezone_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "utc_offset_minutes": {
+          "type": "integer",
+          "minimum": -840,
+          "maximum": 840
+        },
+        "origin": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "provider",
+            "app",
+            "device",
+            "source_record_id",
+            "source_record_version",
+            "user_entered"
+          ],
+          "properties": {
+            "provider": {
+              "$ref": "#/$defs/nullableText"
+            },
+            "app": {
+              "$ref": "#/$defs/nullableText"
+            },
+            "device": {
+              "$ref": "#/$defs/nullableText"
+            },
+            "source_record_id": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "minLength": 1
+            },
+            "source_record_version": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "minLength": 1
+            },
+            "user_entered": {
+              "type": "boolean"
+            }
+          },
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "source_record_version": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "source_record_version"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "source_record_id": {
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "source_record_id": {
+                    "type": "null"
+                  }
+                },
+                "required": [
+                  "source_record_id"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "source_record_version": {
+                    "type": "null"
+                  }
+                }
+              }
+            }
+          ]
+        },
+        "collector": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "name",
+            "version"
+          ],
+          "properties": {
+            "name": {
+              "type": "string",
+              "minLength": 1
+            },
+            "version": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        }
+      }
+    },
+    "textContent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "text"
+      ],
+      "properties": {
+        "kind": {
+          "const": "text"
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 50000
+        }
+      }
+    },
+    "voiceContent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "transcript",
+        "blob_ref",
+        "mime_type",
+        "duration_ms"
+      ],
+      "properties": {
+        "kind": {
+          "const": "voice"
+        },
+        "transcript": {
+          "$ref": "#/$defs/nullableText"
+        },
+        "blob_ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "mime_type": {
+          "type": "string",
+          "pattern": "^audio/[A-Za-z0-9!#$&^_.+-]+$"
+        },
+        "duration_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 7200000
+        }
+      }
+    },
+    "photoContent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "blob_ref",
+        "mime_type"
+      ],
+      "properties": {
+        "kind": {
+          "const": "photo"
+        },
+        "blob_ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "mime_type": {
+          "type": "string",
+          "pattern": "^image/[A-Za-z0-9!#$&^_.+-]+$"
+        }
+      }
+    },
+    "documentContent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "blob_ref",
+        "mime_type"
+      ],
+      "properties": {
+        "kind": {
+          "const": "document"
+        },
+        "blob_ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "mime_type": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "structuredContent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "record_type",
+        "payload"
+      ],
+      "properties": {
+        "kind": {
+          "const": "structured"
+        },
+        "record_type": {
+          "type": "string",
+          "minLength": 1
+        },
+        "payload": {
+          "type": "object"
+        }
+      }
+    }
+  }
+}

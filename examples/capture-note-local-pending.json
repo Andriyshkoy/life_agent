@@ -1,0 +1,40 @@
+{
+  "schema_version": "4.0.0",
+  "persistence_state": "local_pending",
+  "capture_id": "40000000-0000-4000-8000-000000000001",
+  "operation_id": "50000000-0000-4000-8000-000000000001",
+  "identity": {
+    "installation_id": "10000000-0000-4000-8000-000000000001",
+    "local_owner_id": "10000000-0000-4000-8000-000000000002",
+    "device_id": null
+  },
+  "source": {
+    "channel": "android_manual",
+    "recorded_at": "2026-07-27T13:12:00+07:00",
+    "timezone_id": "Asia/Novosibirsk",
+    "utc_offset_minutes": 420,
+    "origin": {
+      "provider": null,
+      "app": "Life Agent Android",
+      "device": "OnePlus Open",
+      "source_record_id": null,
+      "source_record_version": null,
+      "user_entered": true
+    },
+    "collector": {
+      "name": "life-agent-android",
+      "version": "0.1.0"
+    }
+  },
+  "content": {
+    "kind": "structured",
+    "record_type": "note",
+    "payload": {
+      "text": "После обеда чувствую себя спокойно."
+    }
+  },
+  "integrity": {
+    "sha256": "d63d9cfe2e966c8aa830d669d172d2fbb2e62e6051f15897478c03a93aad4bc3",
+    "byte_size": 129
+  }
+}

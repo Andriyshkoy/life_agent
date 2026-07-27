@@ -1,0 +1,2 @@
+recipe_id,recipe_version,recipe_name,aliases,status,effective_from,yield_quantity,yield_unit,yield_weight_g,yield_volume_ml,portion_count,default_portion_quantity,default_portion_unit,source,notes
+example_recipe_001,1,"Овсяная каша","каша овсяная;овсянка домашняя",active,2026-07-27,550,g,550,,2,1,portion,manual,"Удалите или замените эту example_* строку"

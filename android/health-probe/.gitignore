@@ -1,0 +1,9 @@
+.gradle/
+.idea/
+build/
+app/build/
+dist/*
+!dist/SHA256SUMS
+!dist/life-agent-health-probe-day0-v0.2.0.apk
+local.properties
+*.iml
