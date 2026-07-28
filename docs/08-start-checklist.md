@@ -357,8 +357,14 @@ https://github.com/Andriyshkoy/life_agent
 
 Подготовить:
 
-- [ ] Default branch и protected production environment.
-- [ ] Workflow permissions по умолчанию read-only.
+- [x] Default branch `develop`; release branch `main`.
+- [x] Branch flow: squash `feature → develop`, merge PR `develop → main`.
+- [x] PR/push CI ограничен ветками `develop` и `main`; PR в `main` допускается
+  только из `develop`.
+- [x] Protected branches с обязательными checks, без force push/delete и без
+  обязательного approval для единственного владельца.
+- [x] Protected `production` environment принимает только branch `main`.
+- [x] Workflow permissions по умолчанию read-only.
 - [ ] PR/push checks: format, unit tests, Android Lint, assemble, backend tests,
   Compose validation и image scan.
 - [ ] Android build выполняется в закреплённом container/toolchain.

@@ -102,6 +102,11 @@ application deploy.
 
 - Публичный GitHub repository создан и доступен для push.
 - GitHub Actions доступны.
+- Default branch — `develop`; обычные feature PR направляются только в
+  `develop` и объединяются squash-мерджем.
+- `main` — защищённая production/release branch. Изменения попадают в неё
+  отдельным merge PR только из `develop`; прямой push и feature PR в `main`
+  запрещены.
 - Android Day 0 source и discovery-документация уже находятся в workspace.
 - Секреты, signing keys, реальные exports, backup и health fixtures не должны
   попадать в публичный Git.
@@ -218,7 +223,8 @@ sleep sessions и ordinary HR, но production importer ещё не реализ
 
 ### Bootstrap
 
-- Инициализировать Git repository с branch `main` и подключить GitHub remote.
+- Использовать `develop` как default integration branch и `main` как
+  production/release branch; правила описаны в `CONTRIBUTING.md`.
 - Перенести/создать product app рядом с изолированным Day 0 probe.
 - Зафиксировать Gradle wrapper, Java/Kotlin/AGP versions и reproducible build.
 - Добавить `.gitignore` для:
@@ -290,7 +296,8 @@ sleep sessions и ordinary HR, но production importer ещё не реализ
 
 ### CI
 
-Pull request workflow выполняет:
+CI запускается для push и pull request в `develop` и `main`. Pull request
+workflow выполняет:
 
 - Gradle dependency/setup verification;
 - formatting/static analysis;
@@ -303,6 +310,12 @@ Pull request workflow выполняет:
 
 Workflow использует минимальные permissions, не получает production secrets и
 не запускает untrusted PR code на production runner.
+
+Обычная разработка использует squash PR `feature → develop`. Promotion в
+production history выполняется merge commit PR `develop → main`; CI отдельно
+отклоняет любые другие источники PR в `main`. Обе ветки защищены обязательными
+проверками, запретом force push/delete и обязательным разрешением discussion
+threads. Для solo-разработки обязательные approvals не требуются.
 
 ### Gate M1
 
@@ -403,6 +416,8 @@ Backend CI:
 
 Production deploy:
 
+- запускается только из успешного commit в `main`; `develop` не может
+  разворачивать production;
 - использует GitHub Environment/manual approval;
 - передаёт серверу только разрешённый image digest;
 - не устанавливает self-hosted runner с Docker access;
@@ -737,6 +752,7 @@ uncertainty и повторяющаяся capture friction. Графики, AI �
 | NEXT-209 | Medication schedules/reminders | Отдельная planned-модель, явный opt-in и доказанная польза |
 | NEXT-210 | Additional Health Connect records кроме resting HR | Отдельное post-MVP discovery и permission решение для каждого type |
 | NEXT-211 | Manual workout domain | Core capture/reliability gates закрыты и принят отдельный post-MVP scope |
+| NEXT-212 | Xiaomi S400 (`sg`, `yunmai.scales.ms104`) | Read-only cloud/BLE gate, owner attribution и явное принятие private API risk по [planning record](13-xiaomi-s400-integration.md) |
 
 ## Явные non-goals MVP
 
