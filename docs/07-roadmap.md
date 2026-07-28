@@ -360,6 +360,9 @@ Dogfood начинается после устойчивого local capture и 
 - proactive coaching и reminders;
 - medication schedules/reminders;
 - Health Connect types кроме sleep, ordinary HR и подтверждённого optional RHR;
+- Xiaomi S400 import после отдельного read-only gate для `sg + ms104`; текущий
+  план не расширяет MVP, подробности в
+  [planning record](13-xiaomi-s400-integration.md);
 - фото, OCR и barcode automation.
 
 Ни голос, ни RAG не должны менять canonical event model. Они становятся лишь

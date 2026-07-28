@@ -428,6 +428,30 @@ package/signature:
 [verification](https://developer.samsung.com/health/data/guide/app-verification.html).
 Цена и SLA partnership не опубликованы.
 
+### Xiaomi Body Composition Scale S400
+
+Подтверждён фактический источник: S400 с Xiaomi Home model
+`yunmai.scales.ms104`, account region `sg`; Bluetooth gateway отсутствует.
+Интеграция не входит в текущий MVP и пока существует только как
+[отдельный planning record](13-xiaomi-s400-integration.md).
+
+Первым кандидатом будущего read-only spike является MIT-проект
+[SmartScaleConnect](https://github.com/AlexxIT/SmartScaleConnect): он явно
+перечисляет `ms104`, region `sg`, Xiaomi Home input, multi-user records,
+JSON/CSV и Docker. Он использует недокументированный Xiaomi endpoint, поэтому
+техническая работоспособность не отменяет отдельный policy/security/reliability
+gate. До этого gate production connector не разрешён.
+
+Без gateway новое измерение не видно server importer, пока телефон/Mi Home не
+подключится к весам и не загрузит его в Xiaomi Cloud. Резервный local route —
+encrypted BLE advertisements с bind key; он сначала проектируется как явный
+`Начать взвешивание`, а не как обещание постоянного background scan.
+
+Нативный Xiaomi Home → Health Connect export на этом Android ещё не
+подтверждён. Перед private cloud/BLE разработкой Health Connect проверяется
+повторно и получает приоритет, если стандартные Weight/Body Fat records
+реально существуют.
+
 ### Garmin
 
 [Garmin Health API](https://developer.garmin.com/gc-developer-program/health-api/)
@@ -555,6 +579,7 @@ Health Connect и Google Health API:
 | Withings | существующий аккаунт/устройство; доставка в РФ не поддержана |
 | WHOOP | membership, регион и письменная retention policy |
 | Oura | поддерживаемый аккаунт и отдельное разрешение на storage/AI |
+| Xiaomi S400 | `sg + ms104`, owner attribution, shared account, private API risk, sync без gateway |
 
 ECG, irregular rhythm, sleep apnea, blood pressure и другие регулируемые функции
 могут зависеть от страны, версии устройства и firmware, даже если API содержит

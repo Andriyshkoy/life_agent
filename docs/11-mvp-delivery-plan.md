@@ -737,6 +737,7 @@ uncertainty и повторяющаяся capture friction. Графики, AI �
 | NEXT-209 | Medication schedules/reminders | Отдельная planned-модель, явный opt-in и доказанная польза |
 | NEXT-210 | Additional Health Connect records кроме resting HR | Отдельное post-MVP discovery и permission решение для каждого type |
 | NEXT-211 | Manual workout domain | Core capture/reliability gates закрыты и принят отдельный post-MVP scope |
+| NEXT-212 | Xiaomi S400 (`sg`, `yunmai.scales.ms104`) | Read-only cloud/BLE gate, owner attribution и явное принятие private API risk по [planning record](13-xiaomi-s400-integration.md) |
 
 ## Явные non-goals MVP
 
