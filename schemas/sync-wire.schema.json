@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://life-agent.local/schemas/sync-wire.schema.json",
   "title": "Life Agent MVP mobile sync wire contracts",
-  "description": "Closed v1 contracts for push, per-operation ACK/error, frozen bootstrap and incremental pull. HTTP authentication, header equality, hashes, cross-object identities and cursor ordering are semantic checks described in schemas/README.md.",
+  "description": "Closed v1 contracts for push, per-operation ACK/error, frozen bootstrap and incremental pull.",
   "oneOf": [
     {
       "$ref": "#/$defs/pushBatchRequest"
