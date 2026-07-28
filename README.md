@@ -14,11 +14,13 @@ offline-first хранением и защищённой синхронизац�
 - справочник лекарств/БАДов и запись фактического приёма с дозой;
 - обычные текстовые заметки;
 - чтение сна и обычного пульса (`HeartRateRecord`) с OnePlus Watch 2 через
-  OHealth и Health Connect в том же APK; пульс покоя (RHR) добавляется только
-  если Day 0 подтвердит OHealth `RestingHeartRateRecord`.
+  OHealth и Health Connect в том же APK. Day 0 подтвердил отдельный OHealth
+  `RestingHeartRateRecord`; его production-import остаётся optional/P1 частью
+  M4 с отдельным permission flow.
 
-Другие wearable-типы Day 0 может обнаружить для будущего планирования, но это не
-расширяет MVP: они остаются post-MVP до отдельного решения.
+Day 0 также обнаружил OHealth respiratory rate, steps и total calories, но это
+не расширяет MVP: они остаются post-MVP до отдельного решения. В проверенной
+sleep session стадии не наблюдались, поэтому production не синтезирует их.
 
 Голос, ASR, AI parsing, RAG, советы, dashboard и полноценный просмотр истории не
 входят в MVP. После сохранения доступны подтверждение, немедленное исправление и
@@ -108,8 +110,9 @@ outbox; после ACK PostgreSQL хранит каноническую synced h
 
 ## Следующее действие
 
-Пока владелец параллельно завершает Day 0 на реальном телефоне, ближайшая
-инженерная работа ограничена M1 — локальным Notes vertical slice:
+M0 device-availability gate пройден с решением
+`GO_WITH_REDUCED_SLEEP_DETAIL`; M4 разблокирован для sleep sessions и ordinary
+HR. Ближайшая инженерная работа ограничена M1 — локальным Notes vertical slice:
 
 ```text
 Android shell

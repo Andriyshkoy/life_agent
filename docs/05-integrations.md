@@ -7,10 +7,10 @@
 > Watch 2 сначала проверяются по цепочке
 > `OHealth → Health Connect → Life Agent Android`. Конкретный day-0 spike и gate
 > находятся в [delivery plan](11-mvp-delivery-plan.md). Production scope M4 —
-> только сон и обычный `HeartRateRecord`; RHR добавляется лишь если Day 0
-> подтвердит OHealth `RestingHeartRateRecord`. Все остальные wearable-типы и
-> коннекторы в этом документе являются Day 0 discovery/post-MVP справочником, а
-> не условной частью MVP.
+> только сон и обычный `HeartRateRecord`; отдельный OHealth RHR подтверждён и
+> остаётся optional/P1 задачей M4. Все остальные wearable-типы и коннекторы в
+> этом документе являются Day 0 discovery/post-MVP справочником, а не условной
+> частью MVP.
 
 ## Android-приложение — интеграционный центр
 
@@ -97,11 +97,11 @@ flowchart TD
 
 | Milestone | Роль интеграций и gate |
 |---|---|
-| M0 — Day 0 | Foreground probe проверяет сон, обычный `HeartRateRecord` и RHR; остальные типы видны только как discovery. RHR входит в M4 лишь при OHealth `RestingHeartRateRecord`, а прочие результаты не расширяют MVP. |
+| M0 — Day 0 | Gate пройден: OHealth sleep, ordinary HR и RHR подтверждены; stages не наблюдались. Остальные типы остаются discovery. |
 | M1 — local Notes | Android foundation, Room/outbox и полный локальный Notes slice; production Health Connect и server connector ещё не нужны. |
 | M2 — server sync | Notes доказывают enrollment, идемпотентный HTTPS sync, PostgreSQL и baseline backup. Этот transport затем переиспользует M4. |
 | M3 — manual domains | Питание, самочувствие и лекарства/БАДы используют уже проверенный M1/M2 контур без wearable-зависимости. |
-| M4 — Health Connect | Основной APK импортирует только сон и обычный `HeartRateRecord`; RHR — лишь если M0 подтвердил OHealth `RestingHeartRateRecord`. Все прочие wearable-типы остаются post-MVP. |
+| M4 — Health Connect | Основной APK импортирует сон и ordinary HR; подтверждённый RHR остаётся optional/P1. Все прочие wearable-типы остаются post-MVP. |
 
 Generic file import, Google Health, прямой vendor API и iOS/HealthKit возможны
 только после MVP и отдельного решения о доказанном пробеле.
@@ -298,10 +298,9 @@ Incremental sync использует `getChangesToken/getChanges`; неиспо
 [`health-connect-client 1.1.0`](https://developer.android.com/jetpack/androidx/releases/health-connect).
 Основное приложение показывает permissions по типам, время последнего capture и
 server sync, pending outbox, последние ошибки, export и delete. В M4
-запрашиваются только read permissions сна и обычного `HeartRateRecord`; RHR
-permission добавляется лишь если Day 0 подтвердил OHealth
-`RestingHeartRateRecord`. Остальные типы остаются discovery и post-MVP
-независимо от их наличия в probe.
+запрашиваются read permissions сна и обычного `HeartRateRecord`; подтверждённый
+RHR получает отдельный optional/P1 permission flow. Остальные типы остаются
+discovery и post-MVP независимо от их наличия в probe.
 
 ### Local capture и server sync
 
@@ -383,7 +382,7 @@ post-MVP candidates. Наличие устройства или API не дел�
 
 | Источник | Базовый или исследовательский путь | Будущий direct candidate | Не делать |
 |---|---|---|---|
-| OHealth | M4: Health Connect для сна/`HeartRateRecord`; RHR только при OHealth `RestingHeartRateRecord` в M0 | Google Health только post-MVP при доказанном пробеле | private OHealth endpoints |
+| OHealth | M4: Health Connect для сна/`HeartRateRecord`; подтверждённый RHR — optional/P1 | Google Health только post-MVP при доказанном пробеле | private OHealth endpoints |
 | Samsung | Post-MVP: проверить Health Connect mapping | Data SDK для proprietary metrics | старый deprecated SDK |
 | Garmin | Post-MVP: Health Connect/Apple Health/file import | Health API при business approval | scraping Garmin Connect |
 | Polar | Post-MVP pilot v3, если устройство уже есть | v4 granular data | не смешивать v3/v4 без проверки |
@@ -403,11 +402,10 @@ companion для OPPO/OnePlus Watch, а не отдельный Life Agent app. 
 
 Публичной документации cloud REST/OAuth/webhook API для health-данных OHealth не
 найдено. Рабочий путь M4 — OHealth → Health Connect → Life Agent Android для сна
-и обычного `HeartRateRecord`, плюс RHR только если M0 подтвердил OHealth
-`RestingHeartRateRecord`. Google Health остаётся отдельным post-MVP fallback, а
-не промежуточным обязательным звеном. Остальные типы можно проверить на
-устройстве только как discovery; Chinese/non-GMS firmware может не поддержать
-цепочку.
+и обычного `HeartRateRecord`; подтверждённый RHR остаётся optional/P1. Google
+Health остаётся отдельным post-MVP fallback, а не промежуточным обязательным
+звеном. Остальные типы проверяются только как discovery; Chinese/non-GMS
+firmware может не поддержать цепочку.
 
 Если имелся в виду
 [Open Health Stack](https://developers.google.com/open-health-stack/overview),

@@ -52,17 +52,20 @@ API в M2.
 
 ## 2. Day 0 на телефоне
 
-До реализации production Health Connect reader завершить физический capability
-test из [Day 0 report](12-day-0-oneplus-health-connect.md):
+Физический availability test из
+[Day 0 decision record](12-day-0-oneplus-health-connect.md):
 
-- [ ] Обновить firmware часов и OHealth.
-- [ ] Включить sleep, all-day heart rate и resting heart rate.
-- [ ] Синхронизировать часы с OHealth.
-- [ ] Проверить, что OHealth разрешена запись нужных типов в Health Connect.
-- [ ] Установить подготовленный read-only probe APK.
-- [ ] Вернуть capability report за 48 часов.
-- [ ] Вернуть capability report за 30 дней.
-- [ ] Отдельно выполнить optional scan для HRV, SpO₂, дыхания, тренировок,
+- [ ] Зафиксировать версии firmware часов и OHealth: capability report их не
+  содержит.
+- [ ] Отдельно подтвердить настройки sleep/all-day HR/RHR в OHealth при
+  измерении sync lag.
+- [x] Получить читаемые OHealth records; sync lag отдельно не измерен.
+- [x] Проверить, что OHealth разрешена запись нужных типов в Health Connect.
+- [x] Установить подготовленный read-only probe APK.
+- [x] Вернуть core capability report за 48 часов.
+- [ ] Вернуть отдельный core capability report за 30 дней — неблокирующая
+  проверка M4 backfill.
+- [x] Отдельно выполнить optional 30-day scan для HRV, SpO₂, дыхания, тренировок,
   шагов, дистанции, калорий и скорости.
 
 Нужны только обезличенные counts/capabilities из probe. Значения BPM, SpO₂,
@@ -71,20 +74,23 @@ test из [Day 0 report](12-day-0-oneplus-health-connect.md):
 По результатам зафиксировать:
 
 ```text
-Health Connect доступен:
-OHealth origin для сна:
-Есть sleep stages:
-OHealth origin для heart rate:
-Resting heart rate:
-Дополнительные типы:
-Задержка после OHealth sync:
-Доступное окно истории:
+Health Connect доступен: да
+OHealth origin для сна: да
+Sleep stages: не наблюдались в 48-часовом окне
+OHealth origin для heart rate: да
+Resting heart rate: подтверждён из OHealth; implementation pending
+Optional confirmed: respiratory rate, steps, total calories (post-MVP)
+Optional not observed: HRV, SpO₂, exercise, cadence, distance,
+  active calories, speed
+Задержка после OHealth sync: не измерена
+Core 30-day backfill: не проверен
 ```
 
-Отсутствующий тип остаётся `unavailable/unknown`; его нельзя восстанавливать
-догадкой. Production MVP импортирует sleep и ordinary HR; resting HR может
-добавиться в M4 только при подтверждении Day 0 и отдельном permission flow.
-Остальной optional scan является discovery для post-MVP решений.
+Ненаблюдавшийся тип остаётся `not_observed`, а не `unsupported`; его нельзя
+восстанавливать догадкой. Production MVP импортирует sleep и ordinary HR.
+Availability resting HR подтверждена, но permission/import остаются отдельной
+optional/P1 задачей M4. Остальной optional scan является discovery для post-MVP
+решений.
 
 ## 3. Android-проект
 
@@ -135,14 +141,14 @@ Certificate SHA-256:
 Начальный набор:
 
 - `INTERNET` только для собственного HTTPS API M2;
-- read permissions для sleep и ordinary HR только после Day 0; resting HR —
-  отдельно и только если Day 0 подтвердил availability;
+- read permissions для подтверждённых sleep и ordinary HR; resting HR —
+  отдельно как подтверждённый optional/P1 type;
 - notifications — только если они реально нужны для понятного sync status;
 - без contacts, SMS, phone, location, accessibility и broad storage.
 
-Health Connect types кроме sleep, ordinary HR и условного resting HR остаются
-post-MVP discovery и не получают production permissions в MVP. Никаких health
-write/route permissions;
+Health Connect types кроме sleep, ordinary HR и подтверждённого optional RHR
+остаются post-MVP discovery и не получают production permissions в MVP. Никаких
+health write/route permissions;
 background/history permissions возможны только условно после стабильного
 foreground P0, runtime capability check и доказанной необходимости.
 
@@ -429,8 +435,9 @@ App lock: выключен / после background / при каждом отк�
 - [x] Сон и пульс через подтверждённый Health Connect route.
 - [x] Для sleep и ordinary HR задан автоматический foreground incremental import
   при app-open и ручной `Sync now` fallback.
-- [ ] Resting HR — только если Day 0 подтвердит availability и отдельный
-  permission flow в M4.
+- [x] Resting HR availability подтверждена OHealth records.
+- [ ] Resting HR permission/import реализованы как отдельная optional/P1 задача
+  M4.
 - [ ] HRV/SpO₂/дыхание/тренировки/steps/distance/calories/speed — только
   post-MVP discovery, не production permissions текущего MVP.
 - [ ] Голос, фото, OCR, AI parsing и RAG — после стабильного MVP.
@@ -474,8 +481,8 @@ App lock: выключен / после background / при каждом отк�
 ## 13. Порядок фактического запуска
 
 ```text
-1. Параллельно выполнить OnePlus/OHealth/Health Connect Day 0; его gate
-   блокирует только M4, а не ручную разработку
+1. M0 availability gate пройден; core 30-day backfill остаётся неблокирующей
+   проверкой M4
 2. Зафиксировать applicationId и создать release signing key
 3. Собрать Android shell: navigation, encrypted Room, outbox, WorkManager и
    локальный notes vertical slice
@@ -488,7 +495,7 @@ App lock: выключен / после background / при каждом отк�
    ACK первой fixture-заметки
 8. Только после этого создать baseline encrypted backup и выполнить clean restore
 9. Добавить справочники и ручные формы: еда, самочувствие и фактический приём
-10. После M0 перенести подтверждённый Health Connect reader в production APK
+10. Перенести подтверждённый Health Connect reader в production APK
 11. Закрыть export/delete/full restore и production hardening
 12. Подписать release APK, развернуть backend image digest и начать dogfooding
 13. После репрезентативного цикла исправить friction, sync gaps и import
@@ -522,7 +529,7 @@ App lock: выключен / после background / при каждом отк�
 Без секретов можно сообщить:
 
 ```text
-Результаты трёх Day 0 capability reports:
+Отдельный core 30-day report перед финальной настройкой M4 backfill:
 Выбранный production applicationId:
 ACME contact email:
 Production SSH user:

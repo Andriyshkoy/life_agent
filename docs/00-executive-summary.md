@@ -97,17 +97,15 @@ OnePlus Watch 2 → OHealth → Health Connect → Life Agent Android
 ```
 
 Тот же APK запрашивает только необходимые read-permissions. Текущий M4 scope
-ограничен сном и обычным пульсом (`HeartRateRecord`); отдельный RHR входит только
-если Day 0 подтвердит `RestingHeartRateRecord` от OHealth. APK сохраняет source
-metadata и синхронизирует нормализованные события на сервер. Публичный OHealth
-REST API не предполагается.
+ограничен сном и обычным пульсом (`HeartRateRecord`); Day 0 подтвердил отдельный
+OHealth `RestingHeartRateRecord`, который остаётся optional/P1 задачей M4. APK
+сохраняет source metadata и синхронизирует нормализованные события на сервер.
+Публичный OHealth REST API не предполагается.
 
-Day 0 сначала подтверждает фактический экспорт OHealth на реальном телефоне:
-наличие записей, источники, полноту, окно истории и поведение обновлений.
-Другие wearable-типы можно исследовать тем же probe, но даже подтверждённая
-доступность не расширяет текущий MVP: HRV, SpO₂, дыхание, тренировки, шаги,
-калории и прочие метрики остаются post-MVP. Отсутствующие стадии сна, RHR или
-device metadata остаются `unknown`, а не восстанавливаются догадкой.
+Day 0 на реальном телефоне подтвердил OHealth sleep sessions, ordinary HR и RHR.
+Стадии сна и device metadata не наблюдались; их нельзя восстанавливать догадкой.
+Respiratory rate, steps и total calories обнаружены как post-MVP discovery.
+Другие wearable-типы также остаются post-MVP независимо от результата probe.
 
 Google Fit API не используется для новой интеграции. Другие vendor/server API
 рассматриваются только как post-MVP fallback, если нужных данных действительно
@@ -125,8 +123,8 @@ Google Fit API не используется для новой интеграц�
 - справочник лекарств/БАДов и фактические приёмы;
 - обычные текстовые заметки;
 - исправление и отмена только что созданной записи;
-- чтение сна и обычного пульса (`HeartRateRecord`) из Health Connect; RHR —
-  только если Day 0 подтвердит OHealth `RestingHeartRateRecord`;
+- чтение сна и обычного пульса (`HeartRateRecord`) из Health Connect;
+  подтверждённый RHR — отдельная optional/P1 задача M4;
 - идемпотентная HTTPS-синхронизация с личным сервером;
 - PostgreSQL, полный export, encrypted backup и проверка восстановления.
 
