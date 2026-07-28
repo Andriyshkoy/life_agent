@@ -296,9 +296,9 @@ snapshot:
 - Запрашивать только `READ_*` permissions для типов, которые приложение уже
   умеет импортировать и объясняет в rationale.
 - Core permission group после Day 0: подтверждённые сон и обычный пульс.
-  Resting heart rate запрашивается только если найден как отдельный доступный
-  record type; HRV, SpO₂, respiratory rate, тренировки, шаги, distance,
-  calories, cadence/speed — отдельный incremental opt-in.
+  Подтверждённый resting heart rate получает отдельный optional/P1 flow. HRV,
+  SpO₂, respiratory rate, тренировки, шаги, distance, calories, cadence/speed
+  не получают production permissions в MVP.
 - Не запрашивать Health Connect write, background/history или exercise route до
   появления конкретной функции и отдельного threat review.
 - Отказ или отзыв permission не является ошибкой аккаунта: ручной дневник

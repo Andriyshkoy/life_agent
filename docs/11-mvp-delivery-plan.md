@@ -2,7 +2,7 @@
 
 ## Статус
 
-Дата фиксации: 27 июля 2026 года.
+Дата актуализации: 28 июля 2026 года.
 
 Основной продуктовый интерфейс изменён с Telegram-бота на самостоятельное
 Android-приложение. Telegram shell, long polling, BotFather token, команды и
@@ -68,10 +68,11 @@ provenance и tombstones. Room хранит полную локальную ис
 - Probe не имеет network, write, background, history или exercise-route
   permissions.
 
-Физический device gate ещё выполняет владелец. Его результат определяет точный
-набор Health Connect permissions production-приложения, но не блокирует
-разработку ручных Android-сценариев: незакрытый M0 блокирует только M4, а не
-M1–M3.
+Физический availability gate пройден с verdict
+`GO_WITH_REDUCED_SLEEP_DETAIL`: OHealth sleep sessions и ordinary HR
+разблокируют M4 P0, а подтверждённый RHR остаётся optional/P1. Полный decision
+record находится в
+[Day 0 документе](12-day-0-oneplus-health-connect.md).
 
 ### Сервер
 
@@ -193,20 +194,22 @@ Redis, Kafka, Celery, Kubernetes, vector database и микросервисы д
 
 ### Device test владельца
 
-1. Обновить Watch 2 firmware и OHealth.
-2. Включить sleep, all-day HR и resting HR, затем синхронизировать часы.
-3. Разрешить OHealth запись соответствующих типов в Health Connect.
-4. Установить текущий probe.
-5. Вернуть core reports за 48 часов и 30 дней.
-6. Отдельно вернуть optional discovery report.
+28 июля 2026 года получены core 48-hour и extended 30-day reports с реального
+OnePlus Open/OxygenOS 16. Отдельный core 30-day report остаётся неблокирующей
+проверкой M4 backfill.
 
 ### Gate M0
 
-- Health Connect доступен на фактическом устройстве.
-- Сон и обычный HR имеют OHealth records либо зафиксирован доказанный gap.
-- Sleep stages/sample availability описаны без вывода чувствительных значений.
-- RHR и optional types классифицированы.
+- Health Connect доступен на фактическом устройстве — подтверждено.
+- Сон и ordinary HR имеют OHealth records — подтверждено.
+- Sleep stages не наблюдались; пустой список stages поддерживается контрактом.
+- RHR availability подтверждена для optional/P1.
+- Respiratory rate, steps и total calories подтверждены только как post-MVP;
+  остальные optional types классифицированы `not_observed`.
 - Production permission list основан на результате, а не на предположении.
+
+Gate M0 пройден с verdict `GO_WITH_REDUCED_SLEEP_DETAIL`. M4 разблокирован для
+sleep sessions и ordinary HR, но production importer ещё не реализован.
 
 Если сон/HR не экспортируются, ручной MVP продолжается, а автоматический импорт
 получает отдельный fallback spike. Google/cloud fallback не включается молча.
@@ -515,17 +518,16 @@ Schedule и medication reminders не входят в M3/MVP. Они проек�
 
 ## Milestone 4 — production Health Connect feature
 
-Milestone начинается после Gate M0 для P0-типов: sleep sessions и ordinary heart
-rate. Resting HR допускается в том же M4 только как optional type при
-подтверждённой availability и отдельном permission flow. Если device test ещё не
-завершён, экран и permission abstraction можно подготовить, но нельзя считать
-импорт реализованным.
+Milestone начинается после пройденного Gate M0 для P0-типов: sleep sessions и
+ordinary heart rate. Resting HR availability подтверждена, но import остаётся
+optional/P1 задачей с отдельным permission flow. Результат M0 не означает, что
+production import уже реализован.
 
 ### Реализация
 
 - Перенести проверенный scanner/query code из Day 0 probe.
 - Запрашивать read permissions для подтверждённых sleep и ordinary HR; resting
-  HR — отдельно и только при положительном результате M0.
+  HR — отдельно в optional/P1 flow.
 - На каждом открытии приложения автоматически запускать foreground incremental
   import; локальный capture и открытие UI не ждут его завершения.
 - Показывать:
@@ -551,10 +553,11 @@ read не требуются для P0 и добавляются только у
 foreground path, при наличии runtime capability, доказанной необходимости и
 отдельно проверенном permission/revocation flow.
 
-HRV, SpO₂, respiration, exercise, steps, distance, calories, speed и любые
-другие Health Connect types остаются только post-MVP discovery. Даже
-положительный Day 0 report не добавляет их permissions в MVP; resting HR является
-единственным условным исключением текущего M4.
+Respiration, steps и total calories наблюдались, но вместе с HRV, SpO₂,
+exercise, distance, active calories, cadence, speed и любыми другими Health
+Connect types остаются только post-MVP discovery. Положительный Day 0 report не
+добавляет их permissions в MVP; resting HR является единственным подтверждённым
+optional/P1 исключением текущего M4.
 
 Health Connect write и exercise route permissions не входят в MVP.
 
@@ -688,7 +691,7 @@ uncertainty и повторяющаяся capture friction. Графики, AI �
 
 | ID | Milestone | Задача | Готово, когда |
 |---|---|---|---|
-| AND-010 | M0 | Day 0 device gate | Фактические OHealth record types классифицированы |
+| AND-010 | M0 | Day 0 device gate — done 2026-07-28 | Verdict `GO_WITH_REDUCED_SLEEP_DETAIL` зафиксирован |
 | AND-001 | M1 | Product app skeleton | Compose shell, navigation, theme и release configuration собираются |
 | AND-002 | M1 | Design system | Все capture screens используют единые accessible components/states |
 | AND-003 | M1 | Room event model | Event, revision, tombstone и migration invariants покрыты тестами |
@@ -717,7 +720,7 @@ uncertainty и повторяющаяся capture friction. Графики, AI �
 | AND-102 | Faster catalog seeding | Начальное наполнение остаётся измеримым bottleneck |
 | AND-103 | Background Health Connect sync | Foreground import стабилен и runtime capability подтверждена |
 | AND-104 | Domain CSV import UI | JSON ownership уже работает |
-| AND-107 | Optional resting HR | Day 0 подтвердил availability и отдельный permission flow |
+| AND-107 | Optional resting HR | Availability подтверждена; отдельный permission/import flow реализован и проверен |
 
 ### После MVP и отдельного решения
 
@@ -746,7 +749,7 @@ uncertainty и повторяющаяся capture friction. Графики, AI �
 - Multi-user, публичная регистрация, sharing и SaaS.
 - Health Connect write, exercise routes и realtime sensor stream.
 - Medication schedules/reminders и автоматическое создание intake.
-- Health Connect types кроме sleep, ordinary HR и условного resting HR.
+- Health Connect types кроме sleep, ordinary HR и подтверждённого optional RHR.
 - Обязательный внешний food catalog.
 - Фото-calorie estimation, OCR и barcode automation.
 - Микросервисы, Kubernetes и vector database.
@@ -758,7 +761,7 @@ uncertainty и повторяющаяся capture friction. Графики, AI �
 
 По ходу milestone владелец предоставляет:
 
-1. Day 0 capability reports с телефона.
+1. Перед финальной настройкой M4 backfill — отдельный core 30-day report.
 2. Первые частые продукты, блюда, рецепты и порции.
 3. Стартовые wellbeing dimensions/options.
 4. Список лекарств/БАДов с form, dose и unit.

@@ -174,8 +174,8 @@ Telegram ingress и отдельный Life Agent companion исключены: 
 Раздел `Настройки → Health Connect` показывает:
 
 - доступность Health Connect;
-- выданные разрешения сна и обычного пульса (`HeartRateRecord`), а если Day 0
-  подтвердил OHealth `RestingHeartRateRecord` — RHR;
+- выданные разрешения сна и обычного пульса (`HeartRateRecord`), а для
+  подтверждённого OHealth RHR — состояние отдельного optional/P1 permission;
 - source apps без раскрытия лишних метаданных;
 - время последнего чтения;
 - локальное количество импортированных записей;
@@ -189,12 +189,12 @@ OnePlus Watch 2 → OHealth → Health Connect
 ```
 
 Core permissions текущего MVP охватывают сон и обычный пульс
-(`HeartRateRecord`). Разрешение RHR добавляется только если Day 0 подтвердит
-OHealth `RestingHeartRateRecord`. HRV, SpO₂, дыхание, тренировки, шаги, калории и
-любые другие wearable-типы Day 0 может исследовать, но production MVP их не
-запрашивает: это post-MVP scope с отдельным продуктовым решением и объяснением
-permissions. Приложение не пишет health data обратно в OHealth/Health Connect в
-MVP.
+(`HeartRateRecord`). Day 0 подтвердил OHealth `RestingHeartRateRecord`, но его
+разрешение и import остаются отдельной optional/P1 задачей M4. Наблюдавшиеся
+respiratory rate, steps и total calories, а также любые другие wearable-типы
+production MVP не запрашивает: это post-MVP scope с отдельным продуктовым
+решением и объяснением permissions. Приложение не пишет health data обратно в
+OHealth/Health Connect в MVP.
 
 ## Check-ins и напоминания
 

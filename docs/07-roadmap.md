@@ -2,12 +2,12 @@
 
 ## Статус
 
-Дата фиксации: 27 июля 2026 года.
+Дата актуализации: 28 июля 2026 года.
 
 Этот документ заменяет ранний Telegram-first и четырёхнедельный roadmap.
-Календарного дедлайна нет: работа идёт milestone с проверяемыми gates. M1–M3
-могут идти до завершения физического M0 device gate; незавершённый M0 блокирует
-только M4 Health Connect для неподтверждённых типов данных.
+Календарного дедлайна нет: работа идёт milestone с проверяемыми gates. Физический
+M0 availability gate пройден; M4 разблокирован для подтверждённых sleep sessions
+и ordinary HR, а M1 остаётся ближайшим implementation milestone.
 
 Life Agent MVP теперь является самостоятельным Android-приложением для одного
 владельца. Telegram-бот, Telegram Mini App и BotFather token не входят в MVP.
@@ -95,23 +95,24 @@ MVP оптимизируется для сбора, а не для просмо�
   калории и скорость;
 - probe не имеет `INTERNET`, write, background, history и route permissions.
 
-Остаётся отдельный физический gate:
-
-1. Установить текущий Day 0 APK.
-2. Разрешить OHealth записывать данные в Health Connect.
-3. Получить отчёты за 48 часов и 30 дней.
-4. Зафиксировать origin и доступные record types.
+28 июля 2026 года физический availability gate пройден на OnePlus Open:
+получены core 48-hour и extended 30-day reports, а решение
+`GO_WITH_REDUCED_SLEEP_DETAIL` зафиксировано в
+[Day 0 decision record](12-day-0-oneplus-health-connect.md). Отдельный core
+30-day scan остаётся неблокирующей проверкой backfill для M4.
 
 ### Gate M0
 
-- Health Connect доступен на фактической сборке OxygenOS.
-- Для сна и обычного пульса найдены OHealth records либо документирован gap.
-- RHR и optional types классифицированы как available/unavailable.
-- В M4 production app запрашивает только permissions для sleep/ordinary HR и,
-  условно, resting HR; optional discovery не расширяет MVP scope.
+- Health Connect доступен на фактической сборке OxygenOS — подтверждено.
+- Для сна и обычного пульса найдены OHealth records — подтверждено.
+- Sleep stages не наблюдались; пустой список stages является корректным.
+- RHR availability подтверждена; отдельная optional/P1 реализация ещё не
+  выполнена.
+- Respiratory rate, steps и total calories обнаружены как post-MVP; остальные
+  optional types имеют статус `not_observed`.
 
-Разработка ручного Android capture не блокируется ожиданием отчёта. Gate
-блокирует только финальную реализацию автоматического импорта конкретных типов.
+Gate M0 закрыт. Это разблокирует M4 для подтверждённых типов, но не означает,
+что production importer уже реализован.
 
 ## M1 — Android foundation + notes
 
@@ -259,10 +260,9 @@ MVP оптимизируется для сбора, а не для просмо�
 ## M4 — Health Connect
 
 - Код Day 0 probe переносится в production feature без diagnostic report UI.
-- P0 импортирует только подтверждённые sleep и ordinary heart rate; M0
-  блокирует только этот milestone, а не M1–M3.
-- Resting HR добавляется в M4 только как optional type, если M0 подтвердил
-  availability и отдельный permission flow.
+- P0 импортирует только подтверждённые sleep sessions и ordinary heart rate.
+- Availability resting HR подтверждена; его import остаётся optional/P1 задачей
+  M4 с отдельным permission flow.
 - На каждом app-open автоматически запускается неблокирующий foreground
   incremental import.
 - Foreground `Sync now` запускает тот же путь вручную и остаётся обязательным
@@ -359,7 +359,7 @@ Dogfood начинается после устойчивого local capture и 
 - RAG, embeddings и агентские рекомендации;
 - proactive coaching и reminders;
 - medication schedules/reminders;
-- Health Connect types кроме sleep, ordinary HR и условного resting HR;
+- Health Connect types кроме sleep, ordinary HR и подтверждённого optional RHR;
 - фото, OCR и barcode automation.
 
 Ни голос, ни RAG не должны менять canonical event model. Они становятся лишь
@@ -369,7 +369,7 @@ Dogfood начинается после устойчивого local capture и 
 
 Не передавать секреты в чат, issue или commit:
 
-1. Завершить Day 0 device test и вернуть минимизированные capability reports.
+1. Перед финальной настройкой M4 backfill выполнить core 30-day scan.
 2. Подготовить первые частые продукты, блюда и обычные порции.
 3. Определить стартовые wellbeing dimensions/options.
 4. Подготовить список лекарств и БАДов с form/dose/unit без медицинских

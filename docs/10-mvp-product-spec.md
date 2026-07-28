@@ -139,7 +139,7 @@ MVP не содержит дневной ленты, графиков и ана�
 11. Исправление и отмена только что созданной записи.
 12. Автоматическое foreground-чтение подтверждённых sleep и ordinary heart rate
     из Health Connect при открытии приложения, с ручным `Sync now` как fallback.
-13. Resting HR в том же M4 только условно после подтверждения Day 0 и отдельного
+13. Подтверждённый Day 0 resting HR как optional/P1 часть M4 с отдельным
     permission flow.
 14. Фоновая идемпотентная HTTPS-синхронизация на личный сервер.
 15. Полный машинно-читаемый экспорт.
@@ -433,14 +433,16 @@ original offset. Записи после полуночи не перенося�
   - тип/контекст, если доступен;
 - source app/device, source record ID, время изменения и полнота metadata.
 
-Resting HR может войти в текущий M4 только при подтверждённой Day 0 availability
-и отдельном permission flow. HRV, SpO₂, respiratory rate, exercise sessions,
-steps, cadence, distance, calories, speed и любые другие типы не входят в MVP:
-Day 0 может классифицировать их availability, но production permissions и
-реализация рассматриваются только отдельным post-MVP discovery.
+Day 0 подтвердил отдельный OHealth `RestingHeartRateRecord`; его import остаётся
+optional/P1 частью M4 с отдельным permission flow. В extended scan также
+наблюдались OHealth respiratory rate, steps и total calories, но они, как и HRV,
+SpO₂, exercise sessions, cadence, distance, active calories, speed и любые
+другие типы, не входят в MVP. Production permissions и реализация для них
+рассматриваются только отдельным post-MVP discovery.
 
-Отсутствие стадий сна или device metadata не компенсируется выдуманными
-значениями.
+В проверенной sleep session стадии не наблюдались. У OHealth records также не
+было device metadata, а recording method был `unknown`; эти поля остаются
+пустыми/unknown и не компенсируются выдуманными значениями.
 
 ### 7.2 Day 0 capability probe
 
@@ -459,6 +461,13 @@ Watch 2:
 permissions, backfill/incremental plan и решением `go`, `reduced scope` или
 `blocked`.
 
+28 июля 2026 года принят фактический verdict
+`GO_WITH_REDUCED_SLEEP_DETAIL`: OHealth sleep sessions и ordinary HR
+подтверждены для M4 P0, RHR availability подтверждена для optional/P1, а stages
+не наблюдались. Отдельный core 30-day scan, source-ID/update/delete semantics и
+измерение sync lag остаются acceptance work M4. Полная классификация находится
+в [Day 0 decision record](12-day-0-oneplus-health-connect.md).
+
 Если OHealth не экспортирует core data, ручной MVP остаётся релизопригодным, а
 интеграция получает статус `blocked by platform`. Scraping закрытых БД, обход
 permissions и неофициальные токены не допускаются.
@@ -467,7 +476,7 @@ permissions и неофициальные токены не допускаютс
 
 - Health Connect client является модулем основного приложения.
 - MVP запрашивает подтверждённые read permissions для sleep и ordinary HR;
-  resting HR — отдельно и только при положительном результате Day 0.
+  resting HR — отдельно в optional/P1 flow с уже подтверждённой availability.
 - Запрос разрешения сопровождается объяснением цели и может быть отозван.
 - Каждое открытие приложения автоматически запускает неблокирующий foreground
   incremental import.
@@ -607,9 +616,12 @@ Options имеют стабильные ID, sort order и active/archived. От�
 - `sleep_session`;
 - `sleep_stage`, если реально доступен;
 - `heart_rate_sample`;
-- `resting_heart_rate_observation`, если реально доступен.
+- `resting_heart_rate_observation` для подтверждённого optional/P1 RHR.
 
-Точные поля корректируются после Day 0 по фактической source schema.
+Day 0 подтвердил nullable/unknown device и recording metadata, отсутствие stages
+в наблюдавшейся sleep session и форму ordinary HR «один sample на record».
+Окончательные source identity/version поля проверяются в M4, поскольку
+privacy-minimized report намеренно не раскрывает record IDs.
 
 ### 9.7 Синхронизация
 
@@ -733,10 +745,11 @@ gates и backlog являются нормативными в
 ### M0 — Day 0 device gate
 
 - Read-only Android Health Connect capability probe.
-- Проверка реальных OnePlus/OHealth source records.
+- Реальные OnePlus/OHealth source records проверены 28 июля 2026 года.
 
-Gate: Day 0 даёт decision record о фактически доступных record types. Он
-блокирует только M4 Health Connect, поэтому M1–M3 могут идти параллельно.
+Gate пройден с verdict `GO_WITH_REDUCED_SLEEP_DETAIL`; decision record
+разблокирует M4 для sleep sessions и ordinary HR. Это не означает готовность
+production importer.
 
 ### M1 — Android shell и local notes vertical slice
 
@@ -806,7 +819,8 @@ Gate: retry не создаёт ложный intake; дозы и единицы 
 ### M4 — Health Connect production integration
 
 - Перенос подтверждённого read-only probe в product architecture.
-- Permission UX для sleep и ordinary HR; resting HR — условно после Day 0.
+- Permission UX для sleep и ordinary HR; resting HR — отдельный optional/P1
+  flow с подтверждённой availability.
 - Автоматический foreground incremental import при app-open, bounded
   reconciliation, deduplication и `Sync now` fallback.
 - Background/history permissions — только условно после доказанной необходимости;
@@ -856,9 +870,8 @@ MVP готов к постоянному личному использовани
 - Можно сохранить заметку без AI parsing.
 - После create работают исправление и отмена.
 - Полный export читается валидатором и содержит revisions/provenance.
-- Сон и ordinary HR импортируются автоматически foreground при app-open, если
-  Day 0 дал `go`; `Sync now` работает как fallback, а при platform-blocked
-  статусе ручной MVP остаётся релизопригодным.
+- Сон и ordinary HR импортируются автоматически foreground при app-open согласно
+  полученному Day 0 `go`; `Sync now` работает как fallback.
 
 ### Надёжность
 
@@ -899,8 +912,11 @@ MVP готов к постоянному личному использовани
 
 Следующие решения принимаются только после измерений и dogfooding:
 
-- доступность стадий сна, continuous HR, resting HR и optional Health Connect
-  типов;
+- полнота стадий сна и ordinary/RHR за более длинные окна, sync lag,
+  source-ID/update/delete semantics и итоговый backfill/reconciliation window;
+- необходимость production-импорта подтверждённых post-MVP respiratory rate,
+  steps и total calories, а также повторного теста типов со статусом
+  `not_observed`;
 - необходимость background/history Health Connect permissions после стабильного
   foreground P0;
 - retention исходных connector payload;

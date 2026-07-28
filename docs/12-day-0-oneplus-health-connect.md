@@ -2,20 +2,25 @@
 
 ## Статус
 
-Дата: 27 июля 2026 года.
+Дата решения: 28 июля 2026 года.
 
-Выполнена вся часть Day 0, не требующая физического доступа к телефону:
+На реальном OnePlus Open с OxygenOS 16 выполнены core scan за 48 часов и
+extended scan за 30 дней из probe `0.2.0`. Device gate доступности типов закрыт
+решением `GO_WITH_REDUCED_SLEEP_DETAIL`:
 
-- подтверждён поддерживаемый канал интеграции;
-- сверены актуальные API и разрешения Health Connect;
-- подготовлен foreground-only read-only probe;
-- определён безопасный HTTPS-контур будущей синхронизации Android-приложения;
-- определены проверяемые go/no-go критерии.
+- Health Connect доступен и все запрошенные чтения завершились без ошибок;
+- OHealth подтверждён как origin для `SleepSessionRecord`,
+  `HeartRateRecord` и `RestingHeartRateRecord`;
+- M4 разблокирован для sleep sessions и ordinary heart rate;
+- отдельный RHR подтверждён, но остаётся optional/P1 частью M4 с собственным
+  permission flow;
+- в проверенной sleep session стадии не наблюдались. Importer сохраняет пустой
+  список и ничего не синтезирует; если source stages появятся в другой записи,
+  они сохраняются как source data.
 
-Фактический экспорт OHealth остаётся device gate: владелец устанавливает probe
-на OnePlus Open, выдаёт локальные разрешения и возвращает сформированный
-capability report. Наличие датчика или метрики в OHealth само по себе не
-доказывает экспорт в Health Connect.
+Отдельный core scan за 30 дней не получен. Это не блокирует решение о
+доступности типов, но оставляет проверку 30-дневного backfill сна/пульса
+неблокирующей задачей M4.
 
 ## Зафиксированный канал
 
@@ -87,7 +92,41 @@ Exercise route требует отдельного разрешения/consent.
 и специализированные спортивные показатели нельзя считать стандартными
 Health Connect records.
 
-## Device test
+## Результаты device test
+
+| Тип | Результат 28.07.2026 | Решение |
+|---|---|---|
+| `SleepSessionRecord` | OHealth records наблюдались; stages не наблюдались | M4 P0, stages могут быть пустыми |
+| `HeartRateRecord` | OHealth records и samples наблюдались | M4 P0 |
+| `RestingHeartRateRecord` | отдельная OHealth observation наблюдалась | optional/P1 M4, отдельное разрешение |
+| `RespiratoryRateRecord` | OHealth records наблюдались | post-MVP |
+| `StepsRecord` | наблюдались OHealth и второй анонимизированный origin | post-MVP; требуется origin-aware deduplication |
+| `TotalCaloriesBurnedRecord` | OHealth records наблюдались; чтение прошло более одной страницы | post-MVP |
+| HRV RMSSD, SpO₂, exercise, cadence, distance, active calories, speed | records в проверенном 30-дневном окне не наблюдались | `not_observed`, не `unsupported`; post-MVP |
+
+Все секции обоих отчётов имели `status=ok`. Окна, coverage, record/sample/stage
+counts, origin totals, recording-method totals и metadata counts внутренне
+согласованы. Отчёт также подтверждает фактическое прохождение pagination.
+
+Ограничения evidence:
+
+- у наблюдавшихся OHealth records отсутствовала device metadata, а
+  `recording_method` был `unknown`; доказан origin приложения OHealth, но нельзя
+  приписывать каждую запись непосредственно OnePlus Watch 2 или маркировать её
+  как automatic;
+- privacy-minimized report не содержит значений, record IDs и change metadata,
+  поэтому точность значений, стабильность source IDs, updates/deletes,
+  change-token flow и sync lag проверяются в M4;
+- отдельный core 30-day report ещё нужен перед финальной настройкой backfill и
+  reconciliation, но не для повторного решения availability;
+- в сообщении владельца были два очевидных transport-артефакта: отсутствующий
+  перевод строки между отчётами и пробел внутри одного года. Они нормализованы
+  только в приватной локальной evidence-копии;
+- сырые отчёты не коммитятся в публичный Git: несмотря на минимизацию, они
+  содержат датированные агрегаты личных health-данных. Публично хранится только
+  эта capability-классификация; test fixtures должны быть синтетическими.
+
+## Процедура device test
 
 1. Обновить firmware часов и OHealth.
 2. В OHealth включить автоматический сон, all-day heart rate и resting heart
@@ -124,10 +163,10 @@ samples не является медицинским или бинарным т�
 сравнивается с тем же днём в OHealth и определяет только доступную детализацию
 будущих отчётов.
 
-Отсутствие только RHR не блокирует MVP: его можно честно оставить unavailable
-либо позже вычислять только после отдельного продуктового решения. Отсутствие
-OHealth одновременно для sleep и HR блокирует прямой Health Connect route; тогда
-проверяется Google Health fallback или ручной/file import.
+Фактический verdict — `GO_WITH_REDUCED_SLEEP_DETAIL`: OHealth sleep и ordinary
+HR подтверждены, stages пока отсутствуют, а RHR availability подтверждена для
+отдельной optional/P1 реализации. Google Health fallback для текущего маршрута
+не нужен.
 
 ## Инфраструктура и secrets
 
@@ -146,9 +185,9 @@ OHealth одновременно для sleep и HR блокирует прям�
 - Секреты не передаются в чат или Git и устанавливаются непосредственно в
   server-side secret files.
 
-После успешного capability report probe не развивается как отдельный companion
-или bridge. Следующий технический шаг — единое production-приложение Life Agent
-для Android: в него переносятся Health Connect reader, encrypted outbox,
-idempotent batches, change tokens, background/history feature checks и явный
-`Sync now`. В том же приложении последовательно появляются ручной ввод,
-локальные справочники и все будущие интеграции.
+Probe не развивается как отдельный companion или bridge. Следующий технический
+шаг — единое production-приложение Life Agent для Android: в него переносятся
+Health Connect reader, encrypted outbox, idempotent batches, change tokens,
+background/history feature checks и явный `Sync now`. В том же приложении
+последовательно появляются ручной ввод, локальные справочники и все будущие
+интеграции.
