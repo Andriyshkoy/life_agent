@@ -60,3 +60,7 @@ backups/
 .cache/
 .tmp/
 .private/
+
+# Local Codex workspace and agent instructions
+.codex/
+AGENTS.md
