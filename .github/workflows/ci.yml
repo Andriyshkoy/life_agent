@@ -4,7 +4,11 @@ on:
   push:
     branches:
       - main
+      - develop
   pull_request:
+    branches:
+      - main
+      - develop
 
 permissions:
   contents: read
@@ -14,6 +18,21 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  release-source:
+    name: release-source
+    if: github.event_name == 'pull_request' && github.base_ref == 'main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - name: Require develop as the production release source
+        env:
+          RELEASE_HEAD: ${{ github.head_ref }}
+        run: |
+          if [ "$RELEASE_HEAD" != "develop" ]; then
+            echo "Pull requests into main must come from develop."
+            exit 1
+          fi
+
   contracts:
     name: contracts
     runs-on: ubuntu-24.04
