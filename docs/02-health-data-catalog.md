@@ -224,6 +224,15 @@ Route, indication, prescriber, schedule, пропуск/опоздание и ad
 нижним ребром и гребнем подвздошной кости, конец обычного выдоха
 ([WHO protocol](https://www.who.int/publications/i/item/9789241501491)).
 
+У владельца подтверждены Xiaomi Body Composition Scale S400 с Xiaomi Home model
+`yunmai.scales.ms104`, account region `sg` и отсутствие Bluetooth gateway.
+Возможный server cloud import и резервный direct BLE route описаны отдельно в
+[плане S400](13-xiaomi-s400-integration.md). Это post-MVP discovery, а не
+расширение текущего scope. Вес, raw impedance и vendor-derived composition
+хранятся как разные классы данных; body fat, water, muscle, bone, visceral fat,
+BMR и body score не выдаются за непосредственно измеренные или клинические
+значения.
+
 ### HR и HRV
 
 Обычный `HeartRateRecord` является core stream текущего MVP. Availability

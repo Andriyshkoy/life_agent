@@ -33,6 +33,9 @@ outbox; после ACK PostgreSQL хранит каноническую synced h
 
 - Телефон: OnePlus Open, OxygenOS 16.
 - Часы: OnePlus Watch 2, приложение OHealth.
+- Весы: Xiaomi Body Composition Scale S400, Xiaomi Home model
+  `yunmai.scales.ms104`, account region `sg`; Bluetooth gateway отсутствует.
+  Интеграция только спланирована и не входит в текущий MVP.
 - Runtime: личный Docker VPS; на нём уже работают другие Compose-проекты.
 - Репозиторий: публичный `Andriyshkoy/life_agent`; первый Day 0/MVP-contract
   snapshot находится в этом репозитории.
@@ -79,6 +82,7 @@ outbox; после ACK PostgreSQL хранит каноническую synced h
 - [Milestone roadmap](docs/07-roadmap.md)
 - [Стартовый checklist](docs/08-start-checklist.md)
 - [Day 0: OnePlus Watch 2 → Health Connect](docs/12-day-0-oneplus-health-connect.md)
+- [План интеграции Xiaomi Body Composition Scale S400](docs/13-xiaomi-s400-integration.md)
 - [Локальный каталог питания и CSV-шаблоны](templates/README.md)
 - [Модель данных](docs/04-data-model.md)
 - [Безопасность и приватность](docs/06-security-privacy.md)
