@@ -68,6 +68,14 @@ outbox; после ACK PostgreSQL хранит каноническую synced h
 - Google Health API рассматривается только как post-MVP fallback после реального
   теста и доказанного пробела.
 - Голосовой/agentic flow станет отдельным post-MVP этапом.
+- Default branch — `develop`; обычная работа идёт через короткие feature-ветки
+  и squash PR в `develop`.
+- `main` содержит только проверенные release snapshots. Production promotion
+  выполняется отдельным merge PR строго `develop → main`; будущий CD будет
+  запускаться только после успешной проверки `main`.
+
+Подробные правила веток, merge strategy и релизов находятся в
+[CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Актуальные документы
 
