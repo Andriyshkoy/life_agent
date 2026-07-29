@@ -14,6 +14,15 @@ val suppliedVersionCode = providers
 val suppliedVersionName = providers
     .environmentVariable("LIFE_AGENT_VERSION_NAME")
     .orNull
+val baseVersionName = "0.1.0"
+val internalVersionNameSuffix = suppliedVersionName
+    ?.also {
+        require(it.startsWith(baseVersionName)) {
+            "LIFE_AGENT_VERSION_NAME must start with $baseVersionName"
+        }
+    }
+    ?.removePrefix(baseVersionName)
+    .orEmpty()
 val suppliedKeystorePath = providers
     .environmentVariable("LIFE_AGENT_KEYSTORE_PATH")
     .orNull
@@ -37,7 +46,7 @@ android {
         minSdk = 28
         targetSdk = 36
         versionCode = suppliedVersionCode ?: 1
-        versionName = suppliedVersionName ?: "0.1.0"
+        versionName = baseVersionName
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
@@ -73,7 +82,7 @@ android {
         create("internal") {
             initWith(getByName("release"))
             applicationIdSuffix = ".dev"
-            versionNameSuffix = "-dev"
+            versionNameSuffix = "$internalVersionNameSuffix-dev"
             matchingFallbacks += listOf("release")
             signingConfig = distributionSigningConfig
             resValue("string", "app_name", "Life Agent Dev")
