@@ -75,7 +75,7 @@ android {
             applicationIdSuffix = ".dev"
             versionNameSuffix = "-dev"
             matchingFallbacks += listOf("release")
-            signingConfig = distributionSigningConfig ?: signingConfigs.getByName("debug")
+            signingConfig = distributionSigningConfig
             resValue("string", "app_name", "Life Agent Dev")
         }
     }
