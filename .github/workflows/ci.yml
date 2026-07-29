@@ -98,3 +98,34 @@ jobs:
           python3 scripts/validate_apk_payload.py \
             android/health-probe/dist/life-agent-health-probe-day0-v0.2.0.apk \
             android/health-probe/app/build/outputs/apk/debug/app-debug.apk
+
+  android-product:
+    name: android-product
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Build pinned Android toolchain image
+        run: |
+          docker build \
+            --file android/life-agent/Dockerfile.build \
+            --tag life-agent-product-builder:ci \
+            android/life-agent
+
+      - name: Lint, test, assemble, and validate UI screenshots
+        run: |
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            --env HOME=/tmp \
+            --env GRADLE_USER_HOME=/tmp/gradle-home \
+            --volume "$GITHUB_WORKSPACE/android/life-agent:/workspace" \
+            life-agent-product-builder:ci \
+            gradle --no-daemon --stacktrace \
+              :app:lintDebug \
+              :app:testDebugUnitTest \
+              :app:assembleDebug \
+              :app:validateDebugScreenshotTest
