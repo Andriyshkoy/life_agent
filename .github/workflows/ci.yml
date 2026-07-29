@@ -119,10 +119,15 @@ jobs:
 
       - name: Lint, test, assemble, and validate UI screenshots
         run: |
+          version_code=$((100000 + GITHUB_RUN_NUMBER))
+          short_sha="${GITHUB_SHA:0:7}"
+
           docker run --rm \
             --user "$(id -u):$(id -g)" \
             --env HOME=/tmp \
             --env GRADLE_USER_HOME=/tmp/gradle-home \
+            --env LIFE_AGENT_VERSION_CODE="$version_code" \
+            --env LIFE_AGENT_VERSION_NAME="0.1.0.$GITHUB_RUN_NUMBER+$short_sha" \
             --volume "$GITHUB_WORKSPACE/android/life-agent:/workspace" \
             life-agent-product-builder:ci \
             gradle --no-daemon --stacktrace \
@@ -131,3 +136,13 @@ jobs:
               :app:assembleDebug \
               :app:assembleInternal \
               :app:validateDebugScreenshotTest
+
+      - name: Preserve verified unsigned internal APK
+        if: github.event_name == 'push' && github.ref == 'refs/heads/develop'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v7.0.1
+        with:
+          name: life-agent-internal-unsigned
+          path: android/life-agent/app/build/outputs/apk/internal/app-internal-unsigned.apk
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
