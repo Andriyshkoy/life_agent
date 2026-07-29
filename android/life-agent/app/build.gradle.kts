@@ -7,6 +7,26 @@ plugins {
     id("com.android.compose.screenshot")
 }
 
+val suppliedVersionCode = providers
+    .environmentVariable("LIFE_AGENT_VERSION_CODE")
+    .orNull
+    ?.toIntOrNull()
+val suppliedVersionName = providers
+    .environmentVariable("LIFE_AGENT_VERSION_NAME")
+    .orNull
+val suppliedKeystorePath = providers
+    .environmentVariable("LIFE_AGENT_KEYSTORE_PATH")
+    .orNull
+val suppliedKeystorePassword = providers
+    .environmentVariable("LIFE_AGENT_KEYSTORE_PASSWORD")
+    .orNull
+val suppliedKeyAlias = providers
+    .environmentVariable("LIFE_AGENT_KEY_ALIAS")
+    .orNull
+val suppliedKeyPassword = providers
+    .environmentVariable("LIFE_AGENT_KEY_PASSWORD")
+    .orNull
+
 android {
     namespace = "ru.andriyshkoy.lifeagent"
     compileSdk = 36
@@ -16,12 +36,33 @@ android {
         applicationId = "ru.andriyshkoy.lifeagent"
         minSdk = 28
         targetSdk = 36
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = suppliedVersionCode ?: 1
+        versionName = suppliedVersionName ?: "0.1.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
+    val distributionSigningConfig = if (
+        suppliedKeystorePath != null &&
+        suppliedKeystorePassword != null &&
+        suppliedKeyAlias != null &&
+        suppliedKeyPassword != null
+    ) {
+        signingConfigs.create("distribution") {
+            storeFile = file(suppliedKeystorePath)
+            storePassword = suppliedKeystorePassword
+            keyAlias = suppliedKeyAlias
+            keyPassword = suppliedKeyPassword
+        }
+    } else {
+        null
+    }
+
     buildTypes {
+        debug {
+            applicationIdSuffix = ".local"
+            versionNameSuffix = "-local"
+            resValue("string", "app_name", "Life Agent Local")
+        }
         release {
             isMinifyEnabled = true
             proguardFiles(
@@ -29,9 +70,18 @@ android {
                 "proguard-rules.pro",
             )
         }
+        create("internal") {
+            initWith(getByName("release"))
+            applicationIdSuffix = ".dev"
+            versionNameSuffix = "-dev"
+            matchingFallbacks += listOf("release")
+            signingConfig = distributionSigningConfig ?: signingConfigs.getByName("debug")
+            resValue("string", "app_name", "Life Agent Dev")
+        }
     }
 
     buildFeatures {
+        buildConfig = true
         compose = true
     }
 
