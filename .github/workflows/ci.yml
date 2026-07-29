@@ -58,6 +58,7 @@ jobs:
           python scripts/validate_schemas.py
           python scripts/validate_repository.py
           bash -n infra/nginx/install-life-vhost.sh
+          bash -n infra/nginx/update-life-vhost.sh
           (
             cd android/health-probe/dist
             sha256sum --check SHA256SUMS
@@ -128,4 +129,5 @@ jobs:
               :app:lintDebug \
               :app:testDebugUnitTest \
               :app:assembleDebug \
+              :app:assembleInternal \
               :app:validateDebugScreenshotTest
