@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -25,6 +26,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
@@ -35,6 +37,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
@@ -45,6 +48,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -249,17 +253,35 @@ fun TimelineItem(
 
 @Composable
 fun TimestampSelector(
-    value: String = "Сейчас · 09:42",
+    value: String = "Сейчас",
+    timezone: String = "Часовой пояс устройства",
     onClick: () -> Unit = {},
     modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    error: String? = null,
 ) {
     Surface(
         modifier = modifier
             .fillMaxWidth()
-            .clickable(role = Role.Button, onClick = onClick),
+            .semantics(mergeDescendants = true) {
+                contentDescription = "Время события: $value. Часовой пояс: $timezone"
+                stateDescription = error ?: "Выбрано"
+            }
+            .clickable(
+                enabled = enabled,
+                role = Role.Button,
+                onClick = onClick,
+            ),
         shape = MaterialTheme.shapes.medium,
         color = MaterialTheme.colorScheme.surface,
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+        border = BorderStroke(
+            1.dp,
+            if (error == null) {
+                MaterialTheme.colorScheme.outlineVariant
+            } else {
+                MaterialTheme.colorScheme.error
+            },
+        ),
     ) {
         Row(
             modifier = Modifier.padding(horizontal = 16.dp, vertical = 15.dp),
@@ -278,10 +300,22 @@ fun TimestampSelector(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 Text(value, style = MaterialTheme.typography.bodyLarge)
+                Text(
+                    timezone,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                if (error != null) {
+                    Text(
+                        error,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
             }
             Icon(
                 imageVector = Icons.Rounded.ChevronRight,
-                contentDescription = "Изменить время",
+                contentDescription = null,
                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
@@ -295,20 +329,28 @@ fun PrimaryActionButton(
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
     icon: ImageVector? = Icons.Rounded.Check,
+    loading: Boolean = false,
 ) {
     Button(
         onClick = onClick,
         modifier = modifier
             .fillMaxWidth()
-            .height(56.dp),
-        enabled = enabled,
+            .heightIn(min = 56.dp),
+        enabled = enabled && !loading,
         shape = MaterialTheme.shapes.medium,
         colors = ButtonDefaults.buttonColors(
             containerColor = MaterialTheme.colorScheme.primary,
             contentColor = MaterialTheme.colorScheme.onPrimary,
         ),
     ) {
-        if (icon != null) {
+        if (loading) {
+            CircularProgressIndicator(
+                modifier = Modifier.size(20.dp),
+                color = MaterialTheme.colorScheme.onPrimary,
+                strokeWidth = 2.dp,
+            )
+            Spacer(Modifier.width(9.dp))
+        } else if (icon != null) {
             Icon(icon, contentDescription = null, modifier = Modifier.size(20.dp))
             Spacer(Modifier.width(9.dp))
         }
@@ -326,7 +368,7 @@ fun SecondaryActionButton(
         onClick = onClick,
         modifier = modifier
             .fillMaxWidth()
-            .height(52.dp),
+            .heightIn(min = 52.dp),
         shape = MaterialTheme.shapes.medium,
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
     ) {
@@ -345,7 +387,7 @@ fun SelectablePill(
         selected = selected,
         onClick = onClick,
         label = { Text(label) },
-        modifier = modifier.height(44.dp),
+        modifier = modifier.heightIn(min = 48.dp),
         shape = MaterialTheme.shapes.small,
         leadingIcon = if (selected) {
             {
@@ -407,17 +449,32 @@ fun DetailTopBar(
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
     trailingAction: (() -> Unit)? = null,
+    trailingActionLabel: String? = null,
+    actionsEnabled: Boolean = true,
 ) {
     TopAppBar(
         title = { Text(title, style = MaterialTheme.typography.titleLarge) },
         navigationIcon = {
-            IconButton(onClick = onBack) {
+            IconButton(
+                onClick = onBack,
+                enabled = actionsEnabled,
+            ) {
                 Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "Назад")
             }
         },
         actions = {
-            if (trailingAction != null) {
-                IconButton(onClick = trailingAction) {
+            if (trailingAction != null && trailingActionLabel != null) {
+                TextButton(
+                    onClick = trailingAction,
+                    enabled = actionsEnabled,
+                ) {
+                    Text(trailingActionLabel)
+                }
+            } else if (trailingAction != null) {
+                IconButton(
+                    onClick = trailingAction,
+                    enabled = actionsEnabled,
+                ) {
                     Icon(Icons.Rounded.MoreHoriz, contentDescription = "Ещё")
                 }
             }

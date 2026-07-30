@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://life-agent.local/schemas/notes-export.schema.json",
+  "title": "Life Agent M1 canonical notes export",
+  "description": "A minimal local notes snapshot containing logical-event current pointers and the complete canonical revision documents needed for a clean round-trip.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "format",
+    "format_version",
+    "events",
+    "revisions"
+  ],
+  "properties": {
+    "format": {
+      "const": "life-agent-notes"
+    },
+    "format_version": {
+      "const": "1.0.0"
+    },
+    "events": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/eventPointer"
+      }
+    },
+    "revisions": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/noteRevision"
+      }
+    }
+  },
+  "$defs": {
+    "uuid": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "eventPointer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "event_id",
+        "current_revision_id"
+      ],
+      "properties": {
+        "event_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "current_revision_id": {
+          "$ref": "#/$defs/uuid"
+        }
+      }
+    },
+    "noteRevision": {
+      "allOf": [
+        {
+          "$ref": "life-event.schema.json"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "note"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        }
+      ]
+    }
+  }
+}

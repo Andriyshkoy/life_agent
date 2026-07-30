@@ -13,6 +13,9 @@ enum class DemoRoute {
     CatalogMedication,
     SyncSetup,
     HealthConnect,
+    TimeZone,
+    Diagnostics,
+    Privacy,
 }
 
 enum class TopLevelDestination(val label: String) {
@@ -26,6 +29,41 @@ fun DemoRoute.topLevelDestination(): TopLevelDestination? = when (this) {
     DemoRoute.Catalogs -> TopLevelDestination.Catalogs
     DemoRoute.Settings -> TopLevelDestination.Settings
     else -> null
+}
+
+fun DemoRoute.isCaptureRoute(): Boolean = when (this) {
+    DemoRoute.CaptureFood,
+    DemoRoute.CaptureWellbeing,
+    DemoRoute.CaptureMedication,
+    DemoRoute.CaptureNote,
+    -> true
+
+    else -> false
+}
+
+fun DemoRoute.backTarget(): DemoRoute = when (this) {
+    DemoRoute.CaptureFood,
+    DemoRoute.CaptureWellbeing,
+    DemoRoute.CaptureMedication,
+    DemoRoute.CaptureNote,
+    -> DemoRoute.Add
+
+    DemoRoute.CatalogFood,
+    DemoRoute.CatalogWellbeing,
+    DemoRoute.CatalogMedication,
+    -> DemoRoute.Catalogs
+
+    DemoRoute.SyncSetup,
+    DemoRoute.HealthConnect,
+    DemoRoute.TimeZone,
+    DemoRoute.Diagnostics,
+    DemoRoute.Privacy,
+    -> DemoRoute.Settings
+
+    DemoRoute.Add,
+    DemoRoute.Catalogs,
+    DemoRoute.Settings,
+    -> DemoRoute.Add
 }
 
 enum class MealType(val label: String) {

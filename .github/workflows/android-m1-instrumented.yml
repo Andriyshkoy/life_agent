@@ -1,0 +1,220 @@
+name: android-m1-instrumented
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - develop
+  pull_request:
+    branches:
+      - main
+      - develop
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-m1-instrumented-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  android-m1-instrumented:
+    name: android-m1-instrumented
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Validate Gradle Wrapper
+        uses: gradle/actions/wrapper-validation@3f131e8634966bd73d06cc69884922b02e6faf92 # v6.2.0
+
+      - name: Require KVM acceleration
+        run: |
+          if [ ! -c /dev/kvm ]; then
+            echo "This test job requires a GitHub runner with /dev/kvm."
+            exit 1
+          fi
+          kvm_group="$(stat --format='%g' /dev/kvm)"
+          echo "KVM_GROUP=$kvm_group" >> "$GITHUB_ENV"
+
+      - name: Build pinned Android toolchain images
+        run: |
+          docker build \
+            --file android/life-agent/Dockerfile.build \
+            --tag life-agent-product-builder:ci \
+            android/life-agent
+          docker build \
+            --file android/life-agent/Dockerfile.instrumented \
+            --tag life-agent-product-instrumented:ci \
+            android/life-agent
+
+      - name: Run M1 tests on an API 35 managed device
+        run: |
+          mkdir -p \
+            "$RUNNER_TEMP/life-agent-android-user-home" \
+            "$RUNNER_TEMP/life-agent-gradle-home"
+
+          docker run --rm \
+            --device=/dev/kvm \
+            --group-add "$KVM_GROUP" \
+            --shm-size=2g \
+            --user "$(id -u):$(id -g)" \
+            --env ANDROID_USER_HOME=/tmp/android-user-home \
+            --env GRADLE_USER_HOME=/tmp/gradle-home \
+            --volume "$RUNNER_TEMP/life-agent-android-user-home:/tmp/android-user-home" \
+            --volume "$RUNNER_TEMP/life-agent-gradle-home:/tmp/gradle-home" \
+            --volume "$GITHUB_WORKSPACE/android/life-agent:/workspace" \
+            life-agent-product-instrumented:ci \
+            ./gradlew --no-daemon --stacktrace \
+              :app:m1Api35DebugAndroidTest \
+              -Pandroid.testoptions.manageddevices.emulator.gpu=swiftshader_indirect
+
+      - name: Run standalone API 35 cold-start acceptance
+        run: |
+          mkdir -p \
+            "$RUNNER_TEMP/life-agent-cold-android-user-home" \
+            "$RUNNER_TEMP/life-agent-gradle-home" \
+            "$GITHUB_WORKSPACE/android/life-agent/app/build/outputs/m1-cold-start"
+
+          docker run --rm --interactive \
+            --device=/dev/kvm \
+            --group-add "$KVM_GROUP" \
+            --shm-size=2g \
+            --user "$(id -u):$(id -g)" \
+            --env ANDROID_SERIAL=emulator-5554 \
+            --env ANDROID_USER_HOME=/tmp/android-user-home \
+            --env ANDROID_EMULATOR_HOME=/tmp/android-user-home \
+            --env ANDROID_AVD_HOME=/tmp/android-user-home/avd \
+            --env GRADLE_USER_HOME=/tmp/gradle-home \
+            --volume \
+              "$RUNNER_TEMP/life-agent-cold-android-user-home:/tmp/android-user-home" \
+            --volume "$RUNNER_TEMP/life-agent-gradle-home:/tmp/gradle-home" \
+            --volume "$GITHUB_WORKSPACE/android/life-agent:/workspace" \
+            --mount \
+              "type=bind,source=$GITHUB_WORKSPACE/scripts/run_android_m1_cold_start_smoke.sh,target=/runner/run-cold-smoke.sh,readonly" \
+            --workdir /workspace \
+            life-agent-product-instrumented:ci \
+            bash -Eeuo pipefail -s <<'COLD_CI'
+          readonly avd_name=m1_cold_api35
+          readonly diagnostics=/workspace/app/build/outputs/m1-cold-start
+          readonly debug_apk=/workspace/app/build/outputs/apk/debug/app-debug.apk
+          readonly test_apk=/workspace/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
+          adb_target=(adb -s "$ANDROID_SERIAL")
+          emulator_pid=
+
+          mkdir -p "$ANDROID_AVD_HOME" "$diagnostics"
+
+          test -c /dev/kvm
+          test -r /dev/kvm
+          test -w /dev/kvm
+          timeout 15s emulator -accel-check > "$diagnostics/accel-check.txt"
+
+          timeout --signal=TERM --kill-after=30s 15m \
+            ./gradlew --no-daemon --stacktrace \
+              :app:assembleDebug \
+              :app:assembleDebugAndroidTest
+          test -s "$debug_apk"
+          test -s "$test_apk"
+
+          timeout 2m avdmanager create avd \
+            --force \
+            --name "$avd_name" \
+            --package 'system-images;android-35;aosp_atd;x86_64' \
+            <<< 'no'
+
+          cleanup() {
+            local status=$?
+            trap - EXIT INT TERM
+            set +e
+
+            if [[ "$status" -ne 0 ]]; then
+              timeout 15s "${adb_target[@]}" logcat -d -v threadtime \
+                > "$diagnostics/failure-logcat.txt" 2>&1
+              timeout 15s "${adb_target[@]}" exec-out screencap -p \
+                > "$diagnostics/failure-screen.png" 2>/dev/null
+              tail -n 200 "$diagnostics/emulator.log" >&2
+            fi
+
+            timeout 10s "${adb_target[@]}" emu kill >/dev/null 2>&1
+            if [[ -n "$emulator_pid" ]]; then
+              for _ in {1..20}; do
+                kill -0 "$emulator_pid" 2>/dev/null || break
+                sleep 0.5
+              done
+              kill "$emulator_pid" >/dev/null 2>&1
+              sleep 1
+              kill -KILL "$emulator_pid" >/dev/null 2>&1
+              wait "$emulator_pid" >/dev/null 2>&1
+            fi
+            timeout 5s adb kill-server >/dev/null 2>&1
+            exit "$status"
+          }
+          trap cleanup EXIT
+          trap 'exit 130' INT
+          trap 'exit 143' TERM
+
+          emulator \
+            -avd "$avd_name" \
+            -port 5554 \
+            -no-window \
+            -no-audio \
+            -no-boot-anim \
+            -no-snapshot \
+            -wipe-data \
+            -gpu swiftshader_indirect \
+            -accel on \
+            -no-metrics \
+            > "$diagnostics/emulator.log" 2>&1 &
+          emulator_pid=$!
+
+          timeout 120s "${adb_target[@]}" wait-for-device
+          boot_deadline=$((SECONDS + 240))
+          while true; do
+            if boot_completed=$(
+              timeout 5s "${adb_target[@]}" shell getprop sys.boot_completed 2>/dev/null
+            ) && [[ ${boot_completed//$'\r'/} == 1 ]]; then
+              break
+            fi
+            if ! kill -0 "$emulator_pid" 2>/dev/null; then
+              echo "Emulator exited before boot completed." >&2
+              exit 1
+            fi
+            if (( SECONDS >= boot_deadline )); then
+              echo "Emulator did not complete boot within 240 seconds." >&2
+              exit 1
+            fi
+            sleep 1
+          done
+
+          timeout 15s "${adb_target[@]}" shell input keyevent 82 >/dev/null
+          for scale in \
+            window_animation_scale \
+            transition_animation_scale \
+            animator_duration_scale; do
+            timeout 15s \
+              "${adb_target[@]}" shell settings put global "$scale" 0
+          done
+
+          timeout --signal=TERM --kill-after=30s 25m \
+            bash /runner/run-cold-smoke.sh \
+              --destructive-local-test \
+              "$debug_apk" \
+              "$test_apk"
+          COLD_CI
+
+      - name: Preserve instrumented diagnostics on failure
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: android-m1-instrumented-diagnostics-${{ github.run_id }}
+          path: |
+            android/life-agent/app/build/outputs/androidTest-results/
+            android/life-agent/app/build/outputs/managed_device_android_test_additional_output/
+            android/life-agent/app/build/outputs/m1-cold-start/
+            android/life-agent/app/build/reports/androidTests/
+          if-no-files-found: ignore
+          retention-days: 7

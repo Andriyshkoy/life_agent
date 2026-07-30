@@ -23,7 +23,6 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.Check
-import androidx.compose.material.icons.rounded.EditNote
 import androidx.compose.material.icons.rounded.Medication
 import androidx.compose.material.icons.rounded.Restaurant
 import androidx.compose.material.icons.rounded.Search
@@ -58,20 +57,33 @@ import ru.andriyshkoy.lifeagent.ui.components.SelectablePill
 import ru.andriyshkoy.lifeagent.ui.components.TimestampSelector
 
 @Composable
-private fun CaptureScaffold(
+internal fun CaptureScaffold(
     title: String,
     saveLabel: String,
     saveEnabled: Boolean,
     onBack: () -> Unit,
     onSave: () -> Unit,
     modifier: Modifier = Modifier,
+    onCancel: (() -> Unit)? = null,
+    saving: Boolean = false,
     content: @Composable (PaddingValues) -> Unit,
 ) {
     Scaffold(
         modifier = modifier.fillMaxSize(),
-        topBar = { DetailTopBar(title = title, onBack = onBack) },
+        topBar = {
+            DetailTopBar(
+                title = title,
+                onBack = onBack,
+                trailingAction = onCancel,
+                trailingActionLabel = if (onCancel == null) null else "Отмена",
+                actionsEnabled = !saving,
+            )
+        },
         bottomBar = {
             Surface(
+                modifier = Modifier
+                    .navigationBarsPadding()
+                    .imePadding(),
                 color = MaterialTheme.colorScheme.surface,
                 tonalElevation = 4.dp,
                 shadowElevation = 8.dp,
@@ -80,69 +92,14 @@ private fun CaptureScaffold(
                     text = saveLabel,
                     onClick = onSave,
                     enabled = saveEnabled,
-                    modifier = Modifier
-                        .navigationBarsPadding()
-                        .imePadding()
-                        .padding(horizontal = 20.dp, vertical = 12.dp),
+                    loading = saving,
+                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp),
                 )
             }
         },
         containerColor = MaterialTheme.colorScheme.background,
         content = content,
     )
-}
-
-@Composable
-fun NoteCaptureScreen(
-    onBack: () -> Unit,
-    onSave: () -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    var note by remember { mutableStateOf("") }
-
-    CaptureScaffold(
-        title = "Новая заметка",
-        saveLabel = "Сохранить заметку",
-        saveEnabled = note.isNotBlank(),
-        onBack = onBack,
-        onSave = onSave,
-        modifier = modifier,
-    ) { padding ->
-        LazyColumn(
-            modifier = Modifier
-                .padding(padding)
-                .fillMaxSize()
-                .widthIn(max = 680.dp)
-                .padding(horizontal = 20.dp),
-            contentPadding = PaddingValues(top = 12.dp, bottom = 24.dp),
-            verticalArrangement = Arrangement.spacedBy(18.dp),
-        ) {
-            item {
-                CaptureIntro(
-                    icon = Icons.Rounded.EditNote,
-                    title = "Что происходит?",
-                    subtitle = "Короткая мысль, факт или важный контекст дня.",
-                )
-            }
-            item {
-                OutlinedTextField(
-                    value = note,
-                    onValueChange = { note = it },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(220.dp),
-                    placeholder = { Text("Например: после прогулки стало заметно легче сосредоточиться") },
-                    label = { Text("Текст заметки") },
-                    shape = MaterialTheme.shapes.medium,
-                    maxLines = 10,
-                )
-            }
-            item { TimestampSelector() }
-            item {
-                HelperText("Заголовок не нужен — заметка сохранится как единое событие.")
-            }
-        }
-    }
 }
 
 @Composable
@@ -247,8 +204,9 @@ fun FoodCaptureScreen(
                         value = "г",
                         onValueChange = {},
                         modifier = Modifier.width(104.dp),
-                        label = { Text("Единица") },
+                        label = { Text("Единица · preview") },
                         readOnly = true,
+                        enabled = false,
                         singleLine = true,
                         shape = MaterialTheme.shapes.medium,
                     )
@@ -268,7 +226,9 @@ fun FoodCaptureScreen(
                 }
             }
             item { TimestampSelector() }
-            item { HelperText("КБЖУ сохранятся вместе с событием и не изменятся задним числом.") }
+            item {
+                HelperText("Предпросмотр M1: питание и КБЖУ пока не сохраняются.")
+            }
         }
     }
 }
@@ -367,6 +327,9 @@ fun WellbeingCaptureScreen(
                 )
             }
             item { TimestampSelector() }
+            item {
+                HelperText("Предпросмотр M1: самочувствие пока не сохраняется.")
+            }
         }
     }
 }
@@ -406,7 +369,7 @@ fun MedicationCaptureScreen(
                 )
             }
             item {
-                SectionTitle("Выбери из списка", action = "Изменить список", onAction = {})
+                SectionTitle("Выбери из списка")
                 Spacer(Modifier.height(10.dp))
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     listOf(
@@ -447,12 +410,15 @@ fun MedicationCaptureScreen(
                 )
             }
             item { TimestampSelector() }
+            item {
+                HelperText("Предпросмотр M1: приём пока не сохраняется.")
+            }
         }
     }
 }
 
 @Composable
-private fun CaptureIntro(
+internal fun CaptureIntro(
     icon: ImageVector,
     title: String,
     subtitle: String,
@@ -549,7 +515,7 @@ private fun SelectionCard(
 }
 
 @Composable
-private fun HelperText(text: String) {
+internal fun HelperText(text: String) {
     Text(
         text = text,
         style = MaterialTheme.typography.bodyMedium,

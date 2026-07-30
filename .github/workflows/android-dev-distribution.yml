@@ -8,7 +8,6 @@ on:
       - completed
     branches:
       - develop
-  workflow_dispatch:
 
 permissions:
   actions: read
@@ -22,17 +21,16 @@ jobs:
   publish:
     name: publish-dev-apk
     if: >-
-      github.event_name == 'workflow_dispatch' ||
-      github.event.workflow_run.conclusion == 'success'
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'develop' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     environment: dev-distribution
     env:
-      SOURCE_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+      SOURCE_SHA: ${{ github.event.workflow_run.head_sha }}
       SOURCE_RUN_ID: ${{ github.event.workflow_run.id }}
-      LIFE_AGENT_KEYSTORE_PASSWORD: ${{ secrets.LIFE_AGENT_DEV_KEYSTORE_PASSWORD }}
-      LIFE_AGENT_KEY_PASSWORD: ${{ secrets.LIFE_AGENT_DEV_KEYSTORE_PASSWORD }}
-      LIFE_AGENT_KEY_ALIAS: life-agent-dev
     steps:
       - name: Check out the verified develop revision
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -40,9 +38,30 @@ jobs:
           ref: ${{ env.SOURCE_SHA }}
           persist-credentials: false
 
+      - name: Build pinned Android toolchain image
+        run: |
+          docker build \
+            --file android/life-agent/Dockerfile.build \
+            --tag life-agent-product-builder:distribution \
+            android/life-agent
+
+      - name: Download verified unsigned APK
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          test -n "$SOURCE_RUN_ID"
+          install -d -m 0700 "$RUNNER_TEMP/unsigned"
+          gh run download "$SOURCE_RUN_ID" \
+            --repo "$GITHUB_REPOSITORY" \
+            --name life-agent-internal-unsigned \
+            --dir "$RUNNER_TEMP/unsigned"
+
+          test -s "$RUNNER_TEMP/unsigned/app-internal-unsigned.apk"
+
       - name: Prepare signing material
         env:
           KEYSTORE_BASE64: ${{ secrets.LIFE_AGENT_DEV_KEYSTORE_BASE64 }}
+          LIFE_AGENT_KEYSTORE_PASSWORD: ${{ secrets.LIFE_AGENT_DEV_KEYSTORE_PASSWORD }}
         run: |
           if [ -z "$KEYSTORE_BASE64" ] || [ -z "$LIFE_AGENT_KEYSTORE_PASSWORD" ]; then
             echo "Dev distribution signing secrets are not configured."
@@ -58,41 +77,11 @@ jobs:
             base64 --decode > "$RUNNER_TEMP/life-agent-signing/life-agent-dev.p12"
           chmod 0600 "$RUNNER_TEMP/life-agent-signing/life-agent-dev.p12"
 
-      - name: Build pinned Android toolchain image
-        run: |
-          docker build \
-            --file android/life-agent/Dockerfile.build \
-            --tag life-agent-product-builder:distribution \
-            android/life-agent
-
-      - name: Download verified unsigned APK
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          if [ -z "$SOURCE_RUN_ID" ]; then
-            SOURCE_RUN_ID="$(
-              gh run list \
-                --repo "$GITHUB_REPOSITORY" \
-                --workflow ci \
-                --branch develop \
-                --event push \
-                --status success \
-                --limit 1 \
-                --json databaseId \
-                --jq '.[0].databaseId'
-            )"
-          fi
-
-          test -n "$SOURCE_RUN_ID"
-          install -d -m 0700 "$RUNNER_TEMP/unsigned"
-          gh run download "$SOURCE_RUN_ID" \
-            --repo "$GITHUB_REPOSITORY" \
-            --name life-agent-internal-unsigned \
-            --dir "$RUNNER_TEMP/unsigned"
-
-          test -s "$RUNNER_TEMP/unsigned/app-internal-unsigned.apk"
-
       - name: Sign and verify APK
+        env:
+          LIFE_AGENT_KEYSTORE_PASSWORD: ${{ secrets.LIFE_AGENT_DEV_KEYSTORE_PASSWORD }}
+          LIFE_AGENT_KEY_PASSWORD: ${{ secrets.LIFE_AGENT_DEV_KEYSTORE_PASSWORD }}
+          LIFE_AGENT_KEY_ALIAS: life-agent-dev
         run: |
           install -d -m 0700 "$RUNNER_TEMP/distribution"
 
@@ -125,6 +114,17 @@ jobs:
               --verbose \
               /distribution/life-agent-dev.apk
 
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            --volume "$RUNNER_TEMP/distribution:/distribution:ro" \
+            life-agent-product-builder:distribution \
+            /opt/android-sdk/build-tools/36.0.0/zipalign \
+              -c \
+              -P 16 \
+              -v \
+              4 \
+              /distribution/life-agent-dev.apk
+
           package_line="$(
             docker run --rm \
               --user "$(id -u):$(id -g)" \
@@ -134,14 +134,26 @@ jobs:
                 dump \
                 badging \
                 /distribution/life-agent-dev.apk |
-              head -1
+              sed -n '1p'
+          )"
+          LIFE_AGENT_PACKAGE_NAME="$(
+            printf '%s\n' "$package_line" |
+              sed -n "s/^package: name='\\([^']*\\)'.*/\\1/p"
           )"
           LIFE_AGENT_VERSION_NAME="$(
             printf '%s\n' "$package_line" |
               sed -n "s/^package: .*versionName='\\([^']*\\)'.*/\\1/p"
           )"
 
-          test -n "$LIFE_AGENT_VERSION_NAME"
+          if [ "$LIFE_AGENT_PACKAGE_NAME" != "ru.andriyshkoy.lifeagent.dev" ]; then
+            echo "Unexpected APK package: ${LIFE_AGENT_PACKAGE_NAME:-missing}."
+            exit 1
+          fi
+          if [ -z "$LIFE_AGENT_VERSION_NAME" ] ||
+            [[ "$LIFE_AGENT_VERSION_NAME" != *-dev ]]; then
+            echo "Unexpected APK versionName: ${LIFE_AGENT_VERSION_NAME:-missing}."
+            exit 1
+          fi
           echo "LIFE_AGENT_VERSION_NAME=$LIFE_AGENT_VERSION_NAME" >> "$GITHUB_ENV"
           sha256sum "$RUNNER_TEMP/distribution/life-agent-dev.apk"
 
