@@ -10,6 +10,9 @@ on:
       - main
       - develop
 
+# Keep this workflow free of path filters so every protected branch receives
+# the same required checks, including when shared CI or dependency files change.
+
 permissions:
   contents: read
 
@@ -73,6 +76,205 @@ jobs:
             cd android/health-probe/dist
             sha256sum --check SHA256SUMS
           )
+
+  backend-quality:
+    name: backend-quality
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: backend
+    env:
+      UV_LOCKED: "true"
+      UV_NO_PROGRESS: "true"
+      UV_PYTHON_DOWNLOADS: "never"
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Set up locked Python dependency manager
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: "0.11.26"
+          python-version: "3.12"
+          working-directory: backend
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Synchronize locked backend environment
+        run: uv sync --locked --all-groups
+
+      - name: Check backend formatting
+        run: uv run --locked ruff format --check .
+
+      - name: Lint backend
+        run: uv run --locked ruff check .
+
+      - name: Type-check backend
+        run: uv run --locked mypy
+
+      - name: Run backend tests without PostgreSQL
+        run: uv run --locked pytest -q -m "not postgres"
+
+      - name: Compile backend Python sources
+        run: uv run --locked python -m compileall -q src tests migrations
+
+  backend-postgres:
+    name: backend-postgres
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      UV_LOCKED: "true"
+      UV_NO_PROGRESS: "true"
+      UV_PYTHON_DOWNLOADS: "never"
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Set up locked Python dependency manager
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: "0.11.26"
+          python-version: "3.12"
+          working-directory: backend
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Synchronize locked backend environment
+        working-directory: backend
+        run: uv sync --locked --all-groups
+
+      - name: Run hermetic PostgreSQL 17 integration
+        run: backend/scripts/run_postgres_integration.sh
+
+  backend-container:
+    name: backend-container
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Build pinned backend runtime image
+        run: |
+          docker build \
+            --file backend/Dockerfile \
+            --tag life-agent-backend:ci \
+            backend
+
+      - name: Smoke-test liveness and pre-migration readiness
+        run: |
+          set -euo pipefail
+
+          container_name=life-agent-backend-ci
+          ready_body="$RUNNER_TEMP/life-agent-backend-ready.json"
+
+          derive_ci_hmac_key() {
+            printf 'life-agent-ci-only-%s' "$1" |
+              openssl dgst -sha256 -binary |
+              openssl base64 -A |
+              tr '+/' '-_' |
+              tr -d '='
+          }
+          access_token_hmac_key="$(derive_ci_hmac_key access-token)"
+          refresh_token_hmac_key="$(derive_ci_hmac_key refresh-token)"
+          enrollment_code_hmac_key="$(derive_ci_hmac_key enrollment-code)"
+          cursor_hmac_key="$(derive_ci_hmac_key cursor)"
+
+          cleanup() {
+            status=$?
+            trap - EXIT
+            if [ "$status" -ne 0 ]; then
+              docker logs "$container_name" || true
+            fi
+            docker rm --force "$container_name" >/dev/null 2>&1 || true
+            exit "$status"
+          }
+          trap cleanup EXIT
+
+          docker run \
+            --detach \
+            --name "$container_name" \
+            --read-only \
+            --tmpfs /tmp:rw,noexec,nosuid,nodev,size=16m \
+            --cap-drop ALL \
+            --security-opt no-new-privileges:true \
+            --publish 127.0.0.1::8080 \
+            --env LIFE_AGENT_ENVIRONMENT=test \
+            --env LIFE_AGENT_DATABASE_URL=postgresql+asyncpg://life_agent_ci:ci-only@127.0.0.1:9/life_agent_ci \
+            --env LIFE_AGENT_ACCESS_TOKEN_HMAC_KEY="$access_token_hmac_key" \
+            --env LIFE_AGENT_REFRESH_TOKEN_HMAC_KEY="$refresh_token_hmac_key" \
+            --env LIFE_AGENT_ENROLLMENT_CODE_HMAC_KEY="$enrollment_code_hmac_key" \
+            --env LIFE_AGENT_CURSOR_HMAC_KEY="$cursor_hmac_key" \
+            life-agent-backend:ci
+
+          published_endpoint="$(docker port "$container_name" 8080/tcp)"
+          backend_port="${published_endpoint##*:}"
+          if [[ ! "$backend_port" =~ ^[0-9]{1,5}$ ]]; then
+            echo "Failed to resolve the backend smoke-test port."
+            exit 1
+          fi
+
+          health_body=
+          for _ in $(seq 1 30); do
+            if health_body="$(
+              curl \
+                --fail \
+                --silent \
+                --max-time 2 \
+                "http://127.0.0.1:${backend_port}/healthz"
+            )"; then
+              break
+            fi
+            if [ "$(docker inspect --format '{{.State.Running}}' "$container_name")" != true ]; then
+              echo "Backend container exited during startup."
+              exit 1
+            fi
+            sleep 1
+          done
+
+          if [ "$health_body" != '{"status":"ok"}' ]; then
+            echo "Unexpected liveness response."
+            exit 1
+          fi
+          if [ "$(docker inspect --format '{{.Config.User}}' "$container_name")" != 10001:10001 ]; then
+            echo "Backend runtime image is not configured for its unprivileged user."
+            exit 1
+          fi
+
+          ready_status="$(
+            curl \
+              --silent \
+              --show-error \
+              --max-time 3 \
+              --output "$ready_body" \
+              --write-out '%{http_code}' \
+              "http://127.0.0.1:${backend_port}/readyz"
+          )"
+          if [ "$ready_status" != 503 ]; then
+            echo "Backend reported ready without its database or migrations."
+            exit 1
+          fi
+          if [ "$(tr -d '\r\n' < "$ready_body")" != '{"status":"not_ready"}' ]; then
+            echo "Unexpected pre-migration readiness response."
+            exit 1
+          fi
 
   android-probe:
     name: android-probe
