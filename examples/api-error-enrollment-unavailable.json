@@ -1,0 +1,10 @@
+{
+  "protocol_version": "1.0.0",
+  "message_type": "api_error",
+  "request_id": "81000000-0000-4000-8000-000000000001",
+  "error_code": "enrollment_unavailable",
+  "http_status": 401,
+  "retryable": false,
+  "field_errors": [],
+  "server_time": "2030-01-01T00:00:01Z"
+}

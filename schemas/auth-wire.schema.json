@@ -1,0 +1,354 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://life-agent.local/schemas/auth-wire.schema.json",
+  "title": "Life Agent device authentication wire contracts",
+  "description": "Closed v1 contracts for one-time enrollment claim, fail-closed credential rotation and idempotent device-session revocation. Enrollment codes are created only by a local server CLI; there is no network admin endpoint. Malformed JSON, wrong body field types, or enrollment/refresh credentials outside their exact JSON-body lexical grammar are request_schema_invalid before lookup. Bearer Authorization is deliberately different: missing, duplicate, wrong scheme/spacing, or access-token text outside accessToken grammar returns neutral 401 credential_unavailable with fixed WWW-Authenticate: Bearer and performs no credential lookup; a well-formed unavailable access token returns the same wire response after keyed lookup. A neutral credential failure does not itself revoke a current family. Internal refresh-reuse revocation requires a retained exact successful-spend proof. Token-family tombstones and any replay HMAC key epochs they reference are retained for at least 30 days and at least as long as every live revoke replay record.",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/enrollmentClaimRequest"
+    },
+    {
+      "$ref": "#/$defs/enrollmentClaimResponse"
+    },
+    {
+      "$ref": "#/$defs/refreshRequest"
+    },
+    {
+      "$ref": "#/$defs/refreshResponse"
+    },
+    {
+      "$ref": "#/$defs/revokeRequest"
+    },
+    {
+      "$ref": "#/$defs/revokeResponse"
+    }
+  ],
+  "$defs": {
+    "canonicalServerInstant": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^(?!0000)[0-9]{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12][0-9]|3[01])T(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](?:\\.[0-9]{3})?Z(?![\\s\\S])",
+      "description": "Canonical server instant in UTC only: uppercase T and Z, valid 24-hour hh:mm:ss, and either no fractional seconds or exactly three decimal digits. Calendar validity is additionally enforced by date-time format validation."
+    },
+    "uuid": {
+      "type": "string",
+      "format": "uuid",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$(?![\\s\\S])",
+      "description": "Lowercase canonical RFC UUID text."
+    },
+    "accessToken": {
+      "type": "string",
+      "minLength": 47,
+      "maxLength": 47,
+      "pattern": "^laa_[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048](?![\\s\\S])",
+      "description": "laa_ followed by canonical unpadded base64url for exactly 32 server-generated random bytes. In bearer Authorization, missing/duplicate header, wrong scheme or spacing, or a value outside this grammar returns neutral 401 credential_unavailable with WWW-Authenticate: Bearer and MUST NOT be looked up. A well-formed unknown, expired, revoked or superseded access token returns the same credential_unavailable after keyed lookup and MUST NOT revoke the current family. Access failure never invokes refresh-reuse detection. The server stores only HMAC(lookup_key, \"access\\u0000\" || token); access and refresh domains and keys are distinct."
+    },
+    "refreshToken": {
+      "type": "string",
+      "minLength": 47,
+      "maxLength": 47,
+      "pattern": "^lar_[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048](?![\\s\\S])",
+      "description": "lar_ followed by canonical unpadded base64url for exactly 32 server-generated random bytes. A value outside this grammar is request_schema_invalid and MUST NOT be looked up. Every well-formed unavailable refresh token returns credential_unavailable externally. An unknown, expired, revoked or otherwise inactive token with no retained successful-spend proof MUST NOT revoke a current family. Only an exact lookup match to a retained record proving that this refresh token was spent by a successfully committed refresh is refresh reuse and atomically revokes that token's current family internally; the external response remains credential_unavailable. The server stores only HMAC(lookup_key, \"refresh\\u0000\" || token); the access and refresh domains and keys MUST be distinct."
+    },
+    "enrollmentCode": {
+      "type": "string",
+      "minLength": 34,
+      "maxLength": 34,
+      "pattern": "^[A-HJ-NP-Z2-9]{4}(?:-[A-HJ-NP-Z2-9]{4}){6}(?![\\s\\S])",
+      "description": "Exactly 28 uniformly sampled base32 symbols (140 bits) from a CSPRNG, grouped only for entry. A value outside this exact lexical grammar is request_schema_invalid and MUST NOT be looked up. Server policy for well-formed values: lookup HMAC only, TTL no more than 10 minutes, at most five failed attempts per code, and additional requester/global rate limits. After a code passes HMAC, TTL and attempt validation, it is atomically consumed before active-device and replacement-authorization policy is evaluated. Therefore active_device_exists or a disallowed replacement still consumes the validated code, and every retry requires a newly issued code. Well-formed unknown, expired, exhausted and already consumed codes receive the same enrollment_unavailable response."
+    },
+    "tokenPair": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "token_type",
+        "access_token",
+        "access_expires_at",
+        "refresh_token",
+        "refresh_expires_at",
+        "family_expires_at",
+        "generation"
+      ],
+      "properties": {
+        "token_type": {
+          "const": "Bearer"
+        },
+        "access_token": {
+          "$ref": "#/$defs/accessToken"
+        },
+        "access_expires_at": {
+          "$ref": "#/$defs/canonicalServerInstant",
+          "description": "At most 15 minutes after this response server_time."
+        },
+        "refresh_token": {
+          "$ref": "#/$defs/refreshToken"
+        },
+        "refresh_expires_at": {
+          "$ref": "#/$defs/canonicalServerInstant",
+          "description": "At most 30 days after this response server_time and never after family_expires_at."
+        },
+        "family_expires_at": {
+          "$ref": "#/$defs/canonicalServerInstant",
+          "description": "Stable absolute family deadline, at most 90 days after initial enrollment. Rotation never extends it."
+        },
+        "generation": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        }
+      }
+    },
+    "enrollmentClaimRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Processing order is lexical schema validation, code HMAC/TTL/attempt validation, atomic code consumption, then active-device and replacement policy. Once validation reaches atomic consumption, success, active_device_exists and disallowed replacement outcomes are all terminal for that code; retry requires a newly authorized code.",
+      "required": [
+        "protocol_version",
+        "message_type",
+        "request_id",
+        "enrollment_code",
+        "installation_id",
+        "local_owner_id",
+        "replace_active_device"
+      ],
+      "properties": {
+        "protocol_version": {
+          "const": "1.0.0"
+        },
+        "message_type": {
+          "const": "enrollment_claim_request"
+        },
+        "request_id": {
+          "$ref": "#/$defs/uuid",
+          "description": "Correlation only. A lost successful response is not replayed and requires a newly authorized replacement enrollment."
+        },
+        "enrollment_code": {
+          "$ref": "#/$defs/enrollmentCode"
+        },
+        "installation_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "local_owner_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "replace_active_device": {
+          "type": "boolean",
+          "description": "False can never evict an active device. True succeeds only when the code was issued with replacement permission. A code that passes HMAC/TTL/attempt validation is atomically consumed before this policy check: active_device_exists, replace_active_device=false against an active device, or replace_active_device=true without code authorization still consumes it. Retrying any such outcome requires a new code."
+        }
+      }
+    },
+    "enrollmentClaimResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "The server-person plus installation_id and local_owner_id maps to one stable device_id for the lifetime of that local identity. Re-enrollment of the known exact tuple reuses device_id and replaces or rotates only its credential family. A new device_id is issued only for a genuinely new installation/owner tuple under an authorized replacement. Reusing a known installation with another owner or a known owner with another installation fails closed as neutral enrollment_unavailable.",
+      "required": [
+        "protocol_version",
+        "message_type",
+        "request_id",
+        "installation_id",
+        "local_owner_id",
+        "device_id",
+        "person_id",
+        "credentials",
+        "bootstrap_required",
+        "server_time"
+      ],
+      "properties": {
+        "protocol_version": {
+          "const": "1.0.0"
+        },
+        "message_type": {
+          "const": "enrollment_claim_response"
+        },
+        "request_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "installation_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "local_owner_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "device_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "person_id": {
+          "$ref": "#/$defs/uuid",
+          "description": "Opaque server-issued enrichment matching Android server_person_id. The backend derives the authenticated person from the token and never accepts a client-selected person or subject."
+        },
+        "credentials": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/tokenPair"
+            },
+            {
+              "properties": {
+                "generation": {
+                  "const": 1
+                }
+              }
+            }
+          ]
+        },
+        "bootstrap_required": {
+          "const": true
+        },
+        "server_time": {
+          "$ref": "#/$defs/canonicalServerInstant"
+        }
+      }
+    },
+    "refreshRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "The presented device_id, generation and refresh_token MUST exactly equal the active predecessor credential tuple already stored for this family. Every lexically well-formed unavailable tuple returns only credential_unavailable. Unknown, expired, revoked or inactive tuples without retained successful-spend proof do not revoke a current family. A tuple whose refresh token exactly matches a retained record proving successful prior refresh spend triggers internal family revocation as detected refresh reuse, while returning the same credential_unavailable. Success atomically marks the predecessor as successfully spent before issuing its exact successor; refresh is intentionally not replayable.",
+      "required": [
+        "protocol_version",
+        "message_type",
+        "request_id",
+        "device_id",
+        "generation",
+        "refresh_token"
+      ],
+      "properties": {
+        "protocol_version": {
+          "const": "1.0.0"
+        },
+        "message_type": {
+          "const": "refresh_request"
+        },
+        "request_id": {
+          "$ref": "#/$defs/uuid",
+          "description": "Correlation only. It does not make refresh idempotent."
+        },
+        "device_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "generation": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740990,
+          "description": "Generation of the presented active refresh credential. It must equal the stored predecessor generation used by refresh_token and device_id."
+        },
+        "refresh_token": {
+          "$ref": "#/$defs/refreshToken",
+          "description": "The exact refresh token from the active predecessor token pair; it is inseparable from the request device_id and generation."
+        }
+      }
+    },
+    "refreshResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "protocol_version",
+        "message_type",
+        "request_id",
+        "device_id",
+        "credentials",
+        "server_time"
+      ],
+      "properties": {
+        "protocol_version": {
+          "const": "1.0.0"
+        },
+        "message_type": {
+          "const": "refresh_response"
+        },
+        "request_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "device_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "credentials": {
+          "$ref": "#/$defs/tokenPair"
+        },
+        "server_time": {
+          "$ref": "#/$defs/canonicalServerInstant"
+        }
+      },
+      "description": "Success atomically records the presented refresh lookup hash as spent by this committed refresh and issues generation + 1 for the same device, with family_expires_at byte-equal to the predecessor value. The successor access_token and refresh_token are mutually distinct by token domain and each MUST differ from every access or refresh token previously issued in the family, not only from the presented refresh token. A later exact match to that retained successful-spend record revokes the current family internally as refresh reuse, while the external response remains credential_unavailable. Unknown or expired refresh tokens and old access tokens, including delayed requests, do not trigger that revocation. No successful refresh response is replayed."
+    },
+    "revokeRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "A new revocation attempt MUST present the latest active token-pair tuple. Replay lookup is scoped by endpoint, protocol, retained internal credential family, internal device and request_id. Only a resolved retained tombstone may replay after family inactivity. Exact retained raw-body fingerprint returns the frozen receipt before activity check; otherwise the credential is authenticated. Unknown well-formed credentials without a retained family/device tombstone return credential_unavailable and are never frozen. Only an active authenticated same-namespace request may produce request_id_collision for changed bytes, and collision/idempotency errors never overwrite or create a replay row.",
+      "required": [
+        "protocol_version",
+        "message_type",
+        "request_id",
+        "device_id",
+        "generation",
+        "refresh_token"
+      ],
+      "properties": {
+        "protocol_version": {
+          "const": "1.0.0"
+        },
+        "message_type": {
+          "const": "revoke_request"
+        },
+        "request_id": {
+          "$ref": "#/$defs/uuid",
+          "description": "Durable revoke replay identity within the authenticated replay namespace. An exact retained raw HTTP request BODY fingerprint returns the original frozen response BODY before current credential activity is considered."
+        },
+        "device_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "generation": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991,
+          "description": "Generation of the latest issued refresh token pair presented by this request."
+        },
+        "refresh_token": {
+          "$ref": "#/$defs/refreshToken",
+          "description": "The refresh token from the latest issued token pair; it must match this request's device_id and generation."
+        }
+      }
+    },
+    "revokeResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "protocol_version",
+        "message_type",
+        "request_id",
+        "device_id",
+        "generation",
+        "status",
+        "revoked_at",
+        "server_time"
+      ],
+      "properties": {
+        "protocol_version": {
+          "const": "1.0.0"
+        },
+        "message_type": {
+          "const": "revoke_response"
+        },
+        "request_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "device_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "generation": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "status": {
+          "const": "revoked"
+        },
+        "revoked_at": {
+          "$ref": "#/$defs/canonicalServerInstant"
+        },
+        "server_time": {
+          "$ref": "#/$defs/canonicalServerInstant"
+        }
+      },
+      "description": "Revocation is durable and idempotent inside the resolved endpoint/protocol/internal-family/internal-device/request-id namespace. Exact retained raw HTTP BODY bytes return the byte-identical frozen response BODY even after revocation. A non-exact inactive credential returns credential_unavailable; request_id_collision is reachable only after active authentication and never overwrites the replay row. Revoke replay retention is at least max(token-family tombstone retention, 30 days); referenced replay-HMAC key epochs live at least as long. Android may keep revocation pending after timeout until a receipt or neutral credential_unavailable."
+    }
+  }
+}

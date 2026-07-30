@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://life-agent.local/schemas/sync-wire.schema.json",
   "title": "Life Agent MVP mobile sync wire contracts",
-  "description": "Closed v1 contracts for push, per-operation ACK/error, frozen bootstrap and incremental pull.",
+  "description": "Closed v1 contracts for push, per-operation ACK/error, frozen bootstrap and incremental pull. This schema and the HTTP manifest are the normative implementation source; the repository validator is acceptance evidence only. The M2 endpoint parser accepts only the recursive rawJsonValue subset before hashing: null, booleans, strings, interoperable safe integers, bounded arrays and objects with schema-safe ASCII keys. Floating-point tokens, exponent notation, unsafe integers, duplicate keys, excessive nesting and excessive total nodes fail closed before canonicalization.",
   "oneOf": [
     {
       "$ref": "#/$defs/pushBatchRequest"
@@ -26,7 +26,9 @@
   "$defs": {
     "uuid": {
       "type": "string",
-      "format": "uuid"
+      "format": "uuid",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$(?![\\s\\S])",
+      "description": "Lowercase canonical RFC UUID text."
     },
     "nullableUuid": {
       "oneOf": [
@@ -40,7 +42,7 @@
     },
     "sha256": {
       "type": "string",
-      "pattern": "^[a-f0-9]{64}$"
+      "pattern": "^[a-f0-9]{64}(?![\\s\\S])"
     },
     "nullableSha256": {
       "oneOf": [
@@ -52,11 +54,28 @@
         }
       ]
     },
+    "canonicalUtcInstant": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^(?!0000)[0-9]{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12][0-9]|3[01])T(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](?:\\.[0-9]{3})?Z(?![\\s\\S])",
+      "description": "Canonical UTC instant with uppercase T/Z, mandatory seconds and either no fractional part or exactly three fractional digits. Calendar validity is enforced by the date-time format checker."
+    },
     "cursor": {
       "type": "string",
-      "minLength": 1,
+      "minLength": 43,
       "maxLength": 2048,
-      "description": "Opaque authenticated cursor scoped by the server to the owner and protocol stream."
+      "oneOf": [
+        {
+          "pattern": "^(?:[A-Za-z0-9_-]{4}){11,512}(?![\\s\\S])"
+        },
+        {
+          "pattern": "^(?:[A-Za-z0-9_-]{4}){11,511}[A-Za-z0-9_-][AQgw](?![\\s\\S])"
+        },
+        {
+          "pattern": "^(?:[A-Za-z0-9_-]{4}){10,511}[A-Za-z0-9_-]{2}[AEIMQUYcgkosw048](?![\\s\\S])"
+        }
+      ],
+      "description": "Canonical unpadded base64url opaque random handle only, with at least 43 characters so generation 1 carries at least 256 bits of server-generated entropy. Server-side lookup binds generation 1 of the handle to the derived person, receiving device, credential family, protocol stream, bootstrap_id/snapshot when applicable, exact position, expiry, signing-key generation and purge generation. The client never parses or guesses a cursor. Expiry has one endpoint-specific outcome: an expired bootstrap next-page snapshot returns cursor_expired with HTTP 410; an expired incremental snapshot or unavailable retained history returns bootstrap_required with HTTP 409. sync_pull never returns cursor_expired. Account deletion and privacy purge invalidate and delete every bound handle."
     },
     "nullableCursor": {
       "oneOf": [
@@ -65,6 +84,43 @@
         },
         {
           "type": "null"
+        }
+      ]
+    },
+    "rawJsonValue": {
+      "description": "Closed recursive M2 ingress value. The transport parser additionally enforces maximum nesting depth 32 and maximum 10000 total value nodes before hashing, with a safe request_schema_invalid failure on every limit or canonicalization error.",
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "string",
+          "maxLength": 65536
+        },
+        {
+          "type": "integer",
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991
+        },
+        {
+          "type": "array",
+          "maxItems": 1000,
+          "items": {
+            "$ref": "#/$defs/rawJsonValue"
+          }
+        },
+        {
+          "type": "object",
+          "maxProperties": 256,
+          "propertyNames": {
+            "pattern": "^[a-z][a-z0-9_]{0,63}(?![\\s\\S])"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/rawJsonValue"
+          }
         }
       ]
     },
@@ -77,6 +133,37 @@
           "properties": {
             "persistence_state": {
               "const": "local_pending"
+            },
+            "identity": {
+              "properties": {
+                "device_id": {
+                  "type": "null",
+                  "description": "Pending operation identity remains enrollment-independent. Room v3 stores a separate deterministic wire materialization; any M1 legacy local operation bytes/hash are not the M2 wire digest. The submitting device is derived only from the authenticated top-level device binding."
+                }
+              }
+            },
+            "kind": {
+              "const": "note"
+            },
+            "revision_no": {
+              "maximum": 2147483647
+            },
+            "source": {
+              "properties": {
+                "channel": {
+                  "const": "android_manual"
+                }
+              }
+            },
+            "revision": {
+              "properties": {
+                "actor": {
+                  "const": "user"
+                },
+                "parents": {
+                  "maxItems": 1
+                }
+              }
             },
             "server": {
               "properties": {
@@ -102,6 +189,12 @@
             "persistence_state": {
               "const": "server_committed"
             },
+            "kind": {
+              "const": "note"
+            },
+            "revision_no": {
+              "maximum": 2147483647
+            },
             "identity": {
               "properties": {
                 "device_id": {
@@ -109,15 +202,108 @@
                 }
               }
             },
+            "source": {
+              "properties": {
+                "channel": {
+                  "const": "android_manual"
+                }
+              }
+            },
+            "revision": {
+              "properties": {
+                "actor": {
+                  "const": "user"
+                },
+                "parents": {
+                  "maxItems": 1
+                }
+              }
+            },
             "server": {
               "properties": {
                 "received_at": {
-                  "type": "string",
-                  "format": "date-time"
+                  "$ref": "#/$defs/canonicalUtcInstant"
                 },
                 "server_sequence": {
                   "type": "integer",
-                  "minimum": 1
+                  "minimum": 1,
+                  "maximum": 9007199254740991
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "localPendingCapture": {
+      "allOf": [
+        {
+          "$ref": "capture-envelope.schema.json"
+        },
+        {
+          "properties": {
+            "persistence_state": {
+              "const": "local_pending"
+            },
+            "identity": {
+              "properties": {
+                "device_id": {
+                  "type": "null"
+                }
+              }
+            },
+            "source": {
+              "properties": {
+                "channel": {
+                  "const": "android_manual"
+                }
+              }
+            },
+            "content": {
+              "properties": {
+                "kind": {
+                  "const": "structured"
+                },
+                "record_type": {
+                  "const": "note"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "serverCommittedCapture": {
+      "allOf": [
+        {
+          "$ref": "capture-envelope.schema.json"
+        },
+        {
+          "properties": {
+            "persistence_state": {
+              "const": "authenticated_ingress"
+            },
+            "identity": {
+              "properties": {
+                "device_id": {
+                  "$ref": "#/$defs/uuid"
+                }
+              }
+            },
+            "source": {
+              "properties": {
+                "channel": {
+                  "const": "android_manual"
+                }
+              }
+            },
+            "content": {
+              "properties": {
+                "kind": {
+                  "const": "structured"
+                },
+                "record_type": {
+                  "const": "note"
                 }
               }
             }
@@ -128,43 +314,113 @@
     "pushOperation": {
       "type": "object",
       "additionalProperties": false,
+      "description": "After strict schema validation and physical ordinal equality, normative semantic consistency is checked before operation_content_sha256: wrapper operation/capture/event/revision/schema identifiers equal their nested capture and body identifiers; capture and body identity, source, origin, collector, recorded_at and note payload agree; capture integrity is SHA-256 and byte length of RFC 8785/JCS capture.content. revision.content_sha256 is SHA-256 of the RFC 8785/JCS object with exactly these keys and values: event_id=body.event_id, revision_id=body.revision_id, revision_no=body.revision_no, capture_id=body.source.capture_id, operation_id=body.source.operation_id, record_status=body.record_status, effective_time=body.time, recorded_at=body.source.recorded_at, payload=body.payload, correction_reason=body.revision.correction_reason, parent_revision_id=null for a root or the sole body.revision.parents[0].revision_id. Any such consistency failure is schema_invalid. Parent lineage or revision_no other than root 1 / parent + 1 is invalid_parent. Only after these stages are operation hash, ownership, immutable registries, dependency resolution and CAS evaluated.",
       "required": [
         "ordinal",
+        "client_sequence",
         "operation_id",
         "operation_kind",
+        "capture_id",
         "event_id",
         "revision_id",
-        "base_revision_id",
-        "body_sha256",
+        "event_schema_version",
+        "event_kind",
+        "expected_current_revision_id",
+        "operation_content_sha256",
+        "capture",
         "body"
       ],
       "properties": {
         "ordinal": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 99
+          "maximum": 99,
+          "description": "Must equal this operation's zero-based physical index in the raw operations array. A schema-valid item with another ordinal receives schema_invalid while later items continue."
+        },
+        "client_sequence": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991,
+          "description": "Stable installation-scoped outbox sequence. It does not change when an unacknowledged operation is moved to a new batch. Before dependency resolution the server claims (installation_id, client_sequence) -> (operation_id, operation_content_sha256) immutably. An exact tuple with a prior retryable missing_parent may be re-evaluated in a later batch; changing operation_id or digest returns client_sequence_collision. Terminal prior outcomes remain stable."
         },
         "operation_id": {
-          "$ref": "#/$defs/uuid"
+          "$ref": "#/$defs/uuid",
+          "description": "Claimed with its operation_content_sha256 before dependency resolution. A retryable missing_parent keeps this immutable claim: exact unchanged bytes may be re-evaluated later, changed digest is operation_id_collision, and a second physical occurrence in the same first-seen batch is operation_id_collision."
         },
         "operation_kind": {
           "const": "append_event_revision"
         },
+        "capture_id": {
+          "$ref": "#/$defs/uuid",
+          "description": "Claimed for this operation before dependency resolution; another operation cannot reuse it while a missing_parent retry remains pending."
+        },
         "event_id": {
-          "$ref": "#/$defs/uuid"
+          "$ref": "#/$defs/uuid",
+          "description": "An existing event_id may be reused by an authorized valid descendant revision in its rooted lineage, including a stale descendant that receives a conflict ACK. Immutable event ownership is the server-derived person plus event_id, event kind and root lineage. installation_id, local_owner_id and device_id are per-revision provenance and MAY differ for an authorized descendant submitted from a replacement device. Reusing event_id under another person, with an incompatible kind or root lineage, or submitting a second root with expected_current_revision_id null for an existing event returns event_id_collision."
         },
         "revision_id": {
-          "$ref": "#/$defs/uuid"
+          "$ref": "#/$defs/uuid",
+          "description": "Claimed for this operation before dependency resolution; another operation cannot reuse it while a missing_parent retry remains pending."
         },
-        "base_revision_id": {
-          "$ref": "#/$defs/nullableUuid"
+        "event_schema_version": {
+          "const": "4.0.0"
         },
-        "body_sha256": {
+        "event_kind": {
+          "const": "note"
+        },
+        "expected_current_revision_id": {
+          "$ref": "#/$defs/nullableUuid",
+          "description": "Compare-and-set pointer: null for a root revision or the sole superseded parent for a linear M2 note revision. Two-parent conflict resolution is not part of the M2 notes wire subset."
+        },
+        "operation_content_sha256": {
           "$ref": "#/$defs/sha256",
-          "description": "SHA-256 of the RFC 8785/JCS bytes of body. Retry must preserve the exact body and digest."
+          "description": "SHA-256 of RFC 8785/JCS serialization of this complete push operation with only ordinal and operation_content_sha256 omitted. It binds stable sequence, CAS expectation, wrapper semantics, capture and event while allowing the same operation to move to another batch ordinal. The server claims operation_id plus this digest before dependency resolution. An exact terminal receipt committed before the batch is replayed; an exact prior retryable missing_parent is re-evaluated; any changed digest is operation_id_collision. A second physical occurrence inside one first-seen batch is operation_id_collision even with the same digest."
+        },
+        "capture": {
+          "$ref": "#/$defs/localPendingCapture"
         },
         "body": {
           "$ref": "#/$defs/localPendingEvent"
+        }
+      }
+    },
+    "pushBatchEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "protocol_version",
+        "message_type",
+        "batch_id",
+        "device_id",
+        "batch_content_sha256",
+        "operations"
+      ],
+      "properties": {
+        "protocol_version": {
+          "const": "1.0.0"
+        },
+        "message_type": {
+          "const": "push_batch_request"
+        },
+        "batch_id": {
+          "$ref": "#/$defs/uuid",
+          "description": "HTTP Idempotency-Key must equal this durable push identity. Durable replay uses a protected fingerprint of the exact raw HTTP request BODY bytes in the endpoint replay namespace; it is intentionally separate from batch_content_sha256."
+        },
+        "device_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "batch_content_sha256": {
+          "$ref": "#/$defs/sha256",
+          "description": "SHA-256 of RFC 8785/JCS serialization of the successfully parsed closed-subset envelope with only batch_content_sha256 omitted. It is validated before any operation item is dereferenced or strictly validated. It is not the durable raw-byte replay fingerprint."
+        },
+        "operations": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 100,
+          "items": {
+            "$ref": "#/$defs/rawJsonValue"
+          },
+          "description": "The closed envelope deliberately retains raw subset array items. After duplicate-key, lexical-number, body-size, nesting/node-limit and envelope-hash checks, each item is validated independently against pushOperation in physical array order. One malformed item therefore receives an indexed error without suppressing valid items after it."
         }
       }
     },
@@ -188,15 +444,15 @@
         },
         "batch_id": {
           "$ref": "#/$defs/uuid",
-          "description": "HTTP Idempotency-Key MUST equal this exact UUID; equality is checked before any operation is processed."
+          "description": "HTTP Idempotency-Key MUST equal this durable push identity. Exact batch_id plus the same fingerprint of the exact raw HTTP request BODY bytes returns the byte-identical frozen response BODY. Any raw BODY byte difference, including whitespace or object-member order, with the same ID produces batch_id_collision before processing. Authorization header rotation is outside this fingerprint."
         },
         "device_id": {
           "$ref": "#/$defs/uuid",
-          "description": "Must equal the authenticated access-token device claim."
+          "description": "Must equal the server-side device binding of the opaque authenticated access token. It is not accepted as ownership by itself."
         },
         "batch_content_sha256": {
           "$ref": "#/$defs/sha256",
-          "description": "SHA-256 of RFC 8785/JCS serialization of the request with only batch_content_sha256 omitted, avoiding a self-referential digest."
+          "description": "SHA-256 of RFC 8785/JCS serialization of the successfully parsed closed-subset request with only batch_content_sha256 omitted. This canonical parsed-value digest is distinct from the exact raw HTTP BODY replay fingerprint and is checked before per-operation dereference or semantic validation."
         },
         "operations": {
           "type": "array",
@@ -205,7 +461,7 @@
           "items": {
             "$ref": "#/$defs/pushOperation"
           },
-          "description": "For per-operation errors, ingress validates the closed batch envelope first, then validates each raw array item independently against pushOperation."
+          "description": "For per-operation errors, ingress validates the closed raw batch envelope and its batch hash first, then validates each raw array item independently against pushOperation. Pending/new accepted operations must match the submitting session's device and installation/local-owner enrollment binding; person ownership is derived only from the access token. Historical bootstrap and pull records preserve their original submitting provenance and are not rebound to a receiving replacement device."
         }
       }
     },
@@ -219,24 +475,38 @@
       "properties": {
         "path": {
           "type": "string",
-          "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$"
+          "maxLength": 14,
+          "pattern": "^(?:|/operations/(?:0|[1-9][0-9]?))(?![\\s\\S])",
+          "description": "Tiny schema-owned location set: the request root or one physical operations index from 0 through 99. Attacker-controlled property names and deeper paths are never reflected."
         },
         "code": {
           "type": "string",
-          "pattern": "^[a-z][a-z0-9_]*$"
+          "enum": [
+            "schema_invalid",
+            "missing_required_field",
+            "unexpected_field",
+            "invalid_field_type",
+            "invalid_field_value",
+            "unsupported_schema_version",
+            "unsupported_operation_kind",
+            "unsupported_event_kind",
+            "unsupported_source_channel"
+          ]
         }
       }
     },
     "operationAck": {
       "type": "object",
       "additionalProperties": false,
+      "description": "Durable terminal operation receipt. When bootstrap or pull later delivers the same operation_id, Android performs insert-or-verify against operation_id, operation_content_sha256, result_code, capture_id, event_id, revision_id, current_revision_id, server_sequence and committed_at (the latter equals serverChange.event.server.received_at). An exact match is a no-op that creates no duplicate and rewrites no receipt; any mismatch is an integrity failure that halts sync for explicit recovery.",
       "required": [
         "ordinal",
         "operation_id",
         "status",
-        "body_sha256",
+        "operation_content_sha256",
         "result_code",
         "replayed",
+        "capture_id",
         "event_id",
         "revision_id",
         "current_revision_id",
@@ -255,7 +525,7 @@
         "status": {
           "const": "ack"
         },
-        "body_sha256": {
+        "operation_content_sha256": {
           "$ref": "#/$defs/sha256"
         },
         "result_code": {
@@ -267,7 +537,10 @@
         },
         "replayed": {
           "type": "boolean",
-          "description": "A retry returns the original result_code, sequence and committed_at; only replayed changes."
+          "description": "False remains frozen on an exact same-batch replay. True only when this operation was already committed in a different first-seen batch before the current batch was processed."
+        },
+        "capture_id": {
+          "$ref": "#/$defs/uuid"
         },
         "event_id": {
           "$ref": "#/$defs/uuid"
@@ -276,15 +549,16 @@
           "$ref": "#/$defs/uuid"
         },
         "current_revision_id": {
-          "$ref": "#/$defs/uuid"
+          "$ref": "#/$defs/uuid",
+          "description": "The exact event head observed by the server after this terminal outcome. A conflict receipt may reference a head not yet present locally; the durable receipt is stored without requiring a local revision foreign key and a later pull fills the historical record."
         },
         "server_sequence": {
           "type": "integer",
-          "minimum": 1
+          "minimum": 1,
+          "maximum": 9007199254740991
         },
         "committed_at": {
-          "type": "string",
-          "format": "date-time"
+          "$ref": "#/$defs/canonicalUtcInstant"
         }
       }
     },
@@ -295,7 +569,7 @@
         "ordinal",
         "operation_id",
         "status",
-        "body_sha256",
+        "operation_content_sha256",
         "error_code",
         "retryable",
         "field_errors"
@@ -304,7 +578,8 @@
         "ordinal": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 99
+          "maximum": 99,
+          "description": "The current response item's physical request-array index. A cross-batch replay of an exact terminal invalid_parent operation regenerates this ordinal for its new physical position; ordinal is not part of the stable terminal item receipt projection."
         },
         "operation_id": {
           "$ref": "#/$defs/nullableUuid",
@@ -313,15 +588,22 @@
         "status": {
           "const": "error"
         },
-        "body_sha256": {
+        "operation_content_sha256": {
           "$ref": "#/$defs/nullableSha256"
         },
         "error_code": {
           "type": "string",
+          "description": "First-match-wins per-item precedence after the raw envelope succeeds: (1) safely inspect only string discriminators in order event_schema_version, operation_kind, event_kind and capture/body source channel; (2) validate strict pushOperation schema; (3) require ordinal equal physical array index; (4) require the normative wrapper/capture/body identity, source, payload, capture-integrity and immutable-revision consistency defined by pushOperation; failures in stages 2-4 are schema_invalid; (5) verify operation_content_sha256, otherwise operation_hash_mismatch; (6) verify authenticated ownership, otherwise ownership_violation; (7) consult and claim immutable registries in order operation_id, installation-scoped client_sequence, capture_id, revision_id and event_id; (8) persist operation_id, client_sequence, capture_id and revision_id claims before resolving the parent and root/parent+1 revision_no, returning missing_parent only for an absent parent and invalid_parent for lineage or revision-number failure; (9) compare expected_current_revision_id with current_by_event. The persisted claims survive both dependency outcomes. Exact unchanged missing_parent may be re-evaluated in a later batch. invalid_parent is a frozen terminal item outcome with field_errors exactly empty; on an exact cross-batch replay only ordinal is regenerated for the operation's current physical index, while operation_id, operation_content_sha256, status, error_code, retryable and field_errors remain the stable receipt projection. Changed content requires a new operation identity. A second physical occurrence of operation_id in one first-seen batch is operation_id_collision. CAS mismatch emits a terminal conflict ACK. Only the earliest failure is evaluated.",
           "enum": [
             "unsupported_schema_version",
+            "unsupported_operation_kind",
+            "unsupported_event_kind",
+            "unsupported_source_channel",
             "schema_invalid",
             "operation_hash_mismatch",
+            "operation_id_collision",
+            "client_sequence_collision",
+            "capture_id_collision",
             "revision_id_collision",
             "event_id_collision",
             "missing_parent",
@@ -330,15 +612,66 @@
           ]
         },
         "retryable": {
-          "type": "boolean"
+          "type": "boolean",
+          "description": "Only missing_parent is retryable. Dependency resolution occurs after immutable operation_id, client_sequence, capture_id and revision_id claims are persisted. For missing_parent, only the exact unchanged operation may be submitted in a later batch and re-evaluated after the parent arrives. invalid_parent retains the same claims but is terminal; an exact cross-batch replay returns the stable terminal error with field_errors empty and ordinal regenerated to the current physical index. Every nonretryable item error is terminal for those exact operation bytes and is not automatically resubmitted; an explicit data change requires a new operation identity/digest."
         },
         "field_errors": {
           "type": "array",
+          "maxItems": 8,
+          "uniqueItems": true,
+          "description": "At most eight controlled entries per item keeps a 100-result response below the 512 KiB transport cap. Unknown raw property names are never copied into paths. invalid_parent requires exactly an empty array so its stable terminal receipt has no path tied to a prior batch ordinal.",
           "items": {
             "$ref": "#/$defs/fieldError"
           }
         }
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "error_code": {
+                "const": "missing_parent"
+              }
+            },
+            "required": [
+              "error_code"
+            ]
+          },
+          "then": {
+            "properties": {
+              "retryable": {
+                "const": true
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "retryable": {
+                "const": false
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "error_code": {
+                "const": "invalid_parent"
+              }
+            },
+            "required": [
+              "error_code"
+            ]
+          },
+          "then": {
+            "properties": {
+              "field_errors": {
+                "const": []
+              }
+            }
+          }
+        }
+      ]
     },
     "operationResult": {
       "oneOf": [
@@ -353,6 +686,7 @@
     "pushBatchResponse": {
       "type": "object",
       "additionalProperties": false,
+      "description": "Frozen response for a first-seen batch. An exact same-batch retry returns byte-identical bytes, including replayed and server_time.",
       "required": [
         "protocol_version",
         "message_type",
@@ -379,38 +713,43 @@
           "type": "array",
           "minItems": 1,
           "maxItems": 100,
+          "uniqueItems": true,
           "items": {
             "$ref": "#/$defs/operationResult"
-          }
+          },
+          "description": "Exactly one result is returned for every raw request operation, in request-array order. Cross-message cardinality and ordinal equality are mandatory semantic checks."
         },
         "server_high_watermark": {
           "$ref": "#/$defs/cursor",
           "description": "Informational server cursor hint after committed ACKs. It does not replace the client's applied pull cursor."
         },
         "server_time": {
-          "type": "string",
-          "format": "date-time"
+          "$ref": "#/$defs/canonicalUtcInstant"
         }
       }
     },
     "serverChange": {
       "type": "object",
       "additionalProperties": false,
+      "description": "Immutable historical delivery record derived from the accepted pending pushOperation with only these enrichments: capture.persistence_state changes local_pending to authenticated_ingress; capture.identity.device_id changes null to the authenticated submitting device_id; event.persistence_state changes local_pending to server_committed; event.identity.device_id changes null to that same submitting device_id; event.server.received_at and event.server.server_sequence change from null to the exact ACK committed_at and server_sequence. Every other capture/event field is byte-for-byte JSON-value equivalent to the accepted operation. Historical installation, local owner and submitting device provenance need not equal the top-level receiving device of a later bootstrap or pull page. If Android already stores an ACK for operation_id, applying this change is insert-or-verify: operation_id, operation_content_sha256, result_code, capture_id, event_id, revision_id, current_revision_id, server_sequence and event.server.received_at/ACK committed_at must match exactly. A match is a no-op without duplicate insertion or receipt rewrite; a mismatch halts sync as an integrity failure.",
       "required": [
         "server_sequence",
         "change_kind",
         "result_code",
         "operation_id",
+        "capture_id",
         "event_id",
         "revision_id",
         "current_revision_id",
-        "body_sha256",
+        "operation_content_sha256",
+        "capture",
         "event"
       ],
       "properties": {
         "server_sequence": {
           "type": "integer",
-          "minimum": 1
+          "minimum": 1,
+          "maximum": 9007199254740991
         },
         "change_kind": {
           "const": "event_revision_committed"
@@ -425,6 +764,9 @@
         "operation_id": {
           "$ref": "#/$defs/uuid"
         },
+        "capture_id": {
+          "$ref": "#/$defs/uuid"
+        },
         "event_id": {
           "$ref": "#/$defs/uuid"
         },
@@ -432,10 +774,15 @@
           "$ref": "#/$defs/uuid"
         },
         "current_revision_id": {
-          "$ref": "#/$defs/uuid"
+          "$ref": "#/$defs/uuid",
+          "description": "State-machine head after this sequence. For applied, expected_current_revision_id equaled the prior head and this revision becomes current. For stale compare-and-set conflict, this is exactly the unchanged prior head and the conflicting revision is retained only as history."
         },
-        "body_sha256": {
-          "$ref": "#/$defs/sha256"
+        "operation_content_sha256": {
+          "$ref": "#/$defs/sha256",
+          "description": "Digest of the originally accepted pending push operation. It is not recomputed from the enriched committed documents."
+        },
+        "capture": {
+          "$ref": "#/$defs/serverCommittedCapture"
         },
         "event": {
           "$ref": "#/$defs/serverCommittedEvent"
@@ -448,6 +795,8 @@
       "required": [
         "protocol_version",
         "message_type",
+        "request_id",
+        "bootstrap_id",
         "device_id",
         "page_size",
         "page_cursor"
@@ -459,6 +808,14 @@
         "message_type": {
           "const": "bootstrap_request"
         },
+        "request_id": {
+          "$ref": "#/$defs/uuid",
+          "description": "Durable page replay identity. The same request_id with byte-identical request bytes returns the byte-identical cached page; changed bytes produce request_id_collision."
+        },
+        "bootstrap_id": {
+          "$ref": "#/$defs/uuid",
+          "description": "Client-generated identifier retained for every page of one explicit restore attempt."
+        },
         "device_id": {
           "$ref": "#/$defs/uuid"
         },
@@ -468,16 +825,22 @@
           "maximum": 500
         },
         "page_cursor": {
-          "$ref": "#/$defs/nullableCursor"
+          "$ref": "#/$defs/nullableCursor",
+          "description": "Null for the first page; otherwise the exact authenticated next_page_cursor from the preceding page."
         }
       }
     },
     "bootstrapResponse": {
       "type": "object",
       "additionalProperties": false,
+      "description": "Frozen page of an explicit restore snapshot. Bootstrap into a nonempty Android database is staged across all pages and, only after final validation, atomically replaces the server-committed/authenticated-ingress partition. It preserves local_pending captures/events, durable outbox operations and terminal receipts; reconciliation of any overlapping operation_id follows insert-or-verify and never silently rewrites an ACK.",
       "required": [
         "protocol_version",
         "message_type",
+        "request_id",
+        "bootstrap_id",
+        "device_id",
+        "from_page_cursor",
         "snapshot_id",
         "page_id",
         "page_sha256",
@@ -494,6 +857,20 @@
         "message_type": {
           "const": "bootstrap_response"
         },
+        "request_id": {
+          "$ref": "#/$defs/uuid",
+          "description": "Exact echo of the durable bootstrap request identity."
+        },
+        "bootstrap_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "device_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "from_page_cursor": {
+          "$ref": "#/$defs/nullableCursor",
+          "description": "Exact echo of the request page_cursor. It prevents a valid page from another bootstrap position being applied to this request."
+        },
         "snapshot_id": {
           "$ref": "#/$defs/uuid"
         },
@@ -501,14 +878,16 @@
           "$ref": "#/$defs/uuid"
         },
         "page_sha256": {
-          "$ref": "#/$defs/sha256"
+          "$ref": "#/$defs/sha256",
+          "description": "SHA-256 of the RFC 8785/JCS serialization of this complete response with only page_sha256 omitted. All other fields, including server_time, are frozen for an exact page replay."
         },
         "changes": {
           "type": "array",
           "maxItems": 500,
           "items": {
             "$ref": "#/$defs/serverChange"
-          }
+          },
+          "description": "Globally unique, strictly increasing and topologically ordered snapshot prefix, bounded by the corresponding request page_size. Every parent appears earlier in the stream, including across page boundaries. Applied revisions advance current_by_event; conflicts preserve exactly the prior event head. Historical nested provenance remains tied to the original submitting device and need not match this response's receiving device."
         },
         "next_page_cursor": {
           "$ref": "#/$defs/nullableCursor"
@@ -521,8 +900,7 @@
           "type": "boolean"
         },
         "server_time": {
-          "type": "string",
-          "format": "date-time"
+          "$ref": "#/$defs/canonicalUtcInstant"
         }
       },
       "allOf": [
@@ -563,6 +941,7 @@
       "required": [
         "protocol_version",
         "message_type",
+        "request_id",
         "device_id",
         "cursor",
         "page_size"
@@ -573,6 +952,10 @@
         },
         "message_type": {
           "const": "pull_request"
+        },
+        "request_id": {
+          "$ref": "#/$defs/uuid",
+          "description": "Durable page replay identity. The same request_id with byte-identical request bytes returns the byte-identical cached page; changed bytes produce request_id_collision."
         },
         "device_id": {
           "$ref": "#/$defs/uuid"
@@ -590,9 +973,12 @@
     "pullResponse": {
       "type": "object",
       "additionalProperties": false,
+      "description": "Validated changes and next_cursor commit atomically. Before applying any overlapping operation_id, Android insert-or-verifies the retained terminal ACK against operation digest, result, current head, server sequence and committed/received time. Exact overlap is a no-op; any drift aborts the entire page and cursor transaction as protocol integrity failure.",
       "required": [
         "protocol_version",
         "message_type",
+        "request_id",
+        "device_id",
         "from_cursor",
         "page_id",
         "page_sha256",
@@ -608,6 +994,13 @@
         "message_type": {
           "const": "pull_response"
         },
+        "request_id": {
+          "$ref": "#/$defs/uuid",
+          "description": "Exact echo of the durable pull request identity."
+        },
+        "device_id": {
+          "$ref": "#/$defs/uuid"
+        },
         "from_cursor": {
           "$ref": "#/$defs/cursor"
         },
@@ -615,14 +1008,16 @@
           "$ref": "#/$defs/uuid"
         },
         "page_sha256": {
-          "$ref": "#/$defs/sha256"
+          "$ref": "#/$defs/sha256",
+          "description": "SHA-256 of the RFC 8785/JCS serialization of this complete response with only page_sha256 omitted. All other fields, including server_time, are frozen for an exact page replay."
         },
         "changes": {
           "type": "array",
           "maxItems": 500,
           "items": {
             "$ref": "#/$defs/serverChange"
-          }
+          },
+          "description": "Globally unique, strictly increasing, topologically ordered continuation after from_cursor and across every page. Every parent exists earlier in the combined bootstrap/pull stream. Applied revisions advance current_by_event; conflicts preserve exactly the prior event head. Historical nested provenance remains tied to the original submitting device and need not match this response's receiving device."
         },
         "next_cursor": {
           "$ref": "#/$defs/cursor"
@@ -631,10 +1026,30 @@
           "type": "boolean"
         },
         "server_time": {
-          "type": "string",
-          "format": "date-time"
+          "$ref": "#/$defs/canonicalUtcInstant"
         }
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "has_more": {
+                "const": true
+              }
+            },
+            "required": [
+              "has_more"
+            ]
+          },
+          "then": {
+            "properties": {
+              "changes": {
+                "minItems": 1
+              }
+            }
+          }
+        }
+      ]
     }
   }
 }

@@ -1,0 +1,20 @@
+{
+  "protocol_version": "1.0.0",
+  "message_type": "enrollment_claim_response",
+  "request_id": "81000000-0000-4000-8000-000000000001",
+  "installation_id": "91000000-0000-4000-8000-000000000001",
+  "local_owner_id": "91000000-0000-4000-8000-000000000002",
+  "device_id": "91000000-0000-4000-8000-000000000003",
+  "person_id": "10000000-0000-4000-8000-000000000004",
+  "credentials": {
+    "token_type": "Bearer",
+    "access_token": "laa_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA8",
+    "access_expires_at": "2030-01-01T00:15:00Z",
+    "refresh_token": "lar_RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRE",
+    "refresh_expires_at": "2030-01-31T00:00:00Z",
+    "family_expires_at": "2030-04-01T00:00:00Z",
+    "generation": 1
+  },
+  "bootstrap_required": true,
+  "server_time": "2030-01-01T00:00:00Z"
+}

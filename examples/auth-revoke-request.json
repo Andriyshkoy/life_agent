@@ -1,0 +1,8 @@
+{
+  "protocol_version": "1.0.0",
+  "message_type": "revoke_request",
+  "request_id": "81000000-0000-4000-8000-000000000003",
+  "device_id": "91000000-0000-4000-8000-000000000003",
+  "generation": 2,
+  "refresh_token": "lar_SSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSM"
+}
