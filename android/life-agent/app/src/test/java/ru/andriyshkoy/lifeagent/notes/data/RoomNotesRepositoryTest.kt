@@ -22,6 +22,7 @@ import ru.andriyshkoy.lifeagent.core.time.PointTimeResolver
 import ru.andriyshkoy.lifeagent.data.local.db.LifeAgentDatabase
 import ru.andriyshkoy.lifeagent.data.local.db.LifeAgentDatabaseFactory
 import ru.andriyshkoy.lifeagent.notes.domain.CorrectNoteCommand
+import ru.andriyshkoy.lifeagent.notes.domain.CorruptLocalNoteException
 import ru.andriyshkoy.lifeagent.notes.domain.CreateNoteCommand
 import ru.andriyshkoy.lifeagent.notes.domain.IdempotencyConflictException
 import ru.andriyshkoy.lifeagent.notes.domain.LocalIdentityCollisionException
@@ -164,6 +165,26 @@ class RoomNotesRepositoryTest {
         }
 
         assertEquals(before, database.noteMutationDao().tableCounts())
+    }
+
+    @Test
+    fun `missing current identity marker fails closed when history exists`() = runTest {
+        repository.create(createCommand(ids(141, 142, 143, 144), "история"))
+        database.openHelper.writableDatabase.execSQL(
+            "DELETE FROM local_identity_state",
+        )
+        val before = database.noteMutationDao().tableCounts()
+
+        org.junit.Assert.assertThrows(CorruptLocalNoteException::class.java) {
+            kotlinx.coroutines.runBlocking {
+                repository.create(
+                    createCommand(ids(145, 146, 147, 148), "новая идентичность"),
+                )
+            }
+        }
+
+        assertEquals(before, database.noteMutationDao().tableCounts())
+        assertEquals(1, database.identityDao().ownerCount())
     }
 
     @Test

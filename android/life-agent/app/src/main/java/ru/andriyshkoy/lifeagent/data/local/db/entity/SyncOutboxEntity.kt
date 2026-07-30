@@ -11,20 +11,34 @@ import androidx.room.PrimaryKey
     foreignKeys = [
         ForeignKey(
             entity = LocalCaptureEntity::class,
-            parentColumns = ["capture_id"],
-            childColumns = ["capture_id"],
-            onDelete = ForeignKey.RESTRICT,
-        ),
-        ForeignKey(
-            entity = LocalOwnerEntity::class,
-            parentColumns = ["local_owner_id", "installation_id"],
-            childColumns = ["local_owner_id", "installation_id"],
+            parentColumns = [
+                "capture_id",
+                "operation_id",
+                "local_owner_id",
+                "installation_id",
+            ],
+            childColumns = [
+                "capture_id",
+                "operation_id",
+                "local_owner_id",
+                "installation_id",
+            ],
             onDelete = ForeignKey.RESTRICT,
         ),
         ForeignKey(
             entity = LocalEventRevisionEntity::class,
-            parentColumns = ["event_id", "revision_id"],
-            childColumns = ["event_id", "revision_id"],
+            parentColumns = [
+                "event_id",
+                "revision_id",
+                "capture_id",
+                "operation_id",
+            ],
+            childColumns = [
+                "event_id",
+                "revision_id",
+                "capture_id",
+                "operation_id",
+            ],
             onDelete = ForeignKey.RESTRICT,
         ),
         ForeignKey(
@@ -42,6 +56,25 @@ import androidx.room.PrimaryKey
         Index(value = ["event_id", "base_revision_id"]),
         Index(value = ["revision_id"], unique = true),
         Index(value = ["state", "next_attempt_at_epoch_ms"]),
+        Index(value = ["local_sequence", "operation_id"], unique = true),
+        Index(value = ["wire_state", "local_sequence"]),
+        Index(value = ["active_batch_id"]),
+        Index(
+            value = [
+                "capture_id",
+                "operation_id",
+                "local_owner_id",
+                "installation_id",
+            ],
+        ),
+        Index(
+            value = [
+                "event_id",
+                "revision_id",
+                "capture_id",
+                "operation_id",
+            ],
+        ),
     ],
 )
 data class SyncOutboxEntity(
@@ -67,11 +100,33 @@ data class SyncOutboxEntity(
     @ColumnInfo(name = "schema_version")
     val schemaVersion: String,
     @ColumnInfo(name = "operation_jcs", typeAffinity = ColumnInfo.BLOB)
-    val operationJcs: ByteArray,
+    val legacyOperationJcs: ByteArray,
     @ColumnInfo(name = "operation_content_sha256")
-    val operationContentSha256: String,
+    val legacyOperationContentSha256: String,
     @ColumnInfo(name = "command_fingerprint_sha256", defaultValue = "''")
     val commandFingerprintSha256: String,
+    @ColumnInfo(name = "wire_state", defaultValue = "'needs_materialization'")
+    val wireState: String = "needs_materialization",
+    @ColumnInfo(name = "wire_protocol_version")
+    val wireProtocolVersion: String? = null,
+    @ColumnInfo(name = "wire_operation_material_jcs", typeAffinity = ColumnInfo.BLOB)
+    val wireOperationMaterialJcs: ByteArray? = null,
+    @ColumnInfo(name = "wire_operation_content_sha256")
+    val wireOperationContentSha256: String? = null,
+    @ColumnInfo(name = "wire_materialized_at_utc")
+    val wireMaterializedAtUtc: String? = null,
+    @ColumnInfo(name = "active_batch_id")
+    val activeBatchId: String? = null,
+    @ColumnInfo(name = "last_result_batch_id")
+    val lastResultBatchId: String? = null,
+    @ColumnInfo(name = "last_result_code")
+    val lastResultCode: String? = null,
+    @ColumnInfo(name = "last_result_retryable")
+    val lastResultRetryable: Boolean? = null,
+    @ColumnInfo(name = "last_result_current_revision_id")
+    val lastResultCurrentRevisionId: String? = null,
+    @ColumnInfo(name = "last_result_details_jcs", typeAffinity = ColumnInfo.BLOB)
+    val lastResultDetailsJcs: ByteArray? = null,
     @ColumnInfo(name = "created_at_utc")
     val createdAtUtc: String,
     @ColumnInfo(name = "created_at_epoch_ms")

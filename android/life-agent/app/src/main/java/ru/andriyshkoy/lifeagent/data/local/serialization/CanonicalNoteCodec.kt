@@ -198,7 +198,14 @@ class CanonicalNoteCodec {
                 putJsonObject("identity") {
                     put("installation_id", row.installationId)
                     put("local_owner_id", row.localOwnerId)
-                    put("device_id", row.serverDeviceId.asElement())
+                    put(
+                        "device_id",
+                        if (serverCommitted) {
+                            row.serverDeviceId.asElement()
+                        } else {
+                            JsonNull
+                        },
+                    )
                 }
                 put("event_id", revision.eventId)
                 put("revision_id", revision.revisionId)

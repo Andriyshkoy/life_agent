@@ -90,6 +90,81 @@ interface NoteMutationDao {
 
     @Query(
         """
+        UPDATE local_event_revision
+        SET server_received_at = :serverReceivedAt,
+            server_sequence = :serverSequence
+        WHERE event_id = :eventId
+          AND revision_id = :revisionId
+          AND capture_id = :captureId
+          AND operation_id = :operationId
+          AND (
+            (server_received_at IS NULL AND server_sequence IS NULL)
+            OR (
+              server_received_at = :serverReceivedAt
+              AND server_sequence = :serverSequence
+            )
+          )
+        """,
+    )
+    suspend fun attachServerMetadata(
+        eventId: String,
+        revisionId: String,
+        captureId: String,
+        operationId: String,
+        serverReceivedAt: String,
+        serverSequence: Long,
+    ): Int
+
+    @Query(
+        """
+        UPDATE local_capture
+        SET persistence_state = 'authenticated_ingress'
+        WHERE capture_id = :captureId
+          AND operation_id = :operationId
+          AND local_owner_id = :localOwnerId
+          AND installation_id = :installationId
+          AND persistence_state IN ('local_pending', 'authenticated_ingress')
+        """,
+    )
+    suspend fun promoteCaptureToAuthenticatedIngress(
+        captureId: String,
+        operationId: String,
+        localOwnerId: String,
+        installationId: String,
+    ): Int
+
+    @Query(
+        """
+        UPDATE local_event_head
+        SET server_current_revision_id = :serverCurrentRevisionId,
+            server_observed_sequence = :serverObservedSequence,
+            updated_at_utc = :updatedAtUtc
+        WHERE event_id = :eventId
+          AND (
+            server_observed_sequence IS NULL
+            OR server_observed_sequence < :serverObservedSequence
+          )
+        """,
+    )
+    suspend fun recordNewerRemoteHead(
+        eventId: String,
+        serverCurrentRevisionId: String,
+        serverObservedSequence: Long,
+        updatedAtUtc: String,
+    ): Int
+
+    @Query(
+        """
+        SELECT event_id, current_revision_id, server_current_revision_id,
+               server_observed_sequence
+        FROM local_event_head
+        WHERE event_id = :eventId
+        """,
+    )
+    suspend fun findEventPointer(eventId: String): EventPointerRow?
+
+    @Query(
+        """
         SELECT
           (SELECT COUNT(*) FROM local_capture) AS captures,
           (SELECT COUNT(*) FROM local_life_event) AS events,

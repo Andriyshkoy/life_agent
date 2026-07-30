@@ -16,6 +16,7 @@ import ru.andriyshkoy.lifeagent.data.local.db.entity.LocalCaptureEntity
 import ru.andriyshkoy.lifeagent.data.local.db.entity.LocalEventHeadEntity
 import ru.andriyshkoy.lifeagent.data.local.db.entity.LocalEventRevisionEntity
 import ru.andriyshkoy.lifeagent.data.local.db.entity.LocalInstallationEntity
+import ru.andriyshkoy.lifeagent.data.local.db.entity.LocalIdentityStateEntity
 import ru.andriyshkoy.lifeagent.data.local.db.entity.LocalLifeEventEntity
 import ru.andriyshkoy.lifeagent.data.local.db.entity.LocalOwnerEntity
 import ru.andriyshkoy.lifeagent.data.local.db.entity.LocalRevisionParentEntity
@@ -124,6 +125,7 @@ class RoomNotesRepository(
                     eventId = command.ids.eventId.toString(),
                     currentRevisionId = command.ids.revisionId.toString(),
                     serverCurrentRevisionId = null,
+                    serverObservedSequence = null,
                     updatedAtUtc = command.recordedAt.toInstant().toString(),
                 ),
             )
@@ -459,6 +461,11 @@ class RoomNotesRepository(
 
     private suspend fun ensureIdentity(createdAt: Instant): LocalIdentityRow {
         identityDao.findIdentity()?.let { return it }
+        if (identityDao.ownerCount() != 0) {
+            throw CorruptLocalNoteException(
+                "Current identity marker is missing while historical owners exist",
+            )
+        }
         val installationId = uuidGenerator.next().toString()
         val ownerId = uuidGenerator.next().toString()
         val createdAtUtc = createdAt.toString()
@@ -473,6 +480,13 @@ class RoomNotesRepository(
                 localOwnerId = ownerId,
                 installationId = installationId,
                 createdAtUtc = createdAtUtc,
+            ),
+        )
+        identityDao.insertIdentityState(
+            LocalIdentityStateEntity(
+                installationId = installationId,
+                localOwnerId = ownerId,
+                selectedAtUtc = createdAtUtc,
             ),
         )
         return LocalIdentityRow(
@@ -656,8 +670,8 @@ class RoomNotesRepository(
             revisionId = ids.revisionId.toString(),
             baseRevisionId = baseRevisionId,
             schemaVersion = CanonicalNoteCodec.EVENT_SCHEMA_VERSION,
-            operationJcs = operation.bytes,
-            operationContentSha256 = operation.sha256,
+            legacyOperationJcs = operation.bytes,
+            legacyOperationContentSha256 = operation.sha256,
             commandFingerprintSha256 = commandFingerprint,
             createdAtUtc = recordedAt.toInstant().toString(),
             createdAtEpochMs = recordedAt.toInstant().toEpochMilli(),

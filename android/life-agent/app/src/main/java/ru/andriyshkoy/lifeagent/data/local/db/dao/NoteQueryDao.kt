@@ -45,15 +45,19 @@ interface NoteQueryDao {
     @Query(
         """
         SELECT r.*,
-               i.installation_id,
-               ow.local_owner_id,
+               c.installation_id,
+               c.local_owner_id,
                i.server_device_id,
                h.server_current_revision_id,
                o.local_sequence
         FROM local_event_revision AS r
+        JOIN local_capture AS c
+          ON c.capture_id = r.capture_id AND c.operation_id = r.operation_id
         JOIN local_life_event AS e ON e.event_id = r.event_id
         JOIN local_event_head AS h ON h.event_id = e.event_id
-        JOIN local_owner AS ow ON ow.local_owner_id = e.local_owner_id
+        JOIN local_owner AS ow
+          ON ow.local_owner_id = c.local_owner_id
+         AND ow.installation_id = c.installation_id
         JOIN local_installation AS i ON i.installation_id = ow.installation_id
         LEFT JOIN sync_outbox AS o ON o.revision_id = r.revision_id
         WHERE r.operation_id = :operationId AND e.kind = 'note'
@@ -64,14 +68,18 @@ interface NoteQueryDao {
     @Query(
         """
         SELECT r.*,
-               i.installation_id,
-               ow.local_owner_id,
+               c.installation_id,
+               c.local_owner_id,
                i.server_device_id,
                NULL AS server_current_revision_id,
                o.local_sequence
         FROM local_event_revision AS r
+        JOIN local_capture AS c
+          ON c.capture_id = r.capture_id AND c.operation_id = r.operation_id
         JOIN local_life_event AS e ON e.event_id = r.event_id
-        JOIN local_owner AS ow ON ow.local_owner_id = e.local_owner_id
+        JOIN local_owner AS ow
+          ON ow.local_owner_id = c.local_owner_id
+         AND ow.installation_id = c.installation_id
         JOIN local_installation AS i ON i.installation_id = ow.installation_id
         LEFT JOIN sync_outbox AS o ON o.revision_id = r.revision_id
         WHERE e.kind = 'note'
@@ -82,7 +90,8 @@ interface NoteQueryDao {
 
     @Query(
         """
-        SELECT h.event_id, h.current_revision_id, h.server_current_revision_id
+        SELECT h.event_id, h.current_revision_id, h.server_current_revision_id,
+               h.server_observed_sequence
         FROM local_event_head AS h
         JOIN local_life_event AS e ON e.event_id = h.event_id
         WHERE e.kind = 'note'
