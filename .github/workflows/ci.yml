@@ -93,12 +93,15 @@ jobs:
       - name: Lint, test, and assemble the Day-0 probe
         run: |
           mkdir -p \
+            "$RUNNER_TEMP/life-agent-probe-android-user-home" \
             "$RUNNER_TEMP/life-agent-probe-user-home" \
             "$RUNNER_TEMP/life-agent-probe-gradle-home"
 
           docker run --rm \
             --user "$(id -u):$(id -g)" \
+            --env ANDROID_USER_HOME=/tmp/android-user-home \
             --env GRADLE_USER_HOME=/tmp/gradle-home \
+            --volume "$RUNNER_TEMP/life-agent-probe-android-user-home:/tmp/android-user-home" \
             --volume "$RUNNER_TEMP/life-agent-probe-user-home:/home/gradle" \
             --volume "$RUNNER_TEMP/life-agent-probe-gradle-home:/tmp/gradle-home" \
             --volume "$GITHUB_WORKSPACE/android/health-probe:/workspace" \
@@ -136,12 +139,15 @@ jobs:
           version_code=$((100000 + GITHUB_RUN_NUMBER))
           short_sha="${GITHUB_SHA:0:7}"
           mkdir -p \
+            "$RUNNER_TEMP/life-agent-product-android-user-home" \
             "$RUNNER_TEMP/life-agent-product-home" \
             "$RUNNER_TEMP/life-agent-product-gradle-home"
 
           docker run --rm \
             --user "$(id -u):$(id -g)" \
+            --env ANDROID_USER_HOME=/tmp/android-user-home \
             --env GRADLE_USER_HOME=/tmp/gradle-home \
+            --volume "$RUNNER_TEMP/life-agent-product-android-user-home:/tmp/android-user-home" \
             --volume "$RUNNER_TEMP/life-agent-product-home:/home/gradle" \
             --volume "$RUNNER_TEMP/life-agent-product-gradle-home:/tmp/gradle-home" \
             --env LIFE_AGENT_VERSION_CODE="$version_code" \

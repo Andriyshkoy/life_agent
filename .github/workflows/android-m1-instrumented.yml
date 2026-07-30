@@ -64,6 +64,7 @@ jobs:
             --shm-size=2g \
             --user "$(id -u):$(id -g)" \
             --env ANDROID_USER_HOME=/tmp/android-user-home \
+            --env ANDROID_EMULATOR_HOME=/tmp/android-user-home \
             --env GRADLE_USER_HOME=/tmp/gradle-home \
             --volume "$RUNNER_TEMP/life-agent-android-user-home:/tmp/android-user-home" \
             --volume "$RUNNER_TEMP/life-agent-gradle-home:/tmp/gradle-home" \
