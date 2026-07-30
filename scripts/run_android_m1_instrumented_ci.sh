@@ -6,7 +6,7 @@ readonly DIAGNOSTICS_DIR="$PROJECT_DIR/app/build/outputs/m1-cold-start"
 readonly DEBUG_APK="$PROJECT_DIR/app/build/outputs/apk/debug/app-debug.apk"
 readonly TEST_APK="$PROJECT_DIR/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk"
 readonly AVD_NAME="m1_ci_api35"
-readonly TEST_RESULTS_DIR="$PROJECT_DIR/app/build/outputs/androidTest-results"
+readonly TEST_RESULTS_DIR="$PROJECT_DIR/app/build/outputs/androidTest-results/connected"
 readonly MIN_INSTRUMENTED_TESTS=31
 
 : "${ANDROID_SERIAL:?ANDROID_SERIAL must select the CI emulator}"
@@ -155,6 +155,7 @@ fi
     printf 'boot_completed=%s\n' "$boot_completed"
 } > "$DIAGNOSTICS_DIR/device-evidence.txt"
 
+rm -rf -- "$TEST_RESULTS_DIR"
 timeout --signal=TERM --kill-after=30s 25m \
     ./gradlew --no-daemon --stacktrace \
         :app:connectedDebugAndroidTest \
