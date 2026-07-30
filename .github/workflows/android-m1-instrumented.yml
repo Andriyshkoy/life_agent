@@ -64,6 +64,7 @@ jobs:
             --group-add "$KVM_GROUP" \
             --shm-size=2g \
             --user "$(id -u):$(id -g)" \
+            --env HOME=/tmp/android-user-home \
             --env ANDROID_SERIAL=emulator-5554 \
             --env ANDROID_USER_HOME=/tmp/android-user-home \
             --env ANDROID_EMULATOR_HOME=/tmp/android-user-home \
