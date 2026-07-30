@@ -31,10 +31,50 @@ NON_PUBLIC_MARKDOWN_PARTS = {
     "build",
     "venv",
 }
+SENSITIVE_TRACKED_NAMES = {
+    ".env",
+    "google-services.json",
+    "local.properties",
+}
+SENSITIVE_TRACKED_SUFFIXES = {
+    ".jks",
+    ".keystore",
+    ".key",
+    ".mobileprovision",
+    ".p12",
+    ".pem",
+    ".pfx",
+    ".ppk",
+}
+SENSITIVE_TRACKED_PARTS = {
+    ".ssh",
+    "secrets",
+}
+PRIVATE_KEY_BASENAMES = {
+    "id_ecdsa",
+    "id_ed25519",
+    "id_rsa",
+}
 
 
 def fail(message: str) -> None:
     raise AssertionError(message)
+
+
+def tracked_paths() -> set[Path]:
+    if not shutil.which("git"):
+        return set()
+    result = subprocess.run(
+        ["git", "ls-files", "-z"],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+    )
+    return {
+        Path(item.decode("utf-8"))
+        for item in result.stdout.split(b"\0")
+        if item
+    }
 
 
 def validate_documentation_boundary() -> None:
@@ -62,18 +102,8 @@ def validate_documentation_boundary() -> None:
         rendered = ", ".join(str(path) for path in missing)
         fail(f"missing public project documentation: {rendered}")
 
-    if shutil.which("git"):
-        result = subprocess.run(
-            ["git", "ls-files", "-z"],
-            cwd=ROOT,
-            check=True,
-            capture_output=True,
-        )
-        tracked = {
-            Path(item.decode("utf-8"))
-            for item in result.stdout.split(b"\0")
-            if item
-        }
+    tracked = tracked_paths()
+    if tracked:
         private_tracked = sorted(
             path
             for path in tracked
@@ -83,6 +113,51 @@ def validate_documentation_boundary() -> None:
         if private_tracked:
             rendered = ", ".join(str(path) for path in private_tracked)
             fail(f"local agent documentation must not be tracked: {rendered}")
+
+
+def validate_tracked_sensitive_paths() -> int:
+    tracked = tracked_paths()
+    sensitive: list[Path] = []
+    for path in tracked:
+        lowered = tuple(part.lower() for part in path.parts)
+        name = path.name.lower()
+        if (
+            name in SENSITIVE_TRACKED_NAMES
+            or name in PRIVATE_KEY_BASENAMES
+            or any(name.startswith(f"{prefix}.") for prefix in PRIVATE_KEY_BASENAMES)
+            or path.suffix.lower() in SENSITIVE_TRACKED_SUFFIXES
+            or SENSITIVE_TRACKED_PARTS.intersection(lowered)
+            or name.startswith("credentials")
+            or name.startswith("client_secret")
+        ):
+            sensitive.append(path)
+    if sensitive:
+        rendered = ", ".join(str(path) for path in sorted(sensitive))
+        fail(f"sensitive file patterns must not be tracked: {rendered}")
+    return len(tracked)
+
+
+def validate_tracked_text_whitespace() -> None:
+    failures: list[str] = []
+    for relative_path in sorted(tracked_paths()):
+        path = ROOT / relative_path
+        if not path.is_file():
+            continue
+        content = path.read_bytes()
+        if b"\0" in content:
+            continue
+        for line_number, line in enumerate(content.splitlines(), 1):
+            if line.endswith((b" ", b"\t")):
+                failures.append(f"{relative_path}:{line_number}")
+                if len(failures) >= 20:
+                    break
+        if len(failures) >= 20:
+            break
+    if failures:
+        fail(
+            "tracked text contains trailing whitespace: "
+            + ", ".join(failures)
+        )
 
 
 def validate_markdown() -> tuple[int, int]:
@@ -156,13 +231,16 @@ def validate_csv() -> int:
 
 def main() -> int:
     validate_documentation_boundary()
+    tracked_count = validate_tracked_sensitive_paths()
+    validate_tracked_text_whitespace()
     markdown_count, link_count = validate_markdown()
     json_count = validate_json()
     csv_count = validate_csv()
     print(
         "PASS: "
         f"{markdown_count} Markdown files/{link_count} relative links, "
-        f"{json_count} JSON files, {csv_count} CSV files"
+        f"{json_count} JSON files, {csv_count} CSV files, "
+        f"{tracked_count} tracked paths screened"
     )
     return 0
 

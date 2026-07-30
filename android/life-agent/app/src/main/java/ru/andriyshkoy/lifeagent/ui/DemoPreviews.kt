@@ -3,6 +3,10 @@ package ru.andriyshkoy.lifeagent.ui
 import android.content.res.Configuration
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.tooling.preview.Preview
+import java.time.Clock
+import java.time.Instant
+import java.time.ZoneId
+import java.time.ZoneOffset
 import ru.andriyshkoy.lifeagent.ui.theme.ThemeMode
 
 @Preview(
@@ -13,7 +17,11 @@ import ru.andriyshkoy.lifeagent.ui.theme.ThemeMode
 )
 @Composable
 private fun AddLightPreview() {
-    LifeAgentApp(initialThemeMode = ThemeMode.Light)
+    LifeAgentApp(
+        initialThemeMode = ThemeMode.Light,
+        clock = PREVIEW_CLOCK,
+        zoneId = PREVIEW_ZONE_ID,
+    )
 }
 
 @Preview(
@@ -25,7 +33,11 @@ private fun AddLightPreview() {
 )
 @Composable
 private fun AddDarkPreview() {
-    LifeAgentApp(initialThemeMode = ThemeMode.Dark)
+    LifeAgentApp(
+        initialThemeMode = ThemeMode.Dark,
+        clock = PREVIEW_CLOCK,
+        zoneId = PREVIEW_ZONE_ID,
+    )
 }
 
 @Preview(
@@ -39,6 +51,8 @@ private fun AddExpandedPreview() {
     LifeAgentApp(
         initialThemeMode = ThemeMode.Light,
         forceExpanded = true,
+        clock = PREVIEW_CLOCK,
+        zoneId = PREVIEW_ZONE_ID,
     )
 }
 
@@ -53,5 +67,13 @@ private fun FoodCapturePreview() {
     LifeAgentApp(
         initialRoute = DemoRoute.CaptureFood,
         initialThemeMode = ThemeMode.Light,
+        clock = PREVIEW_CLOCK,
+        zoneId = PREVIEW_ZONE_ID,
     )
 }
+
+private val PREVIEW_CLOCK = Clock.fixed(
+    Instant.parse("2026-07-29T03:00:00Z"),
+    ZoneOffset.UTC,
+)
+private val PREVIEW_ZONE_ID = ZoneId.of("Asia/Novosibirsk")

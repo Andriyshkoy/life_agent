@@ -26,6 +26,7 @@ import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.ArrowOutward
 import androidx.compose.material.icons.rounded.CloudOff
 import androidx.compose.material.icons.rounded.DarkMode
+import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.Description
 import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.rounded.EditNote
@@ -36,6 +37,7 @@ import androidx.compose.material.icons.rounded.LocalDining
 import androidx.compose.material.icons.rounded.Medication
 import androidx.compose.material.icons.rounded.MonitorHeart
 import androidx.compose.material.icons.rounded.Restaurant
+import androidx.compose.material.icons.rounded.Schedule
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Security
 import androidx.compose.material.icons.rounded.SentimentSatisfied
@@ -43,6 +45,7 @@ import androidx.compose.material.icons.rounded.Sync
 import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.HorizontalDivider
@@ -52,6 +55,7 @@ import androidx.compose.material3.ListItem
 import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
@@ -64,11 +68,18 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.disabled
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import java.time.Clock
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
+import java.util.Locale
 import ru.andriyshkoy.lifeagent.BuildConfig
 import ru.andriyshkoy.lifeagent.ui.CatalogKind
 import ru.andriyshkoy.lifeagent.ui.DemoCatalogItem
@@ -82,7 +93,10 @@ import ru.andriyshkoy.lifeagent.ui.components.SecondaryActionButton
 import ru.andriyshkoy.lifeagent.ui.components.SectionTitle
 import ru.andriyshkoy.lifeagent.ui.components.SelectablePill
 import ru.andriyshkoy.lifeagent.ui.components.StatusCard
-import ru.andriyshkoy.lifeagent.ui.components.TimelineItem
+import ru.andriyshkoy.lifeagent.ui.notes.LastNoteUiState
+import ru.andriyshkoy.lifeagent.ui.notes.NoteRecordStatusUi
+import ru.andriyshkoy.lifeagent.ui.notes.NoteSummaryUi
+import ru.andriyshkoy.lifeagent.ui.notes.formatUtcOffset
 import ru.andriyshkoy.lifeagent.ui.theme.LifeAgentThemeValues
 import ru.andriyshkoy.lifeagent.ui.theme.ThemeMode
 
@@ -91,6 +105,14 @@ fun AddScreen(
     expanded: Boolean,
     onNavigate: (DemoRoute) -> Unit,
     modifier: Modifier = Modifier,
+    clock: Clock = Clock.systemUTC(),
+    zoneId: ZoneId = ZoneId.systemDefault(),
+    lastNote: LastNoteUiState = LastNoteUiState.Empty,
+    persistenceAvailable: Boolean = false,
+    onStartNote: () -> Unit = { onNavigate(DemoRoute.CaptureNote) },
+    onCorrectNote: (NoteSummaryUi) -> Unit = {},
+    onUndoNote: (NoteSummaryUi) -> Unit = {},
+    onRetryLastNote: () -> Unit = {},
 ) {
     Box(
         modifier = modifier.fillMaxSize(),
@@ -105,11 +127,11 @@ fun AddScreen(
                 horizontalArrangement = Arrangement.spacedBy(28.dp),
             ) {
                 Column(Modifier.weight(1.25f)) {
-                    AddHeader()
+                    AddHeader(clock = clock, zoneId = zoneId)
                     Spacer(Modifier.height(28.dp))
                     SectionTitle("Что записать?")
                     Spacer(Modifier.height(14.dp))
-                    QuickActionGrid(onNavigate)
+                    QuickActionGrid(onNavigate, onStartNote)
                 }
                 Column(
                     modifier = Modifier
@@ -118,8 +140,13 @@ fun AddScreen(
                     verticalArrangement = Arrangement.spacedBy(18.dp),
                 ) {
                     Spacer(Modifier.height(82.dp))
-                    LocalStateCard()
-                    RecentActivityCard()
+                    LocalStateCard(persistenceAvailable)
+                    RecentActivityCard(
+                        lastNote = lastNote,
+                        onCorrectNote = onCorrectNote,
+                        onUndoNote = onUndoNote,
+                        onRetryLastNote = onRetryLastNote,
+                    )
                 }
             }
         } else {
@@ -135,30 +162,41 @@ fun AddScreen(
                 ),
                 verticalArrangement = Arrangement.spacedBy(20.dp),
             ) {
-                item { AddHeader() }
+                item { AddHeader(clock = clock, zoneId = zoneId) }
                 item {
                     SectionTitle("Что записать?")
                     Spacer(Modifier.height(14.dp))
-                    QuickActionGrid(onNavigate)
+                    QuickActionGrid(onNavigate, onStartNote)
                 }
-                item { LocalStateCard() }
-                item { RecentActivityCard() }
+                item { LocalStateCard(persistenceAvailable) }
+                item {
+                    RecentActivityCard(
+                        lastNote = lastNote,
+                        onCorrectNote = onCorrectNote,
+                        onUndoNote = onUndoNote,
+                        onRetryLastNote = onRetryLastNote,
+                    )
+                }
             }
         }
     }
 }
 
 @Composable
-private fun AddHeader() {
+private fun AddHeader(
+    clock: Clock,
+    zoneId: ZoneId,
+) {
+    val content = resolveAddHeaderContent(clock = clock, zoneId = zoneId)
     Column {
         Text(
-            text = "29 июля · среда",
+            text = content.dateLabel,
             style = MaterialTheme.typography.labelLarge,
             color = MaterialTheme.colorScheme.primary,
         )
         Spacer(Modifier.height(6.dp))
         Text(
-            text = "Доброе утро",
+            text = content.greeting,
             style = MaterialTheme.typography.displaySmall,
             color = MaterialTheme.colorScheme.onBackground,
         )
@@ -171,8 +209,36 @@ private fun AddHeader() {
     }
 }
 
+internal data class AddHeaderContent(
+    val dateLabel: String,
+    val greeting: String,
+)
+
+internal fun resolveAddHeaderContent(
+    clock: Clock,
+    zoneId: ZoneId,
+    locale: Locale = Locale.forLanguageTag("ru"),
+): AddHeaderContent {
+    val localNow = clock.instant().atZone(zoneId)
+    val greeting = when (localNow.hour) {
+        in 5..11 -> "Доброе утро"
+        in 12..17 -> "Добрый день"
+        in 18..22 -> "Добрый вечер"
+        else -> "Доброй ночи"
+    }
+    return AddHeaderContent(
+        dateLabel = localNow.format(
+            DateTimeFormatter.ofPattern("d MMMM · EEEE", locale),
+        ),
+        greeting = greeting,
+    )
+}
+
 @Composable
-private fun QuickActionGrid(onNavigate: (DemoRoute) -> Unit) {
+private fun QuickActionGrid(
+    onNavigate: (DemoRoute) -> Unit,
+    onStartNote: () -> Unit,
+) {
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -216,7 +282,7 @@ private fun QuickActionGrid(onNavigate: (DemoRoute) -> Unit) {
                 icon = Icons.Rounded.EditNote,
                 containerColor = MaterialTheme.colorScheme.surfaceVariant,
                 contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                onClick = { onNavigate(DemoRoute.CaptureNote) },
+                onClick = onStartNote,
                 modifier = Modifier.weight(1f).heightIn(min = 154.dp),
             )
         }
@@ -224,16 +290,29 @@ private fun QuickActionGrid(onNavigate: (DemoRoute) -> Unit) {
 }
 
 @Composable
-private fun LocalStateCard() {
+private fun LocalStateCard(persistenceAvailable: Boolean) {
     StatusCard(
-        title = "Всё сохранено на устройстве",
-        subtitle = "Синхронизация пока не настроена",
+        title = if (persistenceAvailable) {
+            "Заметки сохраняются на устройстве"
+        } else {
+            "Зашифрованное хранилище недоступно"
+        },
+        subtitle = if (persistenceAvailable) {
+            "Синхронизация пока не настроена"
+        } else {
+            "Чтение и запись заметок отключены"
+        },
         icon = Icons.Rounded.CloudOff,
     )
 }
 
 @Composable
-private fun RecentActivityCard() {
+private fun RecentActivityCard(
+    lastNote: LastNoteUiState,
+    onCorrectNote: (NoteSummaryUi) -> Unit,
+    onUndoNote: (NoteSummaryUi) -> Unit,
+    onRetryLastNote: () -> Unit,
+) {
     Card(
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         shape = MaterialTheme.shapes.large,
@@ -242,17 +321,88 @@ private fun RecentActivityCard() {
         Column(Modifier.padding(18.dp)) {
             SectionTitle("Последнее действие")
             Spacer(Modifier.height(16.dp))
-            TimelineItem(
-                title = "Спокойно",
-                subtitle = "Самочувствие · комментария нет",
-                time = "09:18",
-            )
-            Spacer(Modifier.height(16.dp))
-            Text(
-                text = "Это демонстрационные данные",
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+            when (lastNote) {
+                LastNoteUiState.Loading -> {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(24.dp),
+                        strokeWidth = 2.dp,
+                    )
+                }
+
+                LastNoteUiState.Empty -> {
+                    Text(
+                        "Пока нет сохранённых заметок",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+
+                LastNoteUiState.Failed -> {
+                    Text(
+                        "Не удалось прочитать последнее действие",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    SecondaryActionButton(
+                        text = "Повторить",
+                        onClick = onRetryLastNote,
+                    )
+                }
+
+                is LastNoteUiState.Available -> {
+                    val note = lastNote.note
+                    Text(
+                        if (note.status == NoteRecordStatusUi.Active) {
+                            note.text
+                        } else {
+                            "Заметка отменена"
+                        },
+                        style = MaterialTheme.typography.titleMedium,
+                        maxLines = 4,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        "Заметка · ${note.timestampLabel()} · ${note.timezoneId} · " +
+                            formatUtcOffset(note.offsetSeconds),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        if (note.status == NoteRecordStatusUi.Active) {
+                            "Сохранено на устройстве · синхронизация не настроена"
+                        } else {
+                            "Отмена сохранена на устройстве"
+                        },
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                    if (note.status == NoteRecordStatusUi.Active) {
+                        Spacer(Modifier.height(16.dp))
+                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            SecondaryActionButton(
+                                text = "Исправить",
+                                onClick = { onCorrectNote(note) },
+                            )
+                            OutlinedButton(
+                                onClick = { onUndoNote(note) },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .heightIn(min = 52.dp),
+                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.error),
+                                shape = MaterialTheme.shapes.medium,
+                            ) {
+                                Text(
+                                    "Отменить запись",
+                                    color = MaterialTheme.colorScheme.error,
+                                )
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -273,9 +423,14 @@ fun CatalogsScreen(
         item {
             ScreenTitle(
                 title = "Справочники",
-                subtitle = "Настрой быстрый ввод под свои привычки.",
+                subtitle = "Предпросмотр будущего быстрого ввода.",
             )
             Spacer(Modifier.height(12.dp))
+            Text(
+                text = "Изменения справочников пока не сохраняются.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.error,
+            )
         }
         item {
             CatalogOverviewCard(
@@ -301,7 +456,7 @@ fun CatalogsScreen(
         item {
             Spacer(Modifier.height(2.dp))
             Text(
-                text = "Изменение карточки не меняет уже сохранённые события.",
+                text = "Предзаполненные карточки здесь — только демонстрационные.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -362,6 +517,10 @@ fun SettingsScreen(
     onThemeModeChange: (ThemeMode) -> Unit,
     onNavigate: (DemoRoute) -> Unit,
     modifier: Modifier = Modifier,
+    onExportNotes: () -> Unit = {},
+    notesPersistenceAvailable: Boolean = false,
+    zoneId: ZoneId = ZoneId.systemDefault(),
+    appVersion: String = BuildConfig.VERSION_NAME,
 ) {
     LazyColumn(
         modifier = modifier
@@ -409,7 +568,7 @@ fun SettingsScreen(
                 SettingsRow(
                     icon = Icons.Rounded.MonitorHeart,
                     title = "Health Connect",
-                    subtitle = "Доступ будет запрошен отдельно",
+                    subtitle = "Интеграция запланирована на M4",
                     onClick = { onNavigate(DemoRoute.HealthConnect) },
                 )
             }
@@ -419,8 +578,13 @@ fun SettingsScreen(
                 SettingsRow(
                     icon = Icons.Rounded.Download,
                     title = "Экспорт",
-                    subtitle = "Получить копию своих данных",
-                    onClick = {},
+                    subtitle = if (notesPersistenceAvailable) {
+                        "Заметки · JSON без шифрования"
+                    } else {
+                        "Хранилище недоступно"
+                    },
+                    onClick = onExportNotes,
+                    enabled = notesPersistenceAvailable,
                 )
                 HorizontalDivider(
                     color = MaterialTheme.colorScheme.outlineVariant,
@@ -429,8 +593,28 @@ fun SettingsScreen(
                 SettingsRow(
                     icon = Icons.Rounded.Security,
                     title = "Приватность",
-                    subtitle = "Разрешения и удаление данных",
-                    onClick = {},
+                    subtitle = "Как хранятся локальные данные",
+                    onClick = { onNavigate(DemoRoute.Privacy) },
+                )
+            }
+        }
+        item {
+            SettingsCard(title = "Система", contentPadding = PaddingValues(0.dp)) {
+                SettingsRow(
+                    icon = Icons.Rounded.Schedule,
+                    title = "Часовой пояс",
+                    subtitle = zoneId.id,
+                    onClick = { onNavigate(DemoRoute.TimeZone) },
+                )
+                HorizontalDivider(
+                    color = MaterialTheme.colorScheme.outlineVariant,
+                    modifier = Modifier.padding(start = 62.dp),
+                )
+                SettingsRow(
+                    icon = Icons.Rounded.Info,
+                    title = "Диагностика",
+                    subtitle = "Версия и состояние локального хранилища",
+                    onClick = { onNavigate(DemoRoute.Diagnostics) },
                 )
             }
         }
@@ -439,8 +623,8 @@ fun SettingsScreen(
                 SettingsRow(
                     icon = Icons.Rounded.Info,
                     title = "Life Agent",
-                    subtitle = "Интерактивный UI-прототип · ${BuildConfig.VERSION_NAME}",
-                    onClick = {},
+                    subtitle = "Версия $appVersion",
+                    onClick = null,
                 )
             }
         }
@@ -477,8 +661,10 @@ private fun SettingsRow(
     icon: ImageVector,
     title: String,
     subtitle: String,
-    onClick: () -> Unit,
+    onClick: (() -> Unit)?,
+    enabled: Boolean = true,
 ) {
+    val interactive = onClick != null
     ListItem(
         headlineContent = { Text(title) },
         supportingContent = {
@@ -491,18 +677,288 @@ private fun SettingsRow(
         leadingContent = {
             Icon(icon, null, tint = MaterialTheme.colorScheme.primary)
         },
-        trailingContent = {
-            Icon(Icons.Rounded.ArrowOutward, contentDescription = "Открыть")
+        trailingContent = if (interactive && enabled) {
+            {
+                Icon(Icons.Rounded.ArrowOutward, contentDescription = "Открыть")
+            }
+        } else {
+            null
         },
         colors = ListItemDefaults.colors(containerColor = MaterialTheme.colorScheme.surface),
         modifier = Modifier
             .fillMaxWidth()
             .heightIn(min = 72.dp)
-            .clickable(
-                role = Role.Button,
-                onClick = onClick,
+            .alpha(if (interactive && !enabled) 0.5f else 1f)
+            .then(
+                if (onClick == null) {
+                    Modifier
+                } else {
+                    Modifier
+                        .semantics {
+                            if (!enabled) disabled()
+                        }
+                        .clickable(
+                            enabled = enabled,
+                            role = Role.Button,
+                            onClick = onClick,
+                        )
+                },
             ),
     )
+}
+
+@Composable
+fun TimeZoneScreen(
+    onBack: () -> Unit,
+    modifier: Modifier = Modifier,
+    clock: Clock = Clock.systemUTC(),
+    zoneId: ZoneId = ZoneId.systemDefault(),
+) {
+    val content = resolveTimeZoneDisplayContent(clock = clock, zoneId = zoneId)
+
+    Scaffold(
+        modifier = modifier.fillMaxSize(),
+        topBar = { DetailTopBar("Часовой пояс", onBack) },
+        containerColor = MaterialTheme.colorScheme.background,
+    ) { padding ->
+        LazyColumn(
+            modifier = Modifier
+                .padding(padding)
+                .fillMaxSize()
+                .widthIn(max = 680.dp)
+                .padding(horizontal = 20.dp),
+            contentPadding = PaddingValues(top = 16.dp, bottom = 32.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            item {
+                StatusCard(
+                    title = content.zoneId,
+                    subtitle = "Текущий пояс устройства · ${content.offsetLabel}",
+                    icon = Icons.Rounded.Schedule,
+                )
+            }
+            item {
+                InformationCard(
+                    icon = Icons.Rounded.Schedule,
+                    title = "Текущее локальное время",
+                    text = content.localTimeLabel,
+                )
+            }
+            item {
+                InformationCard(
+                    icon = Icons.Rounded.Description,
+                    title = "Время события сохраняется с контекстом",
+                    text = "Каждое событие хранит точный момент (instant), исходные " +
+                        "локальные дату и время, ZoneId и UTC-смещение.",
+                )
+            }
+            item {
+                InformationCard(
+                    icon = Icons.Rounded.Tune,
+                    title = "Изменение часового пояса",
+                    text = "Life Agent читает часовой пояс устройства. Изменить его можно " +
+                        "в системных настройках Android — отдельного переключателя в M1 нет.",
+                )
+            }
+        }
+    }
+}
+
+internal data class TimeZoneDisplayContent(
+    val zoneId: String,
+    val offsetLabel: String,
+    val localTimeLabel: String,
+)
+
+internal fun resolveTimeZoneDisplayContent(
+    clock: Clock,
+    zoneId: ZoneId,
+    locale: Locale = Locale.forLanguageTag("ru"),
+): TimeZoneDisplayContent {
+    val localNow = clock.instant().atZone(zoneId)
+    return TimeZoneDisplayContent(
+        zoneId = zoneId.id,
+        offsetLabel = formatUtcOffset(localNow.offset.totalSeconds),
+        localTimeLabel = localNow.format(
+            DateTimeFormatter.ofPattern("d MMMM yyyy, HH:mm", locale),
+        ),
+    )
+}
+
+@Composable
+fun DiagnosticsScreen(
+    onBack: () -> Unit,
+    encryptedStorageAvailable: Boolean,
+    appVersion: String = BuildConfig.VERSION_NAME,
+    modifier: Modifier = Modifier,
+) {
+    Scaffold(
+        modifier = modifier.fillMaxSize(),
+        topBar = { DetailTopBar("Диагностика", onBack) },
+        containerColor = MaterialTheme.colorScheme.background,
+    ) { padding ->
+        LazyColumn(
+            modifier = Modifier
+                .padding(padding)
+                .fillMaxSize()
+                .widthIn(max = 680.dp)
+                .padding(horizontal = 20.dp),
+            contentPadding = PaddingValues(top = 16.dp, bottom = 32.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            item {
+                StatusCard(
+                    title = if (encryptedStorageAvailable) {
+                        "Зашифрованное хранилище доступно"
+                    } else {
+                        "Зашифрованное хранилище недоступно"
+                    },
+                    subtitle = "Синхронизация отсутствует в M1",
+                    icon = Icons.Rounded.Security,
+                )
+            }
+            item {
+                InformationCard(
+                    icon = Icons.Rounded.Info,
+                    title = "Версия приложения",
+                    text = appVersion,
+                )
+            }
+            item {
+                InformationCard(
+                    icon = Icons.Rounded.Security,
+                    title = "Локальное хранилище",
+                    text = if (encryptedStorageAvailable) {
+                        "Зашифрованная база заметок открыта и доступна приложению."
+                    } else {
+                        "Зашифрованная база заметок не открыта: чтение и сохранение недоступны."
+                    },
+                )
+            }
+            item {
+                InformationCard(
+                    icon = Icons.Rounded.Sync,
+                    title = "Синхронизация M1",
+                    text = "Серверная синхронизация отсутствует; приложение работает локально.",
+                )
+            }
+            item {
+                InformationCard(
+                    icon = Icons.Rounded.Description,
+                    title = "Содержимое диагностики",
+                    text = "Экран показывает только версию и доступность хранилища. " +
+                        "ID, логи и значения здоровья здесь не отображаются.",
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun PrivacyScreen(
+    onBack: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Scaffold(
+        modifier = modifier.fillMaxSize(),
+        topBar = { DetailTopBar("Приватность", onBack) },
+        containerColor = MaterialTheme.colorScheme.background,
+    ) { padding ->
+        LazyColumn(
+            modifier = Modifier
+                .padding(padding)
+                .fillMaxSize()
+                .widthIn(max = 680.dp)
+                .padding(horizontal = 20.dp),
+            contentPadding = PaddingValues(top = 16.dp, bottom = 32.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            item {
+                StatusCard(
+                    title = "Данные остаются локально",
+                    subtitle = "В M1 серверная синхронизация отсутствует",
+                    icon = Icons.Rounded.Security,
+                )
+            }
+            item {
+                InformationCard(
+                    icon = Icons.Rounded.Security,
+                    title = "Шифрование на устройстве",
+                    text = "Локальная база и outbox защищены SQLCipher. " +
+                        "Ключ шифрования базы обёрнут ключом Android Keystore.",
+                )
+            }
+            item {
+                InformationCard(
+                    icon = Icons.Rounded.CloudOff,
+                    title = "Резервные копии",
+                    text = "База, outbox и ключи исключены из Android Auto Backup " +
+                        "и переноса данных на другое устройство.",
+                )
+            }
+            item {
+                InformationCard(
+                    icon = Icons.Rounded.Sync,
+                    title = "Синхронизация",
+                    text = "Серверная синхронизация в M1 отсутствует. " +
+                        "Локальные заметки не отправляются на сервер.",
+                )
+            }
+            item {
+                InformationCard(
+                    icon = Icons.Rounded.Description,
+                    title = "Экспорт",
+                    text = "Экспорт создаёт JSON без шифрования. Файл сохраняется " +
+                        "в выбранном пользователем месте и дальше хранится под его контролем.",
+                )
+            }
+            item {
+                InformationCard(
+                    icon = Icons.Rounded.DeleteOutline,
+                    title = "Удаление данных",
+                    text = "Отдельной кнопки удаления внутри Life Agent в M1 нет. " +
+                        "Очистка данных приложения в Android или удаление приложения удаляет " +
+                        "локальную базу из закрытого хранилища приложения. Экспортированные " +
+                        "JSON-файлы без шифрования нужно удалить отдельно в выбранном месте.",
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun InformationCard(
+    icon: ImageVector,
+    title: String,
+    text: String,
+) {
+    Card(
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        shape = MaterialTheme.shapes.large,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+    ) {
+        Row(
+            modifier = Modifier.padding(18.dp),
+            verticalAlignment = Alignment.Top,
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(26.dp),
+            )
+            Spacer(Modifier.width(14.dp))
+            Column(Modifier.weight(1f)) {
+                Text(title, style = MaterialTheme.typography.titleMedium)
+                Spacer(Modifier.height(5.dp))
+                Text(
+                    text,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -693,13 +1149,15 @@ private fun CatalogEditorSheet(kind: CatalogKind, onSave: () -> Unit) {
                         modifier = Modifier.weight(1f),
                         label = { Text(label) },
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                        readOnly = true,
+                        enabled = false,
                         singleLine = true,
                     )
                 }
             }
         }
         PrimaryActionButton(
-            text = "Сохранить карточку",
+            text = "Закрыть предпросмотр",
             onClick = onSave,
             enabled = title.isNotBlank(),
         )
@@ -751,8 +1209,10 @@ fun SyncSetupScreen(
                     value = "",
                     onValueChange = {},
                     modifier = Modifier.fillMaxWidth(),
-                    label = { Text("Одноразовый код подключения") },
-                    supportingText = { Text("Код создаётся на личном сервере") },
+                    label = { Text("Одноразовый код · M2") },
+                    supportingText = { Text("Подключение появится в M2") },
+                    readOnly = true,
+                    enabled = false,
                     singleLine = true,
                     shape = MaterialTheme.shapes.medium,
                 )
@@ -776,9 +1236,6 @@ fun HealthConnectScreen(
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    var sleepEnabled by remember { mutableStateOf(true) }
-    var heartRateEnabled by remember { mutableStateOf(true) }
-
     Scaffold(
         modifier = modifier.fillMaxSize(),
         topBar = { DetailTopBar("Health Connect", onBack) },
@@ -795,8 +1252,8 @@ fun HealthConnectScreen(
         ) {
             item {
                 StatusCard(
-                    title = "Доступ ещё не выдан",
-                    subtitle = "Ручной ввод продолжит работать без Health Connect",
+                    title = "Предпросмотр Health Connect",
+                    subtitle = "Подключение появится на M4; сейчас данные не читаются",
                     icon = Icons.Rounded.HealthAndSafety,
                 )
             }
@@ -813,8 +1270,8 @@ fun HealthConnectScreen(
                             icon = Icons.Rounded.MonitorHeart,
                             title = "Сон",
                             subtitle = "Сессии сна без догадок о фазах",
-                            checked = sleepEnabled,
-                            onCheckedChange = { sleepEnabled = it },
+                            checked = true,
+                            onCheckedChange = null,
                         )
                         HorizontalDivider(
                             color = MaterialTheme.colorScheme.outlineVariant,
@@ -824,8 +1281,8 @@ fun HealthConnectScreen(
                             icon = Icons.Rounded.MonitorHeart,
                             title = "Пульс",
                             subtitle = "Обычные измерения пульса",
-                            checked = heartRateEnabled,
-                            onCheckedChange = { heartRateEnabled = it },
+                            checked = true,
+                            onCheckedChange = null,
                         )
                     }
                 }
@@ -834,11 +1291,12 @@ fun HealthConnectScreen(
                 PrimaryActionButton(
                     text = "Выдать доступ",
                     onClick = {},
+                    enabled = false,
                     icon = Icons.Rounded.HealthAndSafety,
                 )
                 Spacer(Modifier.height(8.dp))
                 Text(
-                    "Life Agent запрашивает только выбранные типы и ничего не записывает в Health Connect.",
+                    "Подключение Health Connect появится на M4; сейчас данные не читаются.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -853,7 +1311,7 @@ private fun PermissionRow(
     title: String,
     subtitle: String,
     checked: Boolean,
-    onCheckedChange: (Boolean) -> Unit,
+    onCheckedChange: ((Boolean) -> Unit)?,
 ) {
     Row(
         modifier = Modifier.padding(16.dp),

@@ -3,11 +3,15 @@
 
     <application
         android:allowBackup="false"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="@xml/backup_rules_legacy"
         android:icon="@drawable/ic_launcher"
         android:label="@string/app_name"
+        android:name=".LifeAgentApplication"
         android:roundIcon="@drawable/ic_launcher"
         android:supportsRtl="true"
-        android:theme="@style/Theme.LifeAgent">
+        android:theme="@style/Theme.LifeAgent.Starting"
+        android:usesCleartextTraffic="false">
         <activity
             android:name=".MainActivity"
             android:exported="true">

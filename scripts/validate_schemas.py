@@ -46,6 +46,28 @@ def sha256(value: Any) -> str:
     return hashlib.sha256(canonical_json_bytes(value)).hexdigest()
 
 
+def note_revision_content_sha256(revision: dict[str, Any]) -> str | None:
+    """Mirror the M1 Android codec's immutable linear-revision digest."""
+
+    parents = revision["revision"]["parents"]
+    if len(parents) > 1:
+        return None
+    immutable_content = {
+        "event_id": revision["event_id"],
+        "revision_id": revision["revision_id"],
+        "revision_no": revision["revision_no"],
+        "capture_id": revision["source"]["capture_id"],
+        "operation_id": revision["source"]["operation_id"],
+        "record_status": revision["record_status"],
+        "effective_time": revision["time"],
+        "recorded_at": revision["source"]["recorded_at"],
+        "payload": revision["payload"],
+        "correction_reason": revision["revision"]["correction_reason"],
+        "parent_revision_id": parents[0]["revision_id"] if parents else None,
+    }
+    return sha256(immutable_content)
+
+
 def parse_instant(value: str) -> datetime:
     parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     if parsed.tzinfo is None:
@@ -194,6 +216,128 @@ def event_semantic_errors(event: dict[str, Any]) -> list[str]:
             if previous_end is not None and stage_start < previous_end:
                 errors.append("sleep stages overlap or are out of order")
             previous_end = stage_end
+
+    return errors
+
+
+def notes_export_semantic_errors(document: dict[str, Any]) -> list[str]:
+    """Validate graph invariants that JSON Schema cannot express."""
+
+    errors: list[str] = []
+    event_pointers: dict[str, str] = {}
+    for pointer in document["events"]:
+        event_id = pointer["event_id"]
+        if event_id in event_pointers:
+            errors.append(f"duplicate event pointer: {event_id}")
+        else:
+            event_pointers[event_id] = pointer["current_revision_id"]
+
+    revisions_by_id: dict[str, dict[str, Any]] = {}
+    revisions_by_event: dict[str, list[dict[str, Any]]] = {}
+    operation_ids: set[str] = set()
+    owner_namespace: tuple[str, str] | None = None
+
+    for revision in document["revisions"]:
+        revision_id = revision["revision_id"]
+        event_id = revision["event_id"]
+        operation_id = revision["source"]["operation_id"]
+
+        if revision_id in revisions_by_id:
+            errors.append(f"duplicate revision_id: {revision_id}")
+        else:
+            revisions_by_id[revision_id] = revision
+        revisions_by_event.setdefault(event_id, []).append(revision)
+
+        if operation_id in operation_ids:
+            errors.append(f"duplicate operation_id: {operation_id}")
+        operation_ids.add(operation_id)
+
+        identity = revision["identity"]
+        namespace = (
+            identity["installation_id"],
+            identity["local_owner_id"],
+        )
+        if owner_namespace is None:
+            owner_namespace = namespace
+        elif owner_namespace != namespace:
+            errors.append(
+                "revisions do not share one installation_id/local_owner_id namespace"
+            )
+
+        if revision["kind"] != "note":
+            errors.append(f"{revision_id}: export contains a non-note revision")
+        expected_content_sha256 = note_revision_content_sha256(revision)
+        if (
+            expected_content_sha256 is not None
+            and revision["revision"]["content_sha256"] != expected_content_sha256
+        ):
+            errors.append(
+                f"{revision_id}: revision content_sha256 does not match "
+                "canonical immutable content"
+            )
+        errors.extend(
+            f"{revision_id}: {error}" for error in event_semantic_errors(revision)
+        )
+
+    for event_id, current_revision_id in event_pointers.items():
+        event_revisions = revisions_by_event.get(event_id, [])
+        if not event_revisions:
+            errors.append(f"event has no revisions: {event_id}")
+        current = revisions_by_id.get(current_revision_id)
+        if current is None:
+            errors.append(
+                f"current_revision_id does not resolve for {event_id}: "
+                f"{current_revision_id}"
+            )
+        elif current["event_id"] != event_id:
+            errors.append(
+                f"current_revision_id belongs to another event: {current_revision_id}"
+            )
+
+    for event_id in revisions_by_event:
+        if event_id not in event_pointers:
+            errors.append(f"orphan revisions for undeclared event: {event_id}")
+
+    parent_graph: dict[str, list[str]] = {}
+    for revision_id, revision in revisions_by_id.items():
+        parent_ids = [
+            parent["revision_id"] for parent in revision["revision"]["parents"]
+        ]
+        parent_graph[revision_id] = parent_ids
+        for parent_id in parent_ids:
+            parent = revisions_by_id.get(parent_id)
+            if parent is None:
+                errors.append(
+                    f"{revision_id}: parent revision does not resolve: {parent_id}"
+                )
+            elif parent["event_id"] != revision["event_id"]:
+                errors.append(
+                    f"{revision_id}: parent belongs to another event: {parent_id}"
+                )
+
+    visit_state: dict[str, int] = {}
+    cycle_reported = False
+
+    def visit(revision_id: str) -> None:
+        nonlocal cycle_reported
+        state = visit_state.get(revision_id, 0)
+        if state == 1:
+            if not cycle_reported:
+                errors.append("revision ancestry contains a cycle")
+                cycle_reported = True
+            return
+        if state == 2:
+            return
+        visit_state[revision_id] = 1
+        revision = revisions_by_id[revision_id]
+        for parent_id in parent_graph.get(revision_id, []):
+            parent = revisions_by_id.get(parent_id)
+            if parent is not None and parent["event_id"] == revision["event_id"]:
+                visit(parent_id)
+        visit_state[revision_id] = 2
+
+    for revision_id in revisions_by_id:
+        visit(revision_id)
 
     return errors
 
@@ -402,6 +546,7 @@ def main() -> int:
 
     fixtures = {
         "capture-note-local-pending.json": "capture-envelope.schema.json",
+        "m1-notes-export.json": "notes-export.schema.json",
         "voice-extraction.json": "extraction.schema.json",
         "mvp-note-local-pending.json": "life-event.schema.json",
         "mvp-note-server-committed.json": "life-event.schema.json",
@@ -426,6 +571,7 @@ def main() -> int:
     capture = loaded_fixtures["capture-note-local-pending.json"]
     local_note = loaded_fixtures["mvp-note-local-pending.json"]
     server_note = loaded_fixtures["mvp-note-server-committed.json"]
+    notes_export = loaded_fixtures["m1-notes-export.json"]
     request = loaded_fixtures["sync-push-batch-request.json"]
     response = loaded_fixtures["sync-push-batch-response.json"]
     voice = loaded_fixtures["voice-extraction.json"]
@@ -433,11 +579,16 @@ def main() -> int:
     assert_no_errors("capture semantics", capture_semantic_errors(capture))
     assert_no_errors("local note semantics", event_semantic_errors(local_note))
     assert_no_errors("server note semantics", event_semantic_errors(server_note))
+    assert_no_errors(
+        "notes export semantics",
+        notes_export_semantic_errors(notes_export),
+    )
     assert_no_errors("voice semantics", extraction_semantic_errors(voice))
     assert_no_errors("sync request semantics", sync_request_semantic_errors(request))
     assert_no_errors("sync request/response semantics", sync_pair_semantic_errors(request, response))
 
     life_validator = validators["life-event.schema.json"]
+    notes_export_validator = validators["notes-export.schema.json"]
     capture_validator = validators["capture-envelope.schema.json"]
     extraction_validator = validators["extraction.schema.json"]
 
@@ -492,6 +643,125 @@ def main() -> int:
     invalid = copy.deepcopy(local_note)
     invalid["evidence"][0]["field_path"] = "/payload/missing"
     assert_semantic_rejects("unresolved evidence pointer", event_semantic_errors, invalid)
+
+    invalid = copy.deepcopy(notes_export)
+    invalid["unexpected"] = True
+    assert_schema_rejects(
+        "notes export with an extra field",
+        notes_export_validator,
+        invalid,
+    )
+
+    invalid = copy.deepcopy(notes_export)
+    invalid["revisions"][0]["kind"] = "meal"
+    assert_schema_rejects(
+        "notes export with a non-note revision",
+        notes_export_validator,
+        invalid,
+    )
+
+    invalid = copy.deepcopy(notes_export)
+    invalid["events"].append(copy.deepcopy(invalid["events"][0]))
+    assert_semantic_rejects(
+        "duplicate notes export event pointer",
+        notes_export_semantic_errors,
+        invalid,
+    )
+
+    invalid = copy.deepcopy(notes_export)
+    invalid["events"][0]["current_revision_id"] = (
+        "30000000-0000-4000-8000-000000000099"
+    )
+    assert_semantic_rejects(
+        "notes export with an unresolved current revision",
+        notes_export_semantic_errors,
+        invalid,
+    )
+
+    invalid = copy.deepcopy(notes_export)
+    invalid["revisions"][0]["event_id"] = (
+        "20000000-0000-4000-8000-000000000099"
+    )
+    assert_semantic_rejects(
+        "notes export with orphan revisions",
+        notes_export_semantic_errors,
+        invalid,
+    )
+
+    invalid = copy.deepcopy(notes_export)
+    invalid["revisions"][1]["revision"]["parents"][0]["revision_id"] = (
+        "30000000-0000-4000-8000-000000000099"
+    )
+    assert_semantic_rejects(
+        "notes export with an unresolved parent",
+        notes_export_semantic_errors,
+        invalid,
+    )
+
+    invalid = copy.deepcopy(notes_export)
+    invalid["revisions"][0]["revision_no"] = 2
+    invalid["revisions"][0]["revision"]["parents"] = [
+        {
+            "revision_id": invalid["revisions"][1]["revision_id"],
+            "relation": "supersedes",
+        }
+    ]
+    assert_semantic_rejects(
+        "notes export with cyclic ancestry",
+        notes_export_semantic_errors,
+        invalid,
+    )
+
+    invalid = copy.deepcopy(notes_export)
+    invalid["revisions"][1]["source"]["operation_id"] = (
+        invalid["revisions"][0]["source"]["operation_id"]
+    )
+    assert_semantic_rejects(
+        "notes export with a duplicate operation ID",
+        notes_export_semantic_errors,
+        invalid,
+    )
+
+    invalid = copy.deepcopy(notes_export)
+    invalid["revisions"][1]["identity"]["local_owner_id"] = (
+        "10000000-0000-4000-8000-000000000099"
+    )
+    assert_semantic_rejects(
+        "notes export spanning owner namespaces",
+        notes_export_semantic_errors,
+        invalid,
+    )
+
+    invalid = copy.deepcopy(notes_export)
+    invalid["revisions"][0]["revision"]["content_sha256"] = "0" * 64
+    assert_semantic_rejects(
+        "notes export with a mismatched revision content digest",
+        notes_export_semantic_errors,
+        invalid,
+    )
+
+    empty_notes_export = {
+        "format": "life-agent-notes",
+        "format_version": "1.0.0",
+        "events": [],
+        "revisions": [],
+    }
+    empty_errors = list(notes_export_validator.iter_errors(empty_notes_export))
+    if empty_errors:
+        raise AssertionError("empty notes export must be schema-valid")
+    assert_no_errors(
+        "empty notes export semantics",
+        notes_export_semantic_errors(empty_notes_export),
+    )
+
+    golden_path = EXAMPLE_DIR / "m1-notes-export.canonical.sha256"
+    expected_golden = golden_path.read_text(encoding="ascii").split()[0]
+    actual_golden = sha256(notes_export)
+    if actual_golden != expected_golden:
+        raise AssertionError(
+            "m1-notes-export canonical SHA-256 mismatch: "
+            f"expected {expected_golden}, got {actual_golden}"
+        )
 
     invalid = copy.deepcopy(voice)
     invalid["facts"][0]["fact_id"] = invalid["facts"][1]["fact_id"]
