@@ -27,12 +27,10 @@
       ]
     },
     "capture_id": {
-      "type": "string",
-      "format": "uuid"
+      "$ref": "#/$defs/canonicalUuid"
     },
     "operation_id": {
-      "type": "string",
-      "format": "uuid"
+      "$ref": "#/$defs/canonicalUuid"
     },
     "identity": {
       "type": "object",
@@ -44,18 +42,15 @@
       ],
       "properties": {
         "installation_id": {
-          "type": "string",
-          "format": "uuid"
+          "$ref": "#/$defs/canonicalUuid"
         },
         "local_owner_id": {
-          "type": "string",
-          "format": "uuid"
+          "$ref": "#/$defs/canonicalUuid"
         },
         "device_id": {
           "oneOf": [
             {
-              "type": "string",
-              "format": "uuid"
+              "$ref": "#/$defs/canonicalUuid"
             },
             {
               "type": "null"
@@ -95,8 +90,7 @@
       ],
       "properties": {
         "sha256": {
-          "type": "string",
-          "pattern": "^[a-f0-9]{64}$"
+          "$ref": "#/$defs/sha256Digest"
         },
         "byte_size": {
           "type": "integer",
@@ -124,8 +118,7 @@
           "identity": {
             "properties": {
               "device_id": {
-                "type": "string",
-                "format": "uuid"
+                "$ref": "#/$defs/canonicalUuid"
               }
             }
           }
@@ -257,6 +250,23 @@
     }
   ],
   "$defs": {
+    "canonicalUuid": {
+      "type": "string",
+      "format": "uuid",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])",
+      "description": "Canonical lowercase RFC 9562 UUID text. Uppercase, braces, URNs and trailing characters are forbidden."
+    },
+    "canonicalDateTime": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^(?!0000)[0-9]{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12][0-9]|3[01])T(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](?:\\.[0-9]{3})?(?:Z|[+-](?!00:00)(?:(?:0[0-9]|1[0-3]):[0-5][0-9]|14:00))(?![\\s\\S])",
+      "description": "Canonical RFC 3339 instant: uppercase T and Z, seconds required, no leap second, optional fractional part of exactly three digits, and either Z or a non-zero offset within ±14:00."
+    },
+    "sha256Digest": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}(?![\\s\\S])",
+      "description": "Exactly 32 SHA-256 bytes encoded as 64 lowercase hexadecimal characters."
+    },
     "nullableText": {
       "type": [
         "string",
@@ -289,12 +299,13 @@
           ]
         },
         "recorded_at": {
-          "type": "string",
-          "format": "date-time"
+          "$ref": "#/$defs/canonicalDateTime"
         },
         "timezone_id": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "maxLength": 64,
+          "description": "Recorded-time zone only: either canonical Z/±HH:MM fixed-offset text emitted by the M1 Android store or an installed IANA zone. It is validated against source.recorded_at and is independent of an event's effective timezone."
         },
         "utc_offset_minutes": {
           "type": "integer",

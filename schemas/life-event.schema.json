@@ -40,12 +40,10 @@
       "$ref": "#/$defs/localIdentity"
     },
     "event_id": {
-      "type": "string",
-      "format": "uuid"
+      "$ref": "#/$defs/canonicalUuid"
     },
     "revision_id": {
-      "type": "string",
-      "format": "uuid"
+      "$ref": "#/$defs/canonicalUuid"
     },
     "revision_no": {
       "type": "integer",
@@ -143,16 +141,14 @@
           "identity": {
             "properties": {
               "device_id": {
-                "type": "string",
-                "format": "uuid"
+                "$ref": "#/$defs/canonicalUuid"
               }
             }
           },
           "server": {
             "properties": {
               "received_at": {
-                "type": "string",
-                "format": "date-time"
+                "$ref": "#/$defs/canonicalDateTime"
               },
               "server_sequence": {
                 "type": "integer",
@@ -295,8 +291,7 @@
                 "type": "string"
               },
               "source_modified_at": {
-                "type": "string",
-                "format": "date-time"
+                "$ref": "#/$defs/canonicalDateTime"
               },
               "origin": {
                 "properties": {
@@ -336,8 +331,7 @@
                 "type": "string"
               },
               "source_modified_at": {
-                "type": "string",
-                "format": "date-time"
+                "$ref": "#/$defs/canonicalDateTime"
               },
               "origin": {
                 "properties": {
@@ -692,11 +686,43 @@
     }
   ],
   "$defs": {
+    "canonicalUuid": {
+      "type": "string",
+      "format": "uuid",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])",
+      "description": "Canonical lowercase RFC 9562 UUID text. Uppercase, braces, URNs and trailing characters are forbidden."
+    },
+    "canonicalDateTime": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^(?!0000)[0-9]{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12][0-9]|3[01])T(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](?:\\.[0-9]{3})?(?:Z|[+-](?!00:00)(?:(?:0[0-9]|1[0-3]):[0-5][0-9]|14:00))(?![\\s\\S])",
+      "description": "Canonical RFC 3339 instant: uppercase T and Z, seconds required, no leap second, optional fractional part of exactly three digits, and either Z or a non-zero offset within ±14:00."
+    },
+    "canonicalUtcDateTime": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^(?!0000)[0-9]{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12][0-9]|3[01])T(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](?:\\.[0-9]{3})?Z(?![\\s\\S])",
+      "description": "Canonical UTC instant: uppercase T and Z, seconds required, no leap second, and optional fractional part of exactly three digits."
+    },
+    "canonicalLocalDateTime": {
+      "type": "string",
+      "pattern": "^(?!0000)[0-9]{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12][0-9]|3[01])T(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](?:\\.[0-9]{3})?(?![\\s\\S])",
+      "description": "Canonical local wall-clock date-time without an offset: uppercase T, seconds required, no leap second, and optional fractional part of exactly three digits."
+    },
+    "canonicalDate": {
+      "type": "string",
+      "format": "date",
+      "pattern": "^(?!0000)[0-9]{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12][0-9]|3[01])(?![\\s\\S])"
+    },
+    "sha256Digest": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}(?![\\s\\S])",
+      "description": "Exactly 32 SHA-256 bytes encoded as 64 lowercase hexadecimal characters."
+    },
     "nullableUuid": {
       "oneOf": [
         {
-          "type": "string",
-          "format": "uuid"
+          "$ref": "#/$defs/canonicalUuid"
         },
         {
           "type": "null"
@@ -720,13 +746,11 @@
       ],
       "properties": {
         "installation_id": {
-          "type": "string",
-          "format": "uuid",
+          "$ref": "#/$defs/canonicalUuid",
           "description": "Opaque identifier for this APK installation; it is not a security principal."
         },
         "local_owner_id": {
-          "type": "string",
-          "format": "uuid",
+          "$ref": "#/$defs/canonicalUuid",
           "description": "Opaque single-owner namespace used before enrollment; it is never accepted as server ownership."
         },
         "device_id": {
@@ -751,12 +775,10 @@
       ],
       "properties": {
         "capture_id": {
-          "type": "string",
-          "format": "uuid"
+          "$ref": "#/$defs/canonicalUuid"
         },
         "operation_id": {
-          "type": "string",
-          "format": "uuid"
+          "$ref": "#/$defs/canonicalUuid"
         },
         "channel": {
           "type": "string",
@@ -784,8 +806,7 @@
         "source_modified_at": {
           "oneOf": [
             {
-              "type": "string",
-              "format": "date-time"
+              "$ref": "#/$defs/canonicalDateTime"
             },
             {
               "type": "null"
@@ -793,8 +814,7 @@
           ]
         },
         "recorded_at": {
-          "type": "string",
-          "format": "date-time"
+          "$ref": "#/$defs/canonicalDateTime"
         },
         "origin": {
           "type": "object",
@@ -899,8 +919,7 @@
         "effective_start_utc": {
           "oneOf": [
             {
-              "type": "string",
-              "format": "date-time"
+              "$ref": "#/$defs/canonicalUtcDateTime"
             },
             {
               "type": "null"
@@ -910,8 +929,7 @@
         "effective_end_utc": {
           "oneOf": [
             {
-              "type": "string",
-              "format": "date-time"
+              "$ref": "#/$defs/canonicalUtcDateTime"
             },
             {
               "type": "null"
@@ -919,10 +937,24 @@
           ]
         },
         "original_local_start": {
-          "$ref": "#/$defs/nullableText"
+          "oneOf": [
+            {
+              "$ref": "#/$defs/canonicalLocalDateTime"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "original_local_end": {
-          "$ref": "#/$defs/nullableText"
+          "oneOf": [
+            {
+              "$ref": "#/$defs/canonicalLocalDateTime"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "timezone_id": {
           "type": "string",
@@ -960,8 +992,7 @@
         "local_date": {
           "oneOf": [
             {
-              "type": "string",
-              "format": "date"
+              "$ref": "#/$defs/canonicalDate"
             },
             {
               "type": "null"
@@ -1227,8 +1258,7 @@
       ],
       "properties": {
         "revision_id": {
-          "type": "string",
-          "format": "uuid"
+          "$ref": "#/$defs/canonicalUuid"
         },
         "relation": {
           "type": "string",
@@ -1251,12 +1281,10 @@
       ],
       "properties": {
         "created_at": {
-          "type": "string",
-          "format": "date-time"
+          "$ref": "#/$defs/canonicalDateTime"
         },
         "content_sha256": {
-          "type": "string",
-          "pattern": "^[a-f0-9]{64}$"
+          "$ref": "#/$defs/sha256Digest"
         },
         "actor": {
           "type": "string",
@@ -1382,8 +1410,7 @@
         "received_at": {
           "oneOf": [
             {
-              "type": "string",
-              "format": "date-time",
+              "$ref": "#/$defs/canonicalDateTime",
               "readOnly": true
             },
             {
