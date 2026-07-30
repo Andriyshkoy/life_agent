@@ -18,8 +18,16 @@ from life_agent_backend.api_errors import (
     trusted_api_endpoint,
 )
 from life_agent_backend.api_stub import router as api_stub_router
+from life_agent_backend.auth_crypto import RandomSource
+from life_agent_backend.auth_rate_limit import (
+    EnrollmentRateLimiter,
+    InMemoryEnrollmentRateLimiter,
+)
+from life_agent_backend.auth_routes import router as auth_router
+from life_agent_backend.auth_service import AuthService
 from life_agent_backend.clock import Clock, SystemClock
 from life_agent_backend.database import (
+    ConfiguredKeyEpochs,
     DatabaseReadinessProbe,
     create_database_engine,
     create_session_factory,
@@ -91,6 +99,9 @@ def create_app(
     readiness_probe: ReadinessProbe | None = None,
     clock: Clock | None = None,
     id_generator: IdGenerator | None = None,
+    auth_service: AuthService | None = None,
+    enrollment_rate_limiter: EnrollmentRateLimiter | None = None,
+    random_source: RandomSource | None = None,
 ) -> FastAPI:
     configure_logging(settings.log_level)
     event_logger = SafeEventLogger()
@@ -102,6 +113,7 @@ def create_app(
         else DatabaseReadinessProbe(
             engine=engine,
             timeout_seconds=settings.readiness_timeout_seconds,
+            configured_key_epochs=ConfiguredKeyEpochs.from_settings(settings),
         )
     )
 
@@ -126,12 +138,31 @@ def create_app(
     )
     application.state.settings = settings
     application.state.database_engine = engine
-    application.state.session_factory = create_session_factory(engine)
+    session_factory = create_session_factory(engine)
+    resolved_id_generator = id_generator if id_generator is not None else Uuid4Generator()
+    application.state.session_factory = session_factory
     application.state.readiness_probe = probe
     application.state.clock = resolved_clock
-    application.state.id_generator = id_generator if id_generator is not None else Uuid4Generator()
+    application.state.id_generator = resolved_id_generator
     application.state.event_logger = event_logger
+    application.state.auth_service = (
+        auth_service
+        if auth_service is not None
+        else AuthService(
+            settings=settings,
+            session_factory=session_factory,
+            clock=resolved_clock,
+            id_generator=resolved_id_generator,
+            random_source=random_source,
+        )
+    )
+    application.state.enrollment_rate_limiter = (
+        enrollment_rate_limiter
+        if enrollment_rate_limiter is not None
+        else InMemoryEnrollmentRateLimiter()
+    )
     application.include_router(health_router)
+    application.include_router(auth_router)
     application.include_router(api_stub_router)
     application.add_middleware(StrictJsonIngressMiddleware, clock=resolved_clock)
 

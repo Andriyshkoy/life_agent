@@ -17,6 +17,7 @@ EXPECTED_MODEL_TABLES = {
     "credential_family",
     "credential_generation",
     "device",
+    "device_replay_quota",
     "enrollment_grant",
     "event_revision",
     "http_replay",
@@ -35,7 +36,7 @@ def test_migration_history_has_one_linear_head() -> None:
     scripts = ScriptDirectory.from_config(config)
 
     assert scripts.get_heads() == [EXPECTED_DATABASE_REVISION]
-    assert scripts.get_base() == EXPECTED_DATABASE_REVISION
+    assert scripts.get_base() == "20260730_0001"
 
 
 def test_alembic_environment_loads_all_model_metadata_in_fresh_process() -> None:

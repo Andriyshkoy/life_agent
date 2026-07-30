@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+from dataclasses import dataclass
 from typing import cast
 
 from sqlalchemy import MetaData, text
@@ -22,7 +24,72 @@ NAMING_CONVENTION = {
 }
 
 metadata = MetaData(naming_convention=NAMING_CONVENTION)
-EXPECTED_DATABASE_REVISION = "20260730_0001"
+EXPECTED_DATABASE_REVISION = "20260730_0002"
+
+
+@dataclass(frozen=True, slots=True)
+class ConfiguredKeyEpochs:
+    access: frozenset[int]
+    refresh: frozenset[int]
+    enrollment: frozenset[int]
+    replay_fingerprint: frozenset[int]
+    replay_encryption: frozenset[int]
+    cursor: frozenset[int]
+
+    @classmethod
+    def from_settings(cls, settings: Settings) -> ConfiguredKeyEpochs:
+        return cls(
+            access=frozenset(
+                {
+                    settings.access_token_hmac_key_generation,
+                    *settings.access_token_hmac_retained_keys,
+                }
+            ),
+            refresh=frozenset(
+                {
+                    settings.refresh_token_hmac_key_generation,
+                    *settings.refresh_token_hmac_retained_keys,
+                }
+            ),
+            enrollment=frozenset(
+                {
+                    settings.enrollment_code_hmac_key_generation,
+                    *settings.enrollment_code_hmac_retained_keys,
+                }
+            ),
+            replay_fingerprint=frozenset(
+                {
+                    settings.replay_fingerprint_hmac_key_generation,
+                    *settings.replay_fingerprint_hmac_retained_keys,
+                }
+            ),
+            replay_encryption=frozenset(
+                {
+                    settings.replay_response_encryption_key_generation,
+                    *settings.replay_response_encryption_retained_keys,
+                }
+            ),
+            cursor=frozenset(
+                {
+                    settings.cursor_hmac_key_generation,
+                    *settings.cursor_hmac_retained_keys,
+                }
+            ),
+        )
+
+    def database_parameter(self) -> str:
+        return json.dumps(
+            {
+                "access": sorted(self.access),
+                "refresh": sorted(self.refresh),
+                "enrollment": sorted(self.enrollment),
+                "replay_fingerprint": sorted(self.replay_fingerprint),
+                "replay_encryption": sorted(self.replay_encryption),
+                "cursor": sorted(self.cursor),
+            },
+            separators=(",", ":"),
+            sort_keys=True,
+        )
 
 
 def create_database_engine(settings: Settings) -> AsyncEngine:
@@ -47,9 +114,16 @@ def create_session_factory(
 
 
 class DatabaseReadinessProbe:
-    def __init__(self, *, engine: AsyncEngine, timeout_seconds: float) -> None:
+    def __init__(
+        self,
+        *,
+        engine: AsyncEngine,
+        timeout_seconds: float,
+        configured_key_epochs: ConfiguredKeyEpochs | None = None,
+    ) -> None:
         self._engine = engine
         self._timeout_seconds = timeout_seconds
+        self._configured_key_epochs = configured_key_epochs
 
     async def check(self) -> bool:
         try:
@@ -62,6 +136,81 @@ class DatabaseReadinessProbe:
                         ),
                         {"expected_revision": EXPECTED_DATABASE_REVISION},
                     )
-                    return cast(object, result) is True
+                    if cast(object, result) is not True:
+                        return False
+                    if self._configured_key_epochs is None:
+                        return True
+                    key_epochs_available = await connection.scalar(
+                        text(
+                            """
+                            WITH required_key_epochs(domain, generation) AS (
+                                SELECT
+                                    'access',
+                                    access_key_generation
+                                FROM credential_generation
+                                WHERE access_expires_at >= CURRENT_TIMESTAMP
+                                UNION
+                                SELECT
+                                    'refresh',
+                                    refresh_key_generation
+                                FROM credential_generation
+                                WHERE retained_until >= CURRENT_TIMESTAMP
+                                UNION
+                                SELECT
+                                    'enrollment',
+                                    code_key_generation
+                                FROM enrollment_grant
+                                WHERE status = 'issued'
+                                  AND expires_at >= CURRENT_TIMESTAMP
+                                UNION
+                                SELECT
+                                    'replay_fingerprint',
+                                    fingerprint_key_generation
+                                FROM http_replay
+                                WHERE retention_until >= CURRENT_TIMESTAMP
+                                UNION
+                                SELECT
+                                    'replay_encryption',
+                                    response_encryption_key_generation
+                                FROM http_replay
+                                WHERE retention_until >= CURRENT_TIMESTAMP
+                                UNION
+                                SELECT
+                                    'cursor',
+                                    signing_key_generation
+                                FROM sync_cursor
+                                WHERE revoked_at IS NULL
+                                  AND expires_at >= CURRENT_TIMESTAMP
+                            )
+                            SELECT NOT EXISTS (
+                                SELECT 1
+                                FROM required_key_epochs AS required
+                                WHERE NOT EXISTS (
+                                    SELECT 1
+                                    FROM jsonb_array_elements_text(
+                                        coalesce(
+                                            (
+                                                CAST(
+                                                    :configured_key_epochs
+                                                    AS jsonb
+                                                )
+                                                -> required.domain
+                                            ),
+                                            '[]'::jsonb
+                                        )
+                                    ) AS configured(generation)
+                                    WHERE configured.generation::integer =
+                                        required.generation
+                                )
+                            )
+                            """
+                        ),
+                        {
+                            "configured_key_epochs": (
+                                self._configured_key_epochs.database_parameter()
+                            )
+                        },
+                    )
+                    return cast(object, key_epochs_available) is True
         except Exception:
             return False

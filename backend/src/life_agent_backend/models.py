@@ -71,6 +71,7 @@ device = sa.Table(
         initially="DEFERRED",
     ),
     sa.UniqueConstraint("installation_id", name="uq_device_installation_id"),
+    sa.UniqueConstraint("local_owner_id", name="uq_device_local_owner_id"),
     sa.UniqueConstraint("person_id", "device_id", name="uq_device_person_device"),
     sa.UniqueConstraint(
         "device_id",
@@ -112,6 +113,60 @@ sa.Index(
     device.c.person_id,
     unique=True,
     postgresql_where=sa.text("status = 'active'"),
+)
+
+
+device_replay_quota = sa.Table(
+    "device_replay_quota",
+    metadata,
+    sa.Column("person_id", UUID, nullable=False),
+    sa.Column("device_id", UUID, nullable=False),
+    sa.Column(
+        "record_count",
+        sa.BigInteger(),
+        nullable=False,
+        server_default=sa.text("0"),
+    ),
+    sa.Column(
+        "response_body_plaintext_bytes",
+        sa.BigInteger(),
+        nullable=False,
+        server_default=sa.text("0"),
+    ),
+    sa.Column(
+        "updated_at",
+        UTC_TIMESTAMP,
+        nullable=False,
+        server_default=sa.text("CURRENT_TIMESTAMP"),
+    ),
+    sa.ForeignKeyConstraint(
+        ["person_id", "device_id"],
+        ["device.person_id", "device.device_id"],
+        name="fk_device_replay_quota_person_device",
+        ondelete="CASCADE",
+    ),
+    sa.PrimaryKeyConstraint(
+        "person_id",
+        "device_id",
+        name="pk_device_replay_quota",
+    ),
+    sa.CheckConstraint(
+        "record_count BETWEEN 0 AND 100000",
+        name="record_count_range",
+    ),
+    sa.CheckConstraint(
+        "response_body_plaintext_bytes BETWEEN 0 AND 536870912",
+        name="plaintext_bytes_range",
+    ),
+    sa.CheckConstraint(
+        "("
+        "record_count = 0 AND response_body_plaintext_bytes = 0 "
+        ") OR ("
+        "record_count > 0 "
+        "AND response_body_plaintext_bytes >= record_count "
+        ")",
+        name="state_coherent",
+    ),
 )
 
 
@@ -345,6 +400,12 @@ enrollment_grant = sa.Table(
 )
 sa.Index("ix_enrollment_grant_person_id", enrollment_grant.c.person_id)
 sa.Index("ix_enrollment_grant_expires_at", enrollment_grant.c.expires_at)
+sa.Index(
+    "uq_enrollment_grant_one_issued_per_person",
+    enrollment_grant.c.person_id,
+    unique=True,
+    postgresql_where=sa.text("status = 'issued'"),
+)
 
 
 credential_generation = sa.Table(
@@ -1455,6 +1516,16 @@ http_replay = sa.Table(
         deferrable=True,
         initially="DEFERRED",
     ),
+    sa.ForeignKeyConstraint(
+        ["person_id", "device_id"],
+        [
+            "device_replay_quota.person_id",
+            "device_replay_quota.device_id",
+        ],
+        name="fk_http_replay_person_device_quota",
+        deferrable=True,
+        initially="DEFERRED",
+    ),
     sa.UniqueConstraint(
         "endpoint_id",
         "protocol_version",
@@ -1625,6 +1696,17 @@ sa.Index(
     "ix_http_replay_person_device",
     http_replay.c.person_id,
     http_replay.c.device_id,
+)
+sa.Index(
+    "ix_http_replay_person_device_retention",
+    http_replay.c.person_id,
+    http_replay.c.device_id,
+    http_replay.c.retention_until,
+)
+sa.Index(
+    "ix_http_replay_family_retention",
+    http_replay.c.credential_family_id,
+    http_replay.c.retention_until,
 )
 
 

@@ -184,6 +184,8 @@ jobs:
 
           container_name=life-agent-backend-ci
           ready_body="$RUNNER_TEMP/life-agent-backend-ready.json"
+          admin_stdout="$RUNNER_TEMP/life-agent-admin.stdout"
+          admin_stderr="$RUNNER_TEMP/life-agent-admin.stderr"
 
           derive_ci_hmac_key() {
             printf 'life-agent-ci-only-%s' "$1" |
@@ -195,6 +197,8 @@ jobs:
           access_token_hmac_key="$(derive_ci_hmac_key access-token)"
           refresh_token_hmac_key="$(derive_ci_hmac_key refresh-token)"
           enrollment_code_hmac_key="$(derive_ci_hmac_key enrollment-code)"
+          replay_fingerprint_hmac_key="$(derive_ci_hmac_key replay-fingerprint)"
+          replay_response_encryption_key="$(derive_ci_hmac_key replay-encryption)"
           cursor_hmac_key="$(derive_ci_hmac_key cursor)"
 
           cleanup() {
@@ -219,9 +223,17 @@ jobs:
             --env LIFE_AGENT_ENVIRONMENT=test \
             --env LIFE_AGENT_DATABASE_URL=postgresql+asyncpg://life_agent_ci:ci-only@127.0.0.1:9/life_agent_ci \
             --env LIFE_AGENT_ACCESS_TOKEN_HMAC_KEY="$access_token_hmac_key" \
+            --env LIFE_AGENT_ACCESS_TOKEN_HMAC_KEY_GENERATION=1 \
             --env LIFE_AGENT_REFRESH_TOKEN_HMAC_KEY="$refresh_token_hmac_key" \
+            --env LIFE_AGENT_REFRESH_TOKEN_HMAC_KEY_GENERATION=1 \
             --env LIFE_AGENT_ENROLLMENT_CODE_HMAC_KEY="$enrollment_code_hmac_key" \
+            --env LIFE_AGENT_ENROLLMENT_CODE_HMAC_KEY_GENERATION=1 \
+            --env LIFE_AGENT_REPLAY_FINGERPRINT_HMAC_KEY="$replay_fingerprint_hmac_key" \
+            --env LIFE_AGENT_REPLAY_FINGERPRINT_HMAC_KEY_GENERATION=1 \
+            --env LIFE_AGENT_REPLAY_RESPONSE_ENCRYPTION_KEY="$replay_response_encryption_key" \
+            --env LIFE_AGENT_REPLAY_RESPONSE_ENCRYPTION_KEY_GENERATION=1 \
             --env LIFE_AGENT_CURSOR_HMAC_KEY="$cursor_hmac_key" \
+            --env LIFE_AGENT_CURSOR_HMAC_KEY_GENERATION=1 \
             life-agent-backend:ci
 
           published_endpoint="$(docker port "$container_name" 8080/tcp)"
@@ -255,6 +267,22 @@ jobs:
           fi
           if [ "$(docker inspect --format '{{.Config.User}}' "$container_name")" != 10001:10001 ]; then
             echo "Backend runtime image is not configured for its unprivileged user."
+            exit 1
+          fi
+          docker exec "$container_name" life-agent-admin --help >/dev/null
+          if docker exec "$container_name" life-agent-admin issue-enrollment-code \
+            --allow-non-tty-output \
+            >"$admin_stdout" 2>"$admin_stderr"; then
+            echo "Admin CLI unexpectedly succeeded without its database."
+            exit 1
+          fi
+          if [ -s "$admin_stdout" ]; then
+            echo "Admin CLI emitted a code for an unavailable database."
+            exit 1
+          fi
+          if [ "$(tr -d '\r\n' < "$admin_stderr")" != \
+            'life-agent-admin: database is not ready at the expected migration' ]; then
+            echo "Admin CLI did not fail with its bounded readiness error."
             exit 1
           fi
 

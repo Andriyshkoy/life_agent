@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from typing import Any, cast
 
 import pytest
@@ -8,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from life_agent_backend.database import (
     EXPECTED_DATABASE_REVISION,
+    ConfiguredKeyEpochs,
     DatabaseReadinessProbe,
     create_database_engine,
     create_session_factory,
@@ -20,6 +22,7 @@ class FakeConnection:
         self.result = result
         self.statement = ""
         self.parameters: dict[str, object] = {}
+        self.calls: list[tuple[str, dict[str, object]]] = []
 
     async def scalar(
         self,
@@ -28,6 +31,7 @@ class FakeConnection:
     ) -> object:
         self.statement = str(statement)
         self.parameters = parameters
+        self.calls.append((self.statement, parameters))
         return self.result
 
 
@@ -110,6 +114,33 @@ async def test_readiness_probe_rejects_unexpected_result() -> None:
     probe = DatabaseReadinessProbe(engine=engine, timeout_seconds=0.1)
 
     assert await probe.check() is False
+
+
+@pytest.mark.asyncio
+async def test_readiness_probe_audits_only_configured_key_generations(
+    settings: Settings,
+) -> None:
+    connection = FakeConnection()
+    engine = cast(AsyncEngine, FakeEngine(connection))
+    epochs = ConfiguredKeyEpochs.from_settings(settings)
+    probe = DatabaseReadinessProbe(
+        engine=engine,
+        timeout_seconds=0.1,
+        configured_key_epochs=epochs,
+    )
+
+    assert await probe.check() is True
+    assert len(connection.calls) == 2
+    key_query, parameters = connection.calls[1]
+    assert "required_key_epochs" in key_query
+    assert json.loads(cast(str, parameters["configured_key_epochs"])) == {
+        "access": [1],
+        "cursor": [1],
+        "enrollment": [1],
+        "refresh": [1],
+        "replay_encryption": [1],
+        "replay_fingerprint": [1],
+    }
 
 
 @pytest.mark.asyncio

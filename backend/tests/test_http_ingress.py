@@ -702,18 +702,22 @@ def test_forbidden_security_headers_fail_closed() -> None:
 
 
 @pytest.mark.asyncio
-async def test_non_replayable_stubs_return_correlated_nonretryable_503(
+async def test_auth_routes_reject_incomplete_bodies_before_database_access(
     settings: Settings,
     engine: AsyncEngine,
 ) -> None:
     async with client_for(settings, engine) as client:
-        for path in ("/api/v1/auth/enroll", "/api/v1/auth/refresh"):
+        for path in (
+            "/api/v1/auth/enroll",
+            "/api/v1/auth/refresh",
+            "/api/v1/auth/revoke",
+        ):
             response = await client.post(
                 path,
                 content=json.dumps({"request_id": REQUEST_ID}),
                 headers={"Content-Type": "application/json"},
             )
-            assert response.status_code == 503
+            assert response.status_code == 422
             assert response.json()["request_id"] == REQUEST_ID
             assert response.json()["retryable"] is False
             assert response.headers["content-type"] == "application/json; charset=utf-8"
@@ -729,8 +733,9 @@ async def test_replay_safe_stub_returns_retryable_503(
 ) -> None:
     async with client_for(settings, engine) as client:
         response = await client.post(
-            "/api/v1/auth/revoke",
+            "/api/v1/sync/bootstrap",
             json={"request_id": REQUEST_ID},
+            headers={"Authorization": f"Bearer {ACCESS_TOKEN}"},
         )
 
     assert response.status_code == 503
@@ -953,7 +958,7 @@ async def test_auth_endpoint_body_cap_accepts_exact_and_stops_at_plus_one(
             headers={"Content-Type": "application/json", "Content-Length": "1"},
         )
 
-    assert accepted.status_code == 503
+    assert accepted.status_code == 422
     assert accepted.json()["request_id"] == REQUEST_ID
     assert rejected.status_code == 413
     assert rejected.json()["error_code"] == "request_too_large"
