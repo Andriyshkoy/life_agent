@@ -18,6 +18,16 @@ import androidx.room.PrimaryKey
     ],
     indices = [
         Index(value = ["operation_id"], unique = true),
+        Index(value = ["capture_id", "operation_id"], unique = true),
+        Index(
+            value = [
+                "capture_id",
+                "operation_id",
+                "local_owner_id",
+                "installation_id",
+            ],
+            unique = true,
+        ),
         Index(value = ["local_owner_id", "installation_id"]),
         Index(value = ["recorded_at_epoch_ms"]),
     ],

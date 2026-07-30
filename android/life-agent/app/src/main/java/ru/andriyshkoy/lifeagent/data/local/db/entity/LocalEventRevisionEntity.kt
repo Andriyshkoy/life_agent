@@ -17,17 +17,37 @@ import androidx.room.PrimaryKey
         ),
         ForeignKey(
             entity = LocalCaptureEntity::class,
-            parentColumns = ["capture_id"],
-            childColumns = ["capture_id"],
+            parentColumns = ["capture_id", "operation_id"],
+            childColumns = ["capture_id", "operation_id"],
             onDelete = ForeignKey.RESTRICT,
         ),
     ],
     indices = [
         Index(value = ["event_id", "revision_id"], unique = true),
-        Index(value = ["capture_id"]),
+        Index(value = ["capture_id", "operation_id"]),
         Index(value = ["operation_id"], unique = true),
         Index(value = ["event_id", "revision_no"]),
         Index(value = ["local_date", "effective_start_epoch_ms"]),
+        Index(
+            value = [
+                "event_id",
+                "revision_id",
+                "capture_id",
+                "operation_id",
+            ],
+            unique = true,
+        ),
+        Index(value = ["server_sequence"], unique = true),
+        Index(
+            value = [
+                "event_id",
+                "revision_id",
+                "capture_id",
+                "operation_id",
+                "server_sequence",
+            ],
+            unique = true,
+        ),
     ],
 )
 data class LocalEventRevisionEntity(

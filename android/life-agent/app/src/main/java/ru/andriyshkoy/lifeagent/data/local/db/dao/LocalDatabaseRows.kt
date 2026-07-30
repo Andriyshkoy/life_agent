@@ -51,6 +51,8 @@ data class EventPointerRow(
     val currentRevisionId: String,
     @ColumnInfo(name = "server_current_revision_id")
     val serverCurrentRevisionId: String?,
+    @ColumnInfo(name = "server_observed_sequence")
+    val serverObservedSequence: Long?,
 )
 
 data class LocalTableCounts(

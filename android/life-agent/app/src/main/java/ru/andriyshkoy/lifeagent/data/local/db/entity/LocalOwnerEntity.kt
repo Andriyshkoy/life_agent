@@ -19,7 +19,7 @@ import androidx.room.PrimaryKey
     indices = [
         Index(value = ["installation_id"], unique = true),
         Index(value = ["local_owner_id", "installation_id"], unique = true),
-        Index(value = ["server_person_id"], unique = true),
+        Index(value = ["server_person_id"]),
     ],
 )
 data class LocalOwnerEntity(
