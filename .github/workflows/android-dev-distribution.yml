@@ -161,24 +161,126 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if gh release view dev-latest --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+          current_develop_sha="$(
+            gh api \
+              "repos/$GITHUB_REPOSITORY/git/ref/heads/develop" \
+              --jq '.object.sha'
+          )"
+          if [ "$current_develop_sha" != "$SOURCE_SHA" ]; then
+            echo \
+              "Skipping stale distribution run: source=$SOURCE_SHA, develop=$current_develop_sha."
+            exit 0
+          fi
+
+          release_exists=false
+          release_id="$(
+            gh api \
+              --paginate \
+              "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+              --jq '.[] | select(.tag_name == "dev-latest") | .id'
+          )"
+          if [ -n "$release_id" ]; then
+            release_exists=true
+            gh release edit dev-latest \
+              --repo "$GITHUB_REPOSITORY" \
+              --draft
+          fi
+
+          tag_sha="$(
+            gh api \
+              "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/dev-latest" \
+              --jq \
+                '.[] | select(.ref == "refs/tags/dev-latest") | .object.sha'
+          )"
+          if [ -n "$tag_sha" ]; then
+            if [ "$tag_sha" != "$SOURCE_SHA" ]; then
+              gh api \
+                --method PATCH \
+                "repos/$GITHUB_REPOSITORY/git/refs/tags/dev-latest" \
+                --field sha="$SOURCE_SHA" \
+                --field force=false
+            fi
+          else
+            gh api \
+              --method POST \
+              "repos/$GITHUB_REPOSITORY/git/refs" \
+              --field ref='refs/tags/dev-latest' \
+              --field sha="$SOURCE_SHA"
+          fi
+
+          if [ "$release_exists" = true ]; then
             gh release upload dev-latest \
               "$RUNNER_TEMP/distribution/life-agent-dev.apk#Life Agent Dev APK" \
               --repo "$GITHUB_REPOSITORY" \
               --clobber
-
-            gh release edit dev-latest \
-              --repo "$GITHUB_REPOSITORY" \
-              --target "$SOURCE_SHA" \
-              --title "Life Agent Dev · $LIFE_AGENT_VERSION_NAME" \
-              --notes "Автоматическая тестовая сборка из проверенной ветки develop." \
-              --prerelease
           else
             gh release create dev-latest \
               "$RUNNER_TEMP/distribution/life-agent-dev.apk#Life Agent Dev APK" \
               --repo "$GITHUB_REPOSITORY" \
-              --target "$SOURCE_SHA" \
+              --verify-tag \
               --title "Life Agent Dev · $LIFE_AGENT_VERSION_NAME" \
               --notes "Автоматическая тестовая сборка из проверенной ветки develop." \
-              --prerelease
+              --prerelease \
+              --draft
+          fi
+
+          gh release edit dev-latest \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$SOURCE_SHA" \
+            --title "Life Agent Dev · $LIFE_AGENT_VERSION_NAME" \
+            --notes "Автоматическая тестовая сборка из проверенной ветки develop." \
+            --prerelease \
+            --draft
+
+          tag_sha="$(
+            gh api \
+              "repos/$GITHUB_REPOSITORY/git/ref/tags/dev-latest" \
+              --jq '.object.sha'
+          )"
+          if [ "$tag_sha" != "$SOURCE_SHA" ]; then
+            echo "Unexpected dev-latest tag target: ${tag_sha:-missing}."
+            exit 1
+          fi
+
+          release_target="$(
+            gh release view dev-latest \
+              --repo "$GITHUB_REPOSITORY" \
+              --json targetCommitish \
+              --jq '.targetCommitish'
+          )"
+          if [ "$release_target" != "$SOURCE_SHA" ]; then
+            echo "Unexpected release target: ${release_target:-missing}."
+            exit 1
+          fi
+
+          expected_digest="sha256:$(
+            sha256sum "$RUNNER_TEMP/distribution/life-agent-dev.apk" |
+              awk '{ print $1 }'
+          )"
+          asset_digest="$(
+            gh release view dev-latest \
+              --repo "$GITHUB_REPOSITORY" \
+              --json assets \
+              --jq \
+                '.assets[] | select(.name == "life-agent-dev.apk") | .digest'
+          )"
+          if [ "$asset_digest" != "$expected_digest" ]; then
+            echo "Unexpected release asset digest: ${asset_digest:-missing}."
+            exit 1
+          fi
+
+          gh release edit dev-latest \
+            --repo "$GITHUB_REPOSITORY" \
+            --prerelease \
+            --draft=false
+
+          is_draft="$(
+            gh release view dev-latest \
+              --repo "$GITHUB_REPOSITORY" \
+              --json isDraft \
+              --jq '.isDraft'
+          )"
+          if [ "$is_draft" != "false" ]; then
+            echo "dev-latest was not published."
+            exit 1
           fi
