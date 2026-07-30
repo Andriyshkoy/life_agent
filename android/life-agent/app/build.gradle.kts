@@ -114,6 +114,13 @@ android {
 
     testOptions {
         unitTests.isIncludeAndroidResources = true
+        // Robolectric needs a writable lock and Maven cache under arbitrary container UIDs.
+        unitTests.all { testTask ->
+            testTask.systemProperty(
+                "user.home",
+                gradle.gradleUserHomeDir.absolutePath,
+            )
+        }
         managedDevices {
             localDevices {
                 create("m1Api35") {

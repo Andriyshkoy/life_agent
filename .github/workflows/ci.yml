@@ -65,6 +65,7 @@ jobs:
           python scripts/validate_repository.py
           python scripts/validate_android_security.py
           python -m unittest scripts.test_validate_android_security
+          bash -n scripts/run_android_m1_instrumented_ci.sh
           bash -n scripts/run_android_m1_cold_start_smoke.sh
           bash -n infra/nginx/install-life-vhost.sh
           bash -n infra/nginx/update-life-vhost.sh
