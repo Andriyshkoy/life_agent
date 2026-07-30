@@ -19,6 +19,11 @@
         "allowed_parameters": [
           "charset=utf-8"
         ],
+        "accepted_wire_values_ascii_case_insensitive": [
+          "application/json",
+          "application/json; charset=utf-8"
+        ],
+        "other_lexical_forms": "unsupported_media_type",
         "missing_or_invalid_status": 415,
         "duplicate_status": 415
       },
@@ -88,7 +93,20 @@
         "authorization_value_max_bytes": 256,
         "idempotency_key_value_max_bytes": 36,
         "over_limit_status": 413
-      }
+      },
+      "combined_failure_precedence": [
+        "header_count_and_byte_limits",
+        "content_type_required_exact_grammar_and_cardinality",
+        "content_encoding_allowed_value_and_cardinality",
+        "duplicate_authorization",
+        "duplicate_idempotency_key",
+        "bounded_raw_body_read",
+        "strict_utf8_duplicate_key_and_bounded_json_parse",
+        "correlation_extraction_and_observable_unsupported_protocol",
+        "single_authorization_value_grammar",
+        "single_idempotency_key_value_grammar",
+        "endpoint_schema_authentication_and_domain_validation"
+      ]
     },
     "response_headers": {
       "content_type": {
@@ -233,7 +251,7 @@
       "encoding": "lowercase_hex",
       "comparison": "constant_time_exact_digest",
       "raw_body_persistence": "forbidden_digest_only",
-      "key_lifetime": "epoch_key_retained_until_every_replay_record_and_credential_tombstone_that_references_it_has_expired_or_been_authorizedly_purged"
+      "key_lifetime": "epoch_key_retained_until_every_replay_record_and_credential_tombstone_that_references_it_is_actually_deleted_by_gc_or_authorized_purge"
     },
     "response_body": {
       "replay_semantics": "exact_original_http_response_body_octets_for_stored_terminal_outcomes_only",
@@ -246,22 +264,21 @@
         "authenticated_success",
         "authenticated_nonretryable_terminal_api_error",
         "terminal_auth_revoke_401_credential_unavailable",
-        "terminal_sync_401_after_one_allowed_credential_recovery_and_current_generation_exact_original_request_retry_exhausted",
         "terminal_operation_result_batch"
       ],
-      "trusted_401_scope": "auth_revoke_401_is_terminal_and_sync_401_is_terminal_only_after_one_allowed_credential_recovery_and_current_generation_exact_original_request_retry_is_exhausted",
+      "trusted_401_scope": "auth_revoke_401_may_be_terminal_and_every_sync_401_is_server_nonfrozen_regardless_of_client_local_recovery_state",
       "excluded": [
         "body_unavailable_or_over_limit_before_identity",
         "malformed_or_invalid_request_identity",
         "unresolved_or_unauthenticated_replay_namespace",
         "collision_or_idempotency_mismatch_response",
-        "initial_recoverable_sync_401_before_allowed_credential_recovery",
+        "every_sync_401_credential_unavailable_including_second_current_generation_401",
         "retryable_429_rate_limited",
         "retryable_503_temporarily_unavailable",
         "untrusted_transport_or_protocol_response"
       ],
       "recoverable_outcomes": {
-        "initial_sync_401": "do_not_freeze_run_one_allowed_credential_recovery_then_retry_exact_original_request",
+        "sync_401": "server_never_freezes_client_applies_sync_unauthorized_recovery_and_quarantines_on_second_current_generation_401",
         "retryable_429_503": "do_not_freeze_run_bounded_retry_with_exact_original_request",
         "exclusion_precondition": "retryable_rate_limited_or_temporarily_unavailable_emitted_only_when_no_endpoint_mutation_committed"
       },
@@ -275,8 +292,8 @@
       "sync_push_batch": "not_shorter_than_minimum_client_retry_window",
       "sync_operation": "not_shorter_than_committed_domain_record",
       "sync_page": "not_shorter_than_minimum_client_retry_window",
-      "fingerprint_key_epoch": "retained_not_shorter_than_every_replay_record_and_token_tombstone_that_references_it",
-      "expired_record_action": "never_reexecute_a_mutation_when_prior_identity_or_operation_is_still_detectable"
+      "fingerprint_key_epoch": "retained_until_every_replay_record_and_token_tombstone_that_references_it_is_actually_deleted",
+      "expired_record_action": "retention_deadline_only_makes_record_gc_eligible_retained_row_remains_authoritative_for_exact_replay_or_collision_and_blocks_reexecution_until_actual_delete"
     },
     "privacy": {
       "stored_request_material": "identity_fields_key_generation_and_keyed_hmac_fingerprint_only",
@@ -292,7 +309,7 @@
       "max_stored_response_body_bytes_per_device": 536870912,
       "max_record_body_bytes": 4194304,
       "enforcement": "reject_before_endpoint_mutation_with_rate_limited",
-      "eviction": "expired_records_only_never_evict_live_mutation_or_operation_identity"
+      "eviction": "gc_may_delete_expired_records_only_and_retained_expired_rows_remain_authoritative_until_transactional_delete"
     },
     "delete_purge": {
       "triggers": [
@@ -1210,8 +1227,11 @@
           "semantic_consistency_failure_is_schema_invalid_before_operation_content_hash",
           "operation_content_sha256_omits_only_ordinal_and_itself",
           "ownership_precedes_immutable_registry_claims",
+          "physical_array_order_is_normative_client_sequence_sorting_or_contiguity_is_not_required",
           "operation_client_sequence_capture_and_revision_claims_are_persisted_before_dependency_result",
+          "missing_parent_does_not_claim_or_reserve_event_id",
           "missing_parent_re_evaluates_only_exact_unchanged_operation_in_later_batch_changed_mapping_collides",
+          "only_first_current_batch_occurrence_reaching_operation_registry_may_replay_a_prior_terminal_receipt_later_registry_occurrence_is_operation_id_collision",
           "invalid_parent_is_terminal_with_persisted_operation_client_sequence_capture_and_revision_claims_and_changed_content_requires_new_operation_identity",
           "parent_event_lineage_and_revision_no_root_one_or_parent_plus_one_fail_as_invalid_parent",
           "cas_staleness_emits_terminal_conflict_ack_without_moving_head"
@@ -1237,10 +1257,11 @@
         "transport_headers_encoding_and_raw_byte_limit",
         "strict_utf8_and_duplicate_key_rejecting_json_parse",
         "push_batch_envelope_schema",
-        "authenticate_and_bind_internal_family_and_device",
+        "authenticate_and_resolve_internal_family_and_device_namespace",
         "capture_keyed_raw_body_hmac_sha256",
         "idempotency_key_matches_batch_id",
         "durable_batch_identity_exact_replay_or_collision",
+        "request_device_id_matches_authenticated_internal_device_else_device_mismatch",
         "batch_content_sha256",
         "process_operations_in_ordinal_order_using_per_item_validation_order",
         "atomic_commit_with_durable_replay_record"
@@ -1259,8 +1280,8 @@
         "immutable_registry_client_sequence_else_client_sequence_collision",
         "immutable_registry_capture_id_else_capture_id_collision",
         "immutable_registry_revision_id_else_revision_id_collision",
-        "immutable_registry_event_id_else_event_id_collision",
-        "persist_immutable_claims_before_dependency_result",
+        "inspect_immutable_registry_event_id_else_event_id_collision_defer_claim_until_dependency_succeeds",
+        "persist_operation_client_sequence_capture_and_revision_claims_before_dependency_result",
         "resolve_parent_and_revision_no_else_missing_parent_or_invalid_parent",
         "compare_and_set_expected_current_revision_id_emit_applied_or_terminal_conflict_ack",
         "first_failure_wins_stop_evaluating_item"

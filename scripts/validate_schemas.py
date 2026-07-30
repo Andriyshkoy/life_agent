@@ -895,13 +895,6 @@ def sync_request_semantic_errors(
     ordinals = [operation["ordinal"] for operation in operations]
     if ordinals != list(range(len(operations))):
         errors.append("operation ordinals must be contiguous and ordered from zero")
-    client_sequences = [operation["client_sequence"] for operation in operations]
-    if client_sequences != sorted(set(client_sequences)):
-        errors.append("client_sequence values must be unique and strictly increasing")
-    for field in ("operation_id", "capture_id", "revision_id"):
-        values = [operation[field] for operation in operations]
-        if len(values) != len(set(values)):
-            errors.append(f"batch contains duplicate {field}")
 
     namespaces: set[tuple[str, str]] = set()
     for operation in operations:
@@ -1145,7 +1138,6 @@ def raw_intra_batch_registry_outcomes(
     client_sequences: dict[tuple[str, int], tuple[str, str]] = {}
     captures: set[str] = set()
     revisions: set[str] = set()
-    events: dict[str, tuple[str, str]] = {}
     for index, item in enumerate(request.get("operations", [])):
         lexical_or_schema_error = classify_raw_operation_error(
             item,
@@ -1177,20 +1169,12 @@ def raw_intra_batch_registry_outcomes(
         if item["revision_id"] in revisions:
             outcomes.append(("revision_id_collision", None))
             continue
-        prior_event = events.get(item["event_id"])
-        if prior_event is not None and (
-            item["expected_current_revision_id"] is None
-            or prior_event[0] != item["event_kind"]
-        ):
-            outcomes.append(("event_id_collision", None))
-            continue
         outcomes.append((None, None))
         operations[operation_id] = (digest, index)
         client_sequences[installation_sequence] = (operation_id, digest)
         captures.add(item["capture_id"])
         revisions.add(item["revision_id"])
-        if prior_event is None:
-            events[item["event_id"]] = (item["event_kind"], item["revision_id"])
+        # event_id is state-layer ownership: dependency failure never reserves it.
     return outcomes
 
 
@@ -1401,6 +1385,7 @@ def push_cas_semantic_errors(
     committed_state = state
     state = copy.deepcopy(state)
     operations_before_batch = set(state["operations"])
+    seen_operation_ids_in_batch: set[str] = set()
     errors: list[str] = []
     results = response.get("results", [])
     for index, operation in enumerate(request.get("operations", [])):
@@ -1421,6 +1406,16 @@ def push_cas_semantic_errors(
             continue
         operation_id = operation.get("operation_id")
         digest = operation.get("operation_content_sha256")
+        if operation_id in seen_operation_ids_in_batch:
+            if (
+                result.get("status") != "error"
+                or result.get("error_code") != "operation_id_collision"
+            ):
+                errors.append(
+                    "later physical occurrence in current batch did not collide"
+                )
+            continue
+        seen_operation_ids_in_batch.add(operation_id)
         prior_operation = state["operations"].get(operation_id)
 
         if prior_operation is not None:
@@ -2533,7 +2528,6 @@ def should_freeze_durable_outcome(
     http_status: int | None = None,
     error_code: str | None = None,
     retryable: bool | None = None,
-    sync_credential_recovery_exhausted: bool = False,
     request_identity_observed: bool = True,
     namespace_resolution: str | None = None,
 ) -> bool:
@@ -2563,7 +2557,6 @@ def should_freeze_durable_outcome(
             "active_authenticated_principal",
             "retained_credential_tombstone",
         }
-        or not isinstance(sync_credential_recovery_exhausted, bool)
     ):
         return False
     if success:
@@ -2596,10 +2589,7 @@ def should_freeze_durable_outcome(
         and http_status == 401
         and error_code == "credential_unavailable"
     ):
-        return (
-            namespace_resolution == "retained_credential_tombstone"
-            and sync_credential_recovery_exhausted
-        )
+        return False
     return namespace_resolution == "active_authenticated_principal"
 
 
@@ -3920,14 +3910,12 @@ def request_header_errors(
         normalized.setdefault(name.lower(), []).append(value)
     if total_bytes > 16384:
         errors.append("request_header_block_limit_exceeded")
-    critical = {
-        "authorization",
-        "idempotency-key",
-        "content-type",
-        "content-encoding",
-    }
-    if any(len(normalized.get(name, [])) > 1 for name in critical):
-        errors.append("duplicate_critical_request_header")
+    authorization = normalized.get("authorization", [])
+    if any(len(value) > 256 for value in authorization):
+        errors.append("authorization_header_limit_exceeded")
+    idempotency = normalized.get("idempotency-key", [])
+    if any(len(value) > 36 for value in idempotency):
+        errors.append("idempotency_key_header_limit_exceeded")
 
     content_types = normalized.get("content-type", [])
     allowed_content_types = {
@@ -3945,35 +3933,46 @@ def request_header_errors(
     ):
         errors.append("unsupported_request_content_encoding")
 
-    authorization = normalized.get("authorization", [])
     sync_endpoints = {"sync_push", "sync_bootstrap", "sync_pull"}
     if endpoint_id in sync_endpoints:
-        if len(authorization) != 1:
-            errors.append("missing_or_duplicate_authorization")
+        if len(authorization) > 1:
+            errors.append("duplicate_authorization")
+        elif not authorization:
+            errors.append("missing_authorization")
         elif not (
             authorization[0].startswith("Bearer ")
             and ACCESS_TOKEN_RE.fullmatch(authorization[0][7:]) is not None
         ):
             errors.append("malformed_bearer_authorization")
-        if authorization and len(authorization[0]) > 256:
-            errors.append("authorization_header_limit_exceeded")
     elif authorization:
         errors.append("authorization_forbidden_for_endpoint")
 
-    idempotency = normalized.get("idempotency-key", [])
     if endpoint_id == "sync_push":
-        if len(idempotency) != 1:
-            errors.append("missing_or_duplicate_idempotency_key")
-        elif (
-            CANONICAL_UUID_RE.fullmatch(idempotency[0]) is None
-            or idempotency[0] != batch_id
-        ):
-            errors.append("idempotency_key_binding_failed")
-        if idempotency and len(idempotency[0]) > 36:
-            errors.append("idempotency_key_header_limit_exceeded")
+        if len(idempotency) > 1:
+            errors.append("duplicate_idempotency_key")
+        elif not idempotency:
+            errors.append("missing_idempotency_key")
+        elif CANONICAL_UUID_RE.fullmatch(idempotency[0]) is None:
+            errors.append("malformed_idempotency_key")
     elif idempotency:
         errors.append("idempotency_key_forbidden_for_endpoint")
-    return sorted(set(errors))
+    return list(dict.fromkeys(errors))
+
+
+def idempotency_key_body_binding_error(
+    idempotency_key: str,
+    batch_id: str,
+) -> str | None:
+    """Compare two already schema-valid canonical identities after body parse."""
+
+    if (
+        CANONICAL_UUID_RE.fullmatch(idempotency_key) is None
+        or CANONICAL_UUID_RE.fullmatch(batch_id) is None
+    ):
+        return None
+    if idempotency_key != batch_id:
+        return "idempotency_key_mismatch"
+    return None
 
 
 def response_header_errors(
@@ -4122,7 +4121,41 @@ def http_manifest_semantic_errors(
     ):
         errors.append("HTTP manifest exposes an unexpected endpoint")
 
-    authorization = manifest["transport"]["request_headers"]["authorization"]
+    request_headers = manifest["transport"]["request_headers"]
+    expected_content_type = {
+        "required": True,
+        "media_type": "application/json",
+        "allowed_parameters": ["charset=utf-8"],
+        "accepted_wire_values_ascii_case_insensitive": [
+            "application/json",
+            "application/json; charset=utf-8",
+        ],
+        "other_lexical_forms": "unsupported_media_type",
+        "missing_or_invalid_status": 415,
+        "duplicate_status": 415,
+    }
+    if request_headers["content_type"] != expected_content_type:
+        errors.append("HTTP request Content-Type grammar drifted")
+    expected_combined_failure_precedence = [
+        "header_count_and_byte_limits",
+        "content_type_required_exact_grammar_and_cardinality",
+        "content_encoding_allowed_value_and_cardinality",
+        "duplicate_authorization",
+        "duplicate_idempotency_key",
+        "bounded_raw_body_read",
+        "strict_utf8_duplicate_key_and_bounded_json_parse",
+        "correlation_extraction_and_observable_unsupported_protocol",
+        "single_authorization_value_grammar",
+        "single_idempotency_key_value_grammar",
+        "endpoint_schema_authentication_and_domain_validation",
+    ]
+    if (
+        request_headers["combined_failure_precedence"]
+        != expected_combined_failure_precedence
+    ):
+        errors.append("HTTP combined ingress failure precedence drifted")
+
+    authorization = request_headers["authorization"]
     expected_authorization = {
         "bearer_endpoint_ids": ["sync_push", "sync_bootstrap", "sync_pull"],
         "forbidden_endpoint_ids": [
@@ -4199,8 +4232,8 @@ def http_manifest_semantic_errors(
         "raw_body_persistence": "forbidden_digest_only",
         "key_lifetime":
             "epoch_key_retained_until_every_replay_record_and_credential_"
-            "tombstone_that_references_it_has_expired_or_been_authorizedly_"
-            "purged",
+            "tombstone_that_references_it_is_actually_deleted_by_gc_or_"
+            "authorized_purge",
     }
     if replay_fingerprint != expected_replay_fingerprint_fields:
         errors.append("HTTP exact replay HMAC contract drifted")
@@ -4215,14 +4248,21 @@ def http_manifest_semantic_errors(
         "sync_operation": "not_shorter_than_committed_domain_record",
         "sync_page": "not_shorter_than_minimum_client_retry_window",
         "fingerprint_key_epoch":
-            "retained_not_shorter_than_every_replay_record_and_token_"
-            "tombstone_that_references_it",
+            "retained_until_every_replay_record_and_token_tombstone_that_"
+            "references_it_is_actually_deleted",
         "expired_record_action":
-            "never_reexecute_a_mutation_when_prior_identity_or_operation_is_"
-            "still_detectable",
+            "retention_deadline_only_makes_record_gc_eligible_retained_row_"
+            "remains_authoritative_for_exact_replay_or_collision_and_blocks_"
+            "reexecution_until_actual_delete",
     }
     if manifest["durable_replay_policy"]["retention"] != expected_retention:
         errors.append("HTTP replay/tombstone/key retention contract drifted")
+    if (
+        manifest["durable_replay_policy"]["quotas"]["eviction"]
+        != "gc_may_delete_expired_records_only_and_retained_expired_rows_"
+        "remain_authoritative_until_transactional_delete"
+    ):
+        errors.append("HTTP replay GC authority contract drifted")
 
     expected_android_fingerprint = {
         "algorithm": "HMAC-SHA-256",
@@ -4397,10 +4437,16 @@ def http_manifest_semantic_errors(
                     "operation_content_hash",
                     "operation_content_sha256_omits_only_ordinal_and_itself",
                     "ownership_precedes_immutable_registry_claims",
+                    "physical_array_order_is_normative_client_sequence_sorting_"
+                    "or_contiguity_is_not_required",
                     "operation_client_sequence_capture_and_revision_claims_are_"
                     "persisted_before_dependency_result",
+                    "missing_parent_does_not_claim_or_reserve_event_id",
                     "missing_parent_re_evaluates_only_exact_unchanged_operation_"
                     "in_later_batch_changed_mapping_collides",
+                    "only_first_current_batch_occurrence_reaching_operation_"
+                    "registry_may_replay_a_prior_terminal_receipt_later_registry_"
+                    "occurrence_is_operation_id_collision",
                     "invalid_parent_is_terminal_with_persisted_operation_client_"
                     "sequence_capture_and_revision_claims_and_changed_content_"
                     "requires_new_operation_identity",
@@ -4517,6 +4563,23 @@ def http_manifest_semantic_errors(
                     f"HTTP {endpoint_id} {role} semantic contract drifted"
                 )
 
+    expected_push_validation_order = [
+        "transport_headers_encoding_and_raw_byte_limit",
+        "strict_utf8_and_duplicate_key_rejecting_json_parse",
+        "push_batch_envelope_schema",
+        "authenticate_and_resolve_internal_family_and_device_namespace",
+        "capture_keyed_raw_body_hmac_sha256",
+        "idempotency_key_matches_batch_id",
+        "durable_batch_identity_exact_replay_or_collision",
+        "request_device_id_matches_authenticated_internal_device_else_device_mismatch",
+        "batch_content_sha256",
+        "process_operations_in_ordinal_order_using_per_item_validation_order",
+        "atomic_commit_with_durable_replay_record",
+    ]
+    if endpoints.get("sync_push", {}).get(
+        "validation_order"
+    ) != expected_push_validation_order:
+        errors.append("HTTP sync push validation order drifted")
     expected_push_item_order = [
         "safe_discriminator_event_schema_version",
         "safe_discriminator_operation_kind",
@@ -4531,8 +4594,8 @@ def http_manifest_semantic_errors(
         "immutable_registry_client_sequence_else_client_sequence_collision",
         "immutable_registry_capture_id_else_capture_id_collision",
         "immutable_registry_revision_id_else_revision_id_collision",
-        "immutable_registry_event_id_else_event_id_collision",
-        "persist_immutable_claims_before_dependency_result",
+        "inspect_immutable_registry_event_id_else_event_id_collision_defer_claim_until_dependency_succeeds",
+        "persist_operation_client_sequence_capture_and_revision_claims_before_dependency_result",
         "resolve_parent_and_revision_no_else_missing_parent_or_invalid_parent",
         "compare_and_set_expected_current_revision_id_emit_applied_or_terminal_conflict_ack",
         "first_failure_wins_stop_evaluating_item",
@@ -4642,17 +4705,26 @@ def http_manifest_semantic_errors(
         "authenticated_success",
         "authenticated_nonretryable_terminal_api_error",
         "terminal_auth_revoke_401_credential_unavailable",
-        "terminal_sync_401_after_one_allowed_credential_recovery_and_current_generation_exact_original_request_retry_exhausted",
         "terminal_operation_result_batch",
     }
     if set(terminal_outcomes["stored"]) != required_terminal_outcomes:
         errors.append("HTTP durable terminal outcome coverage drifted")
+    if (
+        terminal_outcomes["trusted_401_scope"]
+        != "auth_revoke_401_may_be_terminal_and_every_sync_401_is_server_"
+        "nonfrozen_regardless_of_client_local_recovery_state"
+        or terminal_outcomes["recoverable_outcomes"]["sync_401"]
+        != "server_never_freezes_client_applies_sync_unauthorized_recovery_and_"
+        "quarantines_on_second_current_generation_401"
+    ):
+        errors.append("HTTP server/client sync 401 boundary drifted")
     required_replay_exclusions = {
         "body_unavailable_or_over_limit_before_identity",
         "malformed_or_invalid_request_identity",
         "unresolved_or_unauthenticated_replay_namespace",
         "collision_or_idempotency_mismatch_response",
-        "initial_recoverable_sync_401_before_allowed_credential_recovery",
+        "every_sync_401_credential_unavailable_including_second_current_"
+        "generation_401",
         "retryable_429_rate_limited",
         "retryable_503_temporarily_unavailable",
         "untrusted_transport_or_protocol_response",
@@ -5109,11 +5181,12 @@ def main() -> int:
     invalid_http = copy.deepcopy(http_manifest)
     invalid_http["durable_replay_policy"]["terminal_outcomes"][
         "stored"
-    ].remove(
-        "terminal_sync_401_after_one_allowed_credential_recovery_and_current_generation_exact_original_request_retry_exhausted"
+    ].append(
+        "terminal_sync_401_after_one_allowed_credential_recovery_and_current_"
+        "generation_exact_original_request_retry_exhausted"
     )
     http_contract_negatives.append(
-        ("durable trusted 401 outcome was not retained", invalid_http)
+        ("sync 401 became a server-frozen outcome", invalid_http)
     )
     invalid_http = copy.deepcopy(http_manifest)
     invalid_http["client_policy"]["untrusted_transport_failure"]["retry"][
@@ -5186,6 +5259,156 @@ def main() -> int:
             [("Content-Type", "application/json")],
         ),
     )
+    for invalid_content_type in (
+        "application/json;charset=utf-8",
+        'application/json; charset="utf-8"',
+        " application/json",
+        "application/json; charset=utf-8 ",
+        "application/json; charset=utf-8; profile=extra",
+    ):
+        if "unsupported_request_content_type" not in request_header_errors(
+            "auth_refresh",
+            [("Content-Type", invalid_content_type)],
+        ):
+            raise AssertionError(
+                "noncanonical request Content-Type lexical form was accepted"
+            )
+    request_header_policy = http_manifest["transport"]["request_headers"]
+    header_status_by_error = {
+        "too_many_request_headers":
+            request_header_policy["limits"]["over_limit_status"],
+        "authorization_header_limit_exceeded":
+            request_header_policy["limits"]["over_limit_status"],
+        "idempotency_key_header_limit_exceeded":
+            request_header_policy["limits"]["over_limit_status"],
+        "unsupported_request_content_type":
+            request_header_policy["content_type"]["missing_or_invalid_status"],
+        "unsupported_request_content_encoding":
+            request_header_policy["content_encoding"]["unsupported_status"],
+        "duplicate_authorization":
+            request_header_policy["authorization"][
+                "duplicate_or_malformed_status"
+            ],
+        "malformed_bearer_authorization":
+            request_header_policy["authorization"][
+                "duplicate_or_malformed_status"
+            ],
+        "duplicate_idempotency_key":
+            request_header_policy["idempotency_key"][
+                "duplicate_or_malformed_status"
+            ],
+        "malformed_idempotency_key":
+            request_header_policy["idempotency_key"][
+                "duplicate_or_malformed_status"
+            ],
+    }
+    combined_header_failure_cases = (
+        (
+            [
+                ("Content-Type", "invalid/type"),
+                ("Authorization", f"Bearer {access_token}"),
+                ("Idempotency-Key", request["batch_id"]),
+                *[(f"X-Count-{index}", "v") for index in range(30)],
+            ],
+            "too_many_request_headers",
+            413,
+        ),
+        (
+            [
+                ("Content-Type", "invalid/type"),
+                ("Authorization", "B" * 257),
+                ("Idempotency-Key", request["batch_id"]),
+            ],
+            "authorization_header_limit_exceeded",
+            413,
+        ),
+        (
+            [
+                ("Content-Type", "invalid/type"),
+                ("Authorization", f"Bearer {access_token}"),
+                ("Idempotency-Key", "0" * 37),
+            ],
+            "idempotency_key_header_limit_exceeded",
+            413,
+        ),
+        (
+            [
+                ("Content-Type", "application/json;charset=utf-8"),
+                ("Authorization", f"Bearer {access_token}"),
+                ("Authorization", f"Bearer {access_token}"),
+                ("Idempotency-Key", request["batch_id"]),
+                ("Idempotency-Key", request["batch_id"]),
+            ],
+            "unsupported_request_content_type",
+            415,
+        ),
+        (
+            [
+                ("Content-Type", "application/json"),
+                ("Content-Encoding", "identity"),
+                ("Content-Encoding", "identity"),
+                ("Authorization", f"Bearer {access_token}"),
+                ("Authorization", f"Bearer {access_token}"),
+                ("Idempotency-Key", request["batch_id"]),
+                ("Idempotency-Key", request["batch_id"]),
+            ],
+            "unsupported_request_content_encoding",
+            415,
+        ),
+        (
+            [
+                ("Content-Type", "application/json"),
+                ("Authorization", f"Bearer {access_token}"),
+                ("Authorization", f"Bearer {access_token}"),
+                ("Idempotency-Key", request["batch_id"]),
+                ("Idempotency-Key", request["batch_id"]),
+            ],
+            "duplicate_authorization",
+            401,
+        ),
+        (
+            [
+                ("Content-Type", "application/json"),
+                ("Authorization", f"Bearer {access_token}"),
+                ("Idempotency-Key", request["batch_id"]),
+                ("Idempotency-Key", request["batch_id"]),
+            ],
+            "duplicate_idempotency_key",
+            400,
+        ),
+        (
+            [
+                ("Content-Type", "application/json"),
+                ("Authorization", f"Basic {access_token}"),
+                ("Idempotency-Key", "not-a-uuid"),
+            ],
+            "malformed_bearer_authorization",
+            401,
+        ),
+        (
+            [
+                ("Content-Type", "application/json"),
+                ("Authorization", f"Bearer {access_token}"),
+                ("Idempotency-Key", "not-a-uuid"),
+            ],
+            "malformed_idempotency_key",
+            400,
+        ),
+    )
+    for headers, expected_error, expected_status in combined_header_failure_cases:
+        combined_errors = request_header_errors(
+            "sync_push",
+            headers,
+            request["batch_id"],
+        )
+        if (
+            not combined_errors
+            or combined_errors[0] != expected_error
+            or header_status_by_error[expected_error] != expected_status
+        ):
+            raise AssertionError(
+                "combined request-header failure precedence drifted"
+            )
     for duplicate_name, duplicate_value in (
         ("content-type", "application/json"),
         ("authorization", f"Bearer {access_token}"),
@@ -5249,7 +5472,6 @@ def main() -> int:
     for invalid_idempotency in (
         "ABCDEFAB-CDEF-4ABC-8DEF-ABCDEFABCDEF",
         "not-a-uuid",
-        replacement_bootstrap_request["request_id"],
     ):
         candidate_headers = [
             ("Content-Type", "application/json"),
@@ -5262,6 +5484,32 @@ def main() -> int:
             request["batch_id"],
         ):
             raise AssertionError("invalid Idempotency-Key passed")
+    wrong_canonical_idempotency = replacement_bootstrap_request["request_id"]
+    assert_no_errors(
+        "canonical Idempotency-Key grammar precedes body binding",
+        request_header_errors(
+            "sync_push",
+            [
+                ("Content-Type", "application/json"),
+                ("Authorization", f"Bearer {access_token}"),
+                ("Idempotency-Key", wrong_canonical_idempotency),
+            ],
+            request["batch_id"],
+        ),
+    )
+    if (
+        idempotency_key_body_binding_error(
+            wrong_canonical_idempotency,
+            request["batch_id"],
+        )
+        != "idempotency_key_mismatch"
+        or idempotency_key_body_binding_error(
+            request["batch_id"],
+            request["batch_id"],
+        )
+        is not None
+    ):
+        raise AssertionError("late Idempotency-Key body binding drifted")
     if not request_header_errors(
         "sync_push",
         push_headers + [("Content-Encoding", "gzip")],
@@ -5885,6 +6133,90 @@ def main() -> int:
         ),
     )
     golden_push_state = copy.deepcopy(push_state)
+    duplicate_committed_request = copy.deepcopy(request)
+    duplicate_committed_request["batch_id"] = (
+        "96000000-0000-4000-8000-000000000040"
+    )
+    duplicate_committed_request["operations"] = [
+        copy.deepcopy(request["operations"][0]),
+        copy.deepcopy(request["operations"][0]),
+    ]
+    duplicate_committed_request["operations"][0]["ordinal"] = 0
+    duplicate_committed_request["operations"][1]["ordinal"] = 1
+    duplicate_committed_digest_input = copy.deepcopy(
+        duplicate_committed_request
+    )
+    duplicate_committed_digest_input.pop("batch_content_sha256")
+    duplicate_committed_request["batch_content_sha256"] = sha256(
+        duplicate_committed_digest_input
+    )
+    duplicate_committed_replay = copy.deepcopy(response["results"][0])
+    duplicate_committed_replay["ordinal"] = 0
+    duplicate_committed_replay["replayed"] = True
+    duplicate_committed_operation = duplicate_committed_request["operations"][1]
+    duplicate_committed_response = {
+        "protocol_version": "1.0.0",
+        "message_type": "push_batch_response",
+        "batch_id": duplicate_committed_request["batch_id"],
+        "device_id": duplicate_committed_request["device_id"],
+        "results": [
+            duplicate_committed_replay,
+            {
+                "ordinal": 1,
+                "operation_id": duplicate_committed_operation["operation_id"],
+                "status": "error",
+                "operation_content_sha256": duplicate_committed_operation[
+                    "operation_content_sha256"
+                ],
+                "error_code": "operation_id_collision",
+                "retryable": False,
+                "field_errors": [],
+            },
+        ],
+        "server_high_watermark": response["server_high_watermark"],
+        "server_time": response["server_time"],
+    }
+    for label, document in (
+        ("duplicate committed operation request", duplicate_committed_request),
+        ("duplicate committed operation response", duplicate_committed_response),
+    ):
+        assert_schema_accepts(
+            label,
+            validators["sync-wire.schema.json"],
+            document,
+        )
+    assert_no_errors(
+        "duplicate committed operations remain per-item registry concerns",
+        sync_request_semantic_errors(
+            duplicate_committed_request,
+            enrollment_binding,
+        ),
+    )
+    assert_no_errors(
+        "duplicate committed operation raw current-batch precedence",
+        raw_sync_pair_semantic_errors(
+            duplicate_committed_request,
+            duplicate_committed_response,
+            push_operation_validator,
+            enrollment_binding,
+        ),
+    )
+    duplicate_committed_state = copy.deepcopy(golden_push_state)
+    duplicate_committed_snapshot = copy.deepcopy(duplicate_committed_state)
+    assert_no_errors(
+        "only first current-batch occurrence replays a committed operation",
+        push_cas_semantic_errors(
+            duplicate_committed_request,
+            duplicate_committed_response,
+            duplicate_committed_state,
+            push_operation_validator,
+            enrollment_binding,
+        ),
+    )
+    if duplicate_committed_state != duplicate_committed_snapshot:
+        raise AssertionError(
+            "duplicate committed current-batch replay rewrote server state"
+        )
     assert_no_errors(
         "mixed push CAS state",
         push_cas_semantic_errors(
@@ -6868,6 +7200,17 @@ def main() -> int:
             True,
         ),
         (
+            "sync_push",
+            {
+                "success": False,
+                "http_status": 403,
+                "error_code": "device_mismatch",
+                "retryable": False,
+                "namespace_resolution": "active_authenticated_principal",
+            },
+            True,
+        ),
+        (
             "auth_revoke",
             {
                 "success": False,
@@ -6889,14 +7232,24 @@ def main() -> int:
             False,
         ),
         (
-            "sync_pull",
+            "sync_push",
             {
                 "success": False,
                 "http_status": 401,
                 "error_code": "credential_unavailable",
                 "retryable": False,
-                "sync_credential_recovery_exhausted": False,
                 "namespace_resolution": "retained_credential_tombstone",
+            },
+            False,
+        ),
+        (
+            "sync_bootstrap",
+            {
+                "success": False,
+                "http_status": 401,
+                "error_code": "credential_unavailable",
+                "retryable": False,
+                "namespace_resolution": "active_authenticated_principal",
             },
             False,
         ),
@@ -6907,10 +7260,9 @@ def main() -> int:
                 "http_status": 401,
                 "error_code": "credential_unavailable",
                 "retryable": False,
-                "sync_credential_recovery_exhausted": True,
                 "namespace_resolution": "retained_credential_tombstone",
             },
-            True,
+            False,
         ),
         (
             "sync_bootstrap",
@@ -6970,7 +7322,7 @@ def main() -> int:
         recoverable_401,
         freeze=False,
     ) is not None or replay_store:
-        raise AssertionError("initial recoverable sync 401 was frozen")
+        raise AssertionError("sync 401 server outcome was frozen")
     eventual_success = {
         "http_status": 200,
         "retryable": False,
@@ -7015,6 +7367,200 @@ def main() -> int:
     )
     if replayed_success != frozen_success:
         raise AssertionError("stored terminal status/headers/body were not frozen")
+
+    retention_store: dict[
+        tuple[str, str, str, str, str],
+        dict[str, Any],
+    ] = {}
+    retention_family_id = "credential-family-retention-proof"
+    retention_fingerprint = replay_namespace_fingerprint(
+        "sync_push",
+        request["protocol_version"],
+        retention_family_id,
+        request["device_id"],
+        raw_request_body,
+    )
+    retained_record = store_or_replay_terminal_outcome(
+        retention_store,
+        "sync_push",
+        request["protocol_version"],
+        retention_family_id,
+        request["device_id"],
+        request["batch_id"],
+        retention_fingerprint,
+        7,
+        eventual_success,
+        freeze=True,
+    )
+    if retained_record is None or len(retention_store) != 1:
+        raise AssertionError("retention authority proof record was not stored")
+    retention_key = next(iter(retention_store))
+    retention_until = "2030-01-31T00:00:00Z"
+    retention_store[retention_key]["retention_until"] = retention_until
+    physically_retained_record = copy.deepcopy(retention_store[retention_key])
+    for observed_at in (
+        retention_until,
+        "2030-02-01T00:00:00Z",
+    ):
+        if parse_instant(observed_at) < parse_instant(retention_until):
+            raise AssertionError("retention proof did not reach its GC deadline")
+        exact_retained_replay = store_or_replay_terminal_outcome(
+            retention_store,
+            "sync_push",
+            request["protocol_version"],
+            retention_family_id,
+            request["device_id"],
+            request["batch_id"],
+            retention_fingerprint,
+            7,
+            mutated_success,
+            freeze=True,
+        )
+        if exact_retained_replay != physically_retained_record:
+            raise AssertionError(
+                "retained replay row stopped being authoritative at its deadline"
+            )
+        changed_retained_replay = store_or_replay_terminal_outcome(
+            retention_store,
+            "sync_push",
+            request["protocol_version"],
+            retention_family_id,
+            request["device_id"],
+            request["batch_id"],
+            hashlib.sha256(observed_at.encode("ascii")).hexdigest(),
+            7,
+            eventual_success,
+            freeze=True,
+        )
+        if changed_retained_replay != {
+            "classification": "request_identity_collision"
+        }:
+            raise AssertionError(
+                "retained expired replay row stopped detecting collisions"
+            )
+    retained_key_epochs = {
+        record["fingerprint_key_generation"]
+        for record in retention_store.values()
+    }
+    if retained_key_epochs != {7}:
+        raise AssertionError("retained replay row lost its required key epoch")
+    del retention_store[retention_key]
+    if retention_key in retention_store:
+        raise AssertionError("transactional GC did not remove replay-row authority")
+
+    device_mismatch_request = copy.deepcopy(request)
+    device_mismatch_request["batch_id"] = (
+        "96000000-0000-4000-8000-000000000041"
+    )
+    device_mismatch_request["device_id"] = (
+        "91000000-0000-4000-8000-000000000099"
+    )
+    device_mismatch_digest_input = copy.deepcopy(device_mismatch_request)
+    device_mismatch_digest_input.pop("batch_content_sha256")
+    device_mismatch_request["batch_content_sha256"] = sha256(
+        device_mismatch_digest_input
+    )
+    device_mismatch_raw_body = canonical_json_bytes(device_mismatch_request)
+    authenticated_device_id = request["device_id"]
+    device_mismatch_family = "credential-family-device-mismatch-proof"
+    device_mismatch_fingerprint = replay_namespace_fingerprint(
+        "sync_push",
+        request["protocol_version"],
+        device_mismatch_family,
+        authenticated_device_id,
+        device_mismatch_raw_body,
+    )
+    device_mismatch_body = copy.deepcopy(credential_error)
+    device_mismatch_body["request_id"] = device_mismatch_request["batch_id"]
+    device_mismatch_body["error_code"] = "device_mismatch"
+    device_mismatch_body["http_status"] = 403
+    assert_schema_accepts(
+        "authenticated device mismatch API error",
+        validators["api-error.schema.json"],
+        device_mismatch_body,
+    )
+    device_mismatch_outcome = {
+        "http_status": 403,
+        "error_code": "device_mismatch",
+        "retryable": False,
+        "response_headers": copy.deepcopy(canonical_response_headers),
+        "response_body": canonical_json_bytes(device_mismatch_body),
+    }
+    device_mismatch_store: dict[
+        tuple[str, str, str, str, str],
+        dict[str, Any],
+    ] = {}
+    frozen_device_mismatch = store_or_replay_terminal_outcome(
+        device_mismatch_store,
+        "sync_push",
+        request["protocol_version"],
+        device_mismatch_family,
+        authenticated_device_id,
+        device_mismatch_request["batch_id"],
+        device_mismatch_fingerprint,
+        9,
+        device_mismatch_outcome,
+        freeze=should_freeze_durable_outcome(
+            "sync_push",
+            success=False,
+            http_status=403,
+            error_code="device_mismatch",
+            retryable=False,
+            namespace_resolution="active_authenticated_principal",
+        ),
+    )
+    if frozen_device_mismatch is None:
+        raise AssertionError("authenticated device_mismatch was not frozen")
+    exact_device_mismatch_replay = store_or_replay_terminal_outcome(
+        device_mismatch_store,
+        "sync_push",
+        request["protocol_version"],
+        device_mismatch_family,
+        authenticated_device_id,
+        device_mismatch_request["batch_id"],
+        device_mismatch_fingerprint,
+        9,
+        eventual_success,
+        freeze=True,
+    )
+    if exact_device_mismatch_replay != frozen_device_mismatch:
+        raise AssertionError("exact device_mismatch retry was not replayed")
+    changed_mismatched_request = copy.deepcopy(device_mismatch_request)
+    changed_mismatched_request["device_id"] = (
+        "91000000-0000-4000-8000-000000000098"
+    )
+    changed_mismatched_digest_input = copy.deepcopy(changed_mismatched_request)
+    changed_mismatched_digest_input.pop("batch_content_sha256")
+    changed_mismatched_request["batch_content_sha256"] = sha256(
+        changed_mismatched_digest_input
+    )
+    assert_schema_accepts(
+        "changed still-mismatched replay request",
+        validators["sync-wire.schema.json"],
+        changed_mismatched_request,
+    )
+    changed_mismatched_fingerprint = replay_namespace_fingerprint(
+        "sync_push",
+        request["protocol_version"],
+        device_mismatch_family,
+        authenticated_device_id,
+        canonical_json_bytes(changed_mismatched_request),
+    )
+    if store_or_replay_terminal_outcome(
+        device_mismatch_store,
+        "sync_push",
+        request["protocol_version"],
+        device_mismatch_family,
+        authenticated_device_id,
+        device_mismatch_request["batch_id"],
+        changed_mismatched_fingerprint,
+        9,
+        eventual_success,
+        freeze=True,
+    ) != {"classification": "request_identity_collision"}:
+        raise AssertionError(
+            "changed still-mismatched body bypassed replay-before-device-check order"
+        )
 
     isolated_namespace_store: dict[
         tuple[str, str, str, str, str],
@@ -7199,10 +7745,17 @@ def main() -> int:
         terminal_401_fingerprint,
         1,
         recoverable_401,
-        freeze=True,
+        freeze=should_freeze_durable_outcome(
+            "sync_pull",
+            success=False,
+            http_status=401,
+            error_code="credential_unavailable",
+            retryable=False,
+            namespace_resolution="retained_credential_tombstone",
+        ),
     )
-    if terminal_401_record is None:
-        raise AssertionError("exhausted current-generation sync 401 was not frozen")
+    if terminal_401_record is not None:
+        raise AssertionError("client-local second sync 401 created a replay row")
     frozen_replay_files = (
         (
             "sync-push-batch-response.json",
@@ -10136,6 +10689,148 @@ def main() -> int:
     if revision_number_state != revision_number_snapshot:
         raise AssertionError("changed terminal operation overwrote frozen claims")
 
+    child_before_parent_request = copy.deepcopy(request)
+    child_before_parent_request["batch_id"] = (
+        "96000000-0000-4000-8000-000000000058"
+    )
+    child_before_parent_request["operations"] = [
+        copy.deepcopy(request["operations"][1]),
+        copy.deepcopy(request["operations"][0]),
+    ]
+    child_before_parent_request["operations"][0]["ordinal"] = 0
+    child_before_parent_request["operations"][1]["ordinal"] = 1
+    child_before_parent_digest_input = copy.deepcopy(
+        child_before_parent_request
+    )
+    child_before_parent_digest_input.pop("batch_content_sha256")
+    child_before_parent_request["batch_content_sha256"] = sha256(
+        child_before_parent_digest_input
+    )
+    child_before_parent_operation = child_before_parent_request["operations"][0]
+    later_root_operation = child_before_parent_request["operations"][1]
+    child_before_parent_response = {
+        "protocol_version": "1.0.0",
+        "message_type": "push_batch_response",
+        "batch_id": child_before_parent_request["batch_id"],
+        "device_id": child_before_parent_request["device_id"],
+        "results": [
+            {
+                "ordinal": 0,
+                "operation_id": child_before_parent_operation["operation_id"],
+                "status": "error",
+                "operation_content_sha256": child_before_parent_operation[
+                    "operation_content_sha256"
+                ],
+                "error_code": "missing_parent",
+                "retryable": True,
+                "field_errors": [],
+            },
+            {
+                **copy.deepcopy(response["results"][0]),
+                "ordinal": 1,
+            },
+        ],
+        "server_high_watermark": response["server_high_watermark"],
+        "server_time": response["server_time"],
+    }
+    for label, document in (
+        ("child-before-parent request", child_before_parent_request),
+        ("child-before-parent response", child_before_parent_response),
+    ):
+        assert_schema_accepts(label, sync_validator, document)
+    assert_no_errors(
+        "physical order permits nonmonotonic client sequences",
+        sync_request_semantic_errors(
+            child_before_parent_request,
+            enrollment_binding,
+        ),
+    )
+    assert_no_errors(
+        "child-before-parent raw response is deterministic",
+        raw_sync_pair_semantic_errors(
+            child_before_parent_request,
+            child_before_parent_response,
+            push_operation_validator,
+            enrollment_binding,
+        ),
+    )
+    child_before_parent_state = new_sync_state()
+    assert_no_errors(
+        "child missing-parent does not block a later root in the same batch",
+        push_cas_semantic_errors(
+            child_before_parent_request,
+            child_before_parent_response,
+            child_before_parent_state,
+            push_operation_validator,
+            enrollment_binding,
+        ),
+    )
+    child_receipt = child_before_parent_state["operations"][
+        child_before_parent_operation["operation_id"]
+    ][1]
+    rooted_event = child_before_parent_state["events"].get(
+        later_root_operation["event_id"]
+    )
+    if (
+        child_receipt.get("error_code") != "missing_parent"
+        or child_before_parent_state["current_by_event"].get(
+            later_root_operation["event_id"]
+        )
+        != later_root_operation["revision_id"]
+        or rooted_event is None
+        or rooted_event["root_revision_id"] != later_root_operation["revision_id"]
+    ):
+        raise AssertionError(
+            "child-before-parent state did not preserve the later root"
+        )
+    child_after_root_retry = copy.deepcopy(child_before_parent_request)
+    child_after_root_retry["batch_id"] = (
+        "96000000-0000-4000-8000-000000000059"
+    )
+    child_after_root_retry["operations"] = [
+        copy.deepcopy(child_before_parent_operation)
+    ]
+    child_after_root_retry_digest_input = copy.deepcopy(child_after_root_retry)
+    child_after_root_retry_digest_input.pop("batch_content_sha256")
+    child_after_root_retry["batch_content_sha256"] = sha256(
+        child_after_root_retry_digest_input
+    )
+    child_after_root_response = {
+        "protocol_version": "1.0.0",
+        "message_type": "push_batch_response",
+        "batch_id": child_after_root_retry["batch_id"],
+        "device_id": child_after_root_retry["device_id"],
+        "results": [
+            {
+                **copy.deepcopy(response["results"][1]),
+                "ordinal": 0,
+            },
+        ],
+        "server_high_watermark": response["server_high_watermark"],
+        "server_time": response["server_time"],
+    }
+    assert_no_errors(
+        "exact child retry applies after its later root committed",
+        push_cas_semantic_errors(
+            child_after_root_retry,
+            child_after_root_response,
+            child_before_parent_state,
+            push_operation_validator,
+            enrollment_binding,
+        ),
+    )
+    if (
+        child_before_parent_state["current_by_event"].get(
+            child_before_parent_operation["event_id"]
+        )
+        != child_before_parent_operation["revision_id"]
+        or child_before_parent_state["operations"][
+            child_before_parent_operation["operation_id"]
+        ][1].get("replayed")
+        is not False
+    ):
+        raise AssertionError("resolved child retry did not become a fresh ACK")
+
     missing_parent_request = copy.deepcopy(request)
     missing_parent_request["batch_id"] = (
         "96000000-0000-4000-8000-000000000051"
@@ -10214,6 +10909,7 @@ def main() -> int:
             missing_parent_operation["revision_id"]
         )
         != pending_operation_id
+        or missing_parent_operation["event_id"] in pending_parent_state["events"]
     ):
         raise AssertionError("missing-parent immutable claims were not retained")
 
@@ -10705,25 +11401,6 @@ def main() -> int:
         raise AssertionError("operation digest mismatch was not detected")
     if any("batch_content_sha256" in error for error in operation_hash_errors):
         raise AssertionError("operation digest negative also broke the batch hash")
-
-    invalid = copy.deepcopy(request)
-    duplicate = copy.deepcopy(invalid["operations"][0])
-    duplicate["ordinal"] = 1
-    duplicate["client_sequence"] = 2
-    invalid["operations"].append(duplicate)
-    batch_digest_input = copy.deepcopy(invalid)
-    batch_digest_input.pop("batch_content_sha256")
-    invalid["batch_content_sha256"] = sha256(batch_digest_input)
-    duplicate_errors = sync_request_semantic_errors(invalid)
-    for expected_error in (
-        "batch contains duplicate capture_id",
-        "batch contains duplicate revision_id",
-    ):
-        if expected_error not in duplicate_errors:
-            raise AssertionError(
-                "duplicate request identity negative case did not report: "
-                f"{expected_error}"
-            )
 
     invalid = copy.deepcopy(mixed_request)
     invalid["batch_content_sha256"] = "0" * 64
