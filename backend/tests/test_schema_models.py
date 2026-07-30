@@ -23,6 +23,7 @@ EXPECTED_TABLES = {
     "credential_family",
     "credential_generation",
     "sync_stream",
+    "device_replay_quota",
     "sync_operation_registry",
     "capture",
     "life_event",

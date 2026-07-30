@@ -25,6 +25,8 @@ async def m2_service_unavailable(request: Request) -> JSONResponse:
 
 
 for _spec in ENDPOINT_INGRESS_SPECS:
+    if not _spec.endpoint.value.startswith("sync_"):
+        continue
     router.add_api_route(
         _spec.path,
         m2_service_unavailable,

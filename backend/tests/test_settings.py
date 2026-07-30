@@ -12,7 +12,10 @@ from tests.conftest import (
     TEST_DATABASE_URL,
     TEST_ENROLLMENT_CODE_KEY,
     TEST_REFRESH_TOKEN_KEY,
+    TEST_REPLAY_ENCRYPTION_KEY,
+    TEST_REPLAY_FINGERPRINT_KEY,
 )
+from tests.conftest import test_key as derive_test_key
 
 
 def build_settings(**overrides: object) -> Settings:
@@ -20,9 +23,17 @@ def build_settings(**overrides: object) -> Settings:
         "environment": "test",
         "database_url": TEST_DATABASE_URL,
         "access_token_hmac_key": TEST_ACCESS_TOKEN_KEY,
+        "access_token_hmac_key_generation": 1,
         "refresh_token_hmac_key": TEST_REFRESH_TOKEN_KEY,
+        "refresh_token_hmac_key_generation": 1,
         "enrollment_code_hmac_key": TEST_ENROLLMENT_CODE_KEY,
+        "enrollment_code_hmac_key_generation": 1,
+        "replay_fingerprint_hmac_key": TEST_REPLAY_FINGERPRINT_KEY,
+        "replay_fingerprint_hmac_key_generation": 1,
+        "replay_response_encryption_key": TEST_REPLAY_ENCRYPTION_KEY,
+        "replay_response_encryption_key_generation": 1,
         "cursor_hmac_key": TEST_CURSOR_KEY,
+        "cursor_hmac_key_generation": 1,
     }
     values.update(overrides)
     return Settings.model_validate(values)
@@ -33,9 +44,17 @@ def test_required_secrets_have_no_defaults(monkeypatch: pytest.MonkeyPatch) -> N
         "LIFE_AGENT_ENVIRONMENT",
         "LIFE_AGENT_DATABASE_URL",
         "LIFE_AGENT_ACCESS_TOKEN_HMAC_KEY",
+        "LIFE_AGENT_ACCESS_TOKEN_HMAC_KEY_GENERATION",
         "LIFE_AGENT_REFRESH_TOKEN_HMAC_KEY",
+        "LIFE_AGENT_REFRESH_TOKEN_HMAC_KEY_GENERATION",
         "LIFE_AGENT_ENROLLMENT_CODE_HMAC_KEY",
+        "LIFE_AGENT_ENROLLMENT_CODE_HMAC_KEY_GENERATION",
+        "LIFE_AGENT_REPLAY_FINGERPRINT_HMAC_KEY",
+        "LIFE_AGENT_REPLAY_FINGERPRINT_HMAC_KEY_GENERATION",
+        "LIFE_AGENT_REPLAY_RESPONSE_ENCRYPTION_KEY",
+        "LIFE_AGENT_REPLAY_RESPONSE_ENCRYPTION_KEY_GENERATION",
         "LIFE_AGENT_CURSOR_HMAC_KEY",
+        "LIFE_AGENT_CURSOR_HMAC_KEY_GENERATION",
     ):
         monkeypatch.delenv(name, raising=False)
 
@@ -50,9 +69,17 @@ def test_migration_settings_require_only_database_access(
     for name in (
         "LIFE_AGENT_ENVIRONMENT",
         "LIFE_AGENT_ACCESS_TOKEN_HMAC_KEY",
+        "LIFE_AGENT_ACCESS_TOKEN_HMAC_KEY_GENERATION",
         "LIFE_AGENT_REFRESH_TOKEN_HMAC_KEY",
+        "LIFE_AGENT_REFRESH_TOKEN_HMAC_KEY_GENERATION",
         "LIFE_AGENT_ENROLLMENT_CODE_HMAC_KEY",
+        "LIFE_AGENT_ENROLLMENT_CODE_HMAC_KEY_GENERATION",
+        "LIFE_AGENT_REPLAY_FINGERPRINT_HMAC_KEY",
+        "LIFE_AGENT_REPLAY_FINGERPRINT_HMAC_KEY_GENERATION",
+        "LIFE_AGENT_REPLAY_RESPONSE_ENCRYPTION_KEY",
+        "LIFE_AGENT_REPLAY_RESPONSE_ENCRYPTION_KEY_GENERATION",
         "LIFE_AGENT_CURSOR_HMAC_KEY",
+        "LIFE_AGENT_CURSOR_HMAC_KEY_GENERATION",
     ):
         monkeypatch.delenv(name, raising=False)
 
@@ -96,6 +123,8 @@ def test_database_url_is_fail_closed(database_url: str) -> None:
         "access_token_hmac_key",
         "refresh_token_hmac_key",
         "enrollment_code_hmac_key",
+        "replay_fingerprint_hmac_key",
+        "replay_response_encryption_key",
         "cursor_hmac_key",
     ],
 )
@@ -109,12 +138,38 @@ def test_hmac_keys_are_fail_closed(key_field: str, token_key: str) -> None:
     [
         "refresh_token_hmac_key",
         "enrollment_code_hmac_key",
+        "replay_fingerprint_hmac_key",
+        "replay_response_encryption_key",
         "cursor_hmac_key",
     ],
 )
 def test_hmac_keys_are_pairwise_distinct(duplicate_field: str) -> None:
     with pytest.raises(ValidationError):
         build_settings(**{duplicate_field: TEST_ACCESS_TOKEN_KEY})
+
+
+def test_retained_keyring_epochs_are_validated_and_separated() -> None:
+    rotated_access_key = derive_test_key("rotated-access-token")
+    settings = build_settings(
+        access_token_hmac_key=rotated_access_key,
+        access_token_hmac_key_generation=2,
+        access_token_hmac_retained_keys={1: TEST_ACCESS_TOKEN_KEY},
+    )
+
+    assert settings.access_token_hmac_key_generation == 2
+    assert settings.access_token_hmac_retained_keys[1].get_secret_value() == TEST_ACCESS_TOKEN_KEY
+
+    with pytest.raises(ValidationError):
+        build_settings(
+            access_token_hmac_key_generation=2,
+            access_token_hmac_retained_keys={2: derive_test_key("retained-active")},
+        )
+    with pytest.raises(ValidationError):
+        build_settings(access_token_hmac_retained_keys={0: derive_test_key("retained-zero")})
+    with pytest.raises(ValidationError):
+        build_settings(access_token_hmac_retained_keys={2: "invalid"})
+    with pytest.raises(ValidationError):
+        build_settings(access_token_hmac_retained_keys={2: TEST_REFRESH_TOKEN_KEY})
 
 
 def test_secrets_are_masked_in_repr_and_json() -> None:
@@ -126,11 +181,15 @@ def test_secrets_are_masked_in_repr_and_json() -> None:
     assert TEST_ACCESS_TOKEN_KEY not in rendered
     assert TEST_REFRESH_TOKEN_KEY not in rendered
     assert TEST_ENROLLMENT_CODE_KEY not in rendered
+    assert TEST_REPLAY_FINGERPRINT_KEY not in rendered
+    assert TEST_REPLAY_ENCRYPTION_KEY not in rendered
     assert TEST_CURSOR_KEY not in rendered
     assert TEST_DATABASE_URL not in serialized
     assert TEST_ACCESS_TOKEN_KEY not in serialized
     assert TEST_REFRESH_TOKEN_KEY not in serialized
     assert TEST_ENROLLMENT_CODE_KEY not in serialized
+    assert TEST_REPLAY_FINGERPRINT_KEY not in serialized
+    assert TEST_REPLAY_ENCRYPTION_KEY not in serialized
     assert TEST_CURSOR_KEY not in serialized
     assert "**********" in serialized
     json.loads(serialized)
@@ -158,6 +217,8 @@ def test_validation_errors_hide_secret_inputs() -> None:
         assert TEST_ACCESS_TOKEN_KEY not in rendered
         assert TEST_REFRESH_TOKEN_KEY not in rendered
         assert TEST_ENROLLMENT_CODE_KEY not in rendered
+        assert TEST_REPLAY_FINGERPRINT_KEY not in rendered
+        assert TEST_REPLAY_ENCRYPTION_KEY not in rendered
         assert TEST_CURSOR_KEY not in rendered
         assert "input_value" not in rendered
 

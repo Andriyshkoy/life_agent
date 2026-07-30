@@ -231,19 +231,7 @@ class ApiErrorEnvelope(BaseModel):
     @field_validator("server_time")
     @classmethod
     def validate_server_time(cls, value: str) -> str:
-        if _CANONICAL_SERVER_TIME.fullmatch(value) is None:
-            raise ValueError("server time is not canonical UTC")
-        try:
-            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-        except ValueError as error:
-            raise ValueError("server time is not valid") from error
-        canonical = canonical_server_time(parsed)
-        allowed = {canonical}
-        if canonical.endswith(".000Z"):
-            allowed.add(f"{canonical[:-5]}Z")
-        if value not in allowed:
-            raise ValueError("server time is not canonical UTC")
-        return value
+        return validate_canonical_server_time(value)
 
     @model_validator(mode="after")
     def validate_closed_mapping(self) -> Self:
@@ -334,6 +322,22 @@ def canonical_server_time(value: datetime) -> str:
     if value.tzinfo is None or value.utcoffset() is None:
         raise ValueError("server time must be timezone-aware")
     return value.astimezone(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def validate_canonical_server_time(value: str) -> str:
+    if _CANONICAL_SERVER_TIME.fullmatch(value) is None:
+        raise ValueError("server time is not canonical UTC")
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as error:
+        raise ValueError("server time is not valid") from error
+    canonical = canonical_server_time(parsed)
+    allowed = {canonical}
+    if canonical.endswith(".000Z"):
+        allowed.add(f"{canonical[:-5]}Z")
+    if value not in allowed:
+        raise ValueError("server time is not canonical UTC")
+    return value
 
 
 def build_api_error(
