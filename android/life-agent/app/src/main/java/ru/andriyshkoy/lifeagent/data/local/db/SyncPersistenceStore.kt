@@ -57,6 +57,7 @@ data class PushErrorPersistence(
 class SyncPersistenceStore(
     private val database: LifeAgentDatabase,
 ) {
+    private val authDao = database.syncAuthDao()
     private val mutationDao = database.noteMutationDao()
     private val outboxDao = database.outboxDao()
     private val replicaDao = database.syncReplicaDao()
@@ -238,6 +239,9 @@ class SyncPersistenceStore(
         receipt: SyncPageReceiptEntity,
         changes: List<ReplicaChangePersistence>,
     ) {
+        require(receipt.completeOrHasMore) {
+            "A non-final bootstrap page requires a durable next-request intent"
+        }
         val bootstrapId = receipt.bootstrapId
         var streamBinding: SyncStreamStateEntity? = null
         try {
@@ -561,9 +565,11 @@ class SyncPersistenceStore(
     suspend fun commitBootstrapCursorExpired(
         response: TerminalHttpResponsePersistence,
         bootstrapId: String,
+        replacementIntent: BootstrapIntentPersistence,
     ) {
         require(response.endpointId == BOOTSTRAP_ENDPOINT)
         require(response.terminalErrorCode == CURSOR_EXPIRED)
+        validateBootstrapIntent(replacementIntent)
         var streamBinding: SyncStreamStateEntity? = null
         try {
             database.withTransaction {
@@ -667,6 +673,43 @@ class SyncPersistenceStore(
                     ) == 1,
                     "sync_stream_missing",
                     "Expired bootstrap could not restore bootstrap-required phase",
+                )
+                requireReplica(
+                    authDao.setBootstrapRequired(
+                        credentialEpochId = request.credentialEpochId,
+                        deviceId = request.deviceId,
+                        bootstrapRequired = true,
+                        updatedAtUtc = response.terminalAtUtc,
+                    ) == 1,
+                    "auth_stream_binding_drift",
+                    "Expired bootstrap could not gate its credential family",
+                )
+                requireReplica(
+                    replacementIntent.session.credentialEpochId ==
+                        request.credentialEpochId &&
+                        replacementIntent.session.deviceId == request.deviceId,
+                    "bootstrap_replacement_binding_drift",
+                    "Replacement bootstrap intent belongs to another stream",
+                )
+                val retainedRequestIdentity =
+                    SyncRequestPersistenceStore(database)
+                        .installOrRetainBootstrapIntent(
+                            expectedCredentialEpochId =
+                                request.credentialEpochId,
+                            expectedDeviceId = request.deviceId,
+                            proposedIntent = replacementIntent,
+                            updatedAtUtc = response.terminalAtUtc,
+                        )
+                releaseOpenPushBatchesForBootstrap(
+                    credentialEpochId = request.credentialEpochId,
+                    deviceId = request.deviceId,
+                )
+                transportDao.invalidateSupersededSyncRequests(
+                    credentialEpochId = request.credentialEpochId,
+                    deviceId = request.deviceId,
+                    retainedBootstrapRequestIdentity =
+                        retainedRequestIdentity,
+                    terminalAtUtc = response.terminalAtUtc,
                 )
             }
         } catch (error: ReplicaIntegrityException) {
@@ -1283,6 +1326,16 @@ class SyncPersistenceStore(
             ) == 1,
             "bootstrap_cursor_cas_failed",
             "Bootstrap cursor could not replace the active replica cursor",
+        )
+        requireReplica(
+            authDao.setBootstrapRequired(
+                credentialEpochId = stream.credentialEpochId,
+                deviceId = stream.deviceId,
+                bootstrapRequired = false,
+                updatedAtUtc = response.terminalAtUtc,
+            ) == 1,
+            "auth_stream_binding_drift",
+            "Bootstrap promotion could not release the credential-family gate",
         )
         requireReplica(
             replicaDao.markBootstrapComplete(
@@ -2469,6 +2522,18 @@ class SyncPersistenceStore(
             itemWireSha256 = itemWireSha256,
             result = result,
         )
+        if (result.errorCode == "missing_parent") {
+            val outbox = requireReplicaValue(
+                mutationDao.findOutbox(itemOperationId),
+                "push_error_outbox_missing",
+                "Missing-parent result has no outbox operation",
+            )
+            requireReplica(
+                outbox.baseRevisionId != null,
+                "missing_parent_root_invalid",
+                "A root operation cannot have a missing parent",
+            )
+        }
         val state = if (result.retryable) "waiting_parent" else "failed"
         val recorded = outboxDao.recordErrorByBatchOrdinal(
             batchId = batchId,
@@ -2550,6 +2615,25 @@ class SyncPersistenceStore(
             "push_ack_head_drift",
             "Remote head replay conflicts at the observed server sequence",
         )
+    }
+
+    private suspend fun releaseOpenPushBatchesForBootstrap(
+        credentialEpochId: String,
+        deviceId: String,
+    ) {
+        transportDao.findOpenPushBatchIds(
+            credentialEpochId = credentialEpochId,
+            deviceId = deviceId,
+        ).forEach { batchId ->
+            val expected = transportDao.findBatchItems(batchId).size
+            requireReplica(
+                expected > 0 &&
+                    transportDao.releasePushBatchForBootstrap(batchId) ==
+                    expected,
+                "push_batch_membership_drift",
+                "Bootstrap recovery could not release an open push batch",
+            )
+        }
     }
 
     private fun nullableBytesEqual(

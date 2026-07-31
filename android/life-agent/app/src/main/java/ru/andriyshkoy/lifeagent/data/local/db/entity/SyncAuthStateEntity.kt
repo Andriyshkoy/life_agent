@@ -84,6 +84,26 @@ data class SyncAuthStateEntity(
     val failureCode: String?,
 ) {
     init {
+        require(
+            state in setOf(
+                "active",
+                "refresh_in_flight",
+                "revoke_pending",
+                "quarantined",
+                "expired",
+                "revoked",
+                "integrity_failure",
+            ),
+        ) {
+            "Unknown credential-family state"
+        }
+        require(tokenType == "Bearer")
+        require(generation > 0)
+        require(credentialEpochId.isNotBlank())
+        require(installationId.isNotBlank())
+        require(localOwnerId.isNotBlank())
+        require(deviceId.isNotBlank())
+        require(personId.isNotBlank())
         val envelopeParts = listOf(
             refreshTokenCiphertext,
             refreshTokenNonce,
@@ -102,9 +122,13 @@ data class SyncAuthStateEntity(
             require(checkNotNull(refreshTokenKeyGeneration) > 0)
             require(checkNotNull(refreshTokenAadVersion) > 0)
         }
-        if (state == "active" || state == "refresh_in_flight") {
+        if (state in setOf("active", "refresh_in_flight", "revoke_pending")) {
             require(envelopePresent) {
-                "An active credential family requires a refresh-token envelope"
+                "A usable credential family requires a refresh-token envelope"
+            }
+        } else {
+            require(!envelopePresent) {
+                "An unusable credential family must not retain a refresh-token envelope"
             }
         }
         require(accessExpiresAtEpochMs > 0)

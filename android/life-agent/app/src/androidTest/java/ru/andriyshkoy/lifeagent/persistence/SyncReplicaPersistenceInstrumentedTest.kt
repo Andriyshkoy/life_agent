@@ -24,6 +24,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -31,10 +32,16 @@ import ru.andriyshkoy.lifeagent.core.id.MutationIds
 import ru.andriyshkoy.lifeagent.core.time.PointTimeResolver
 import ru.andriyshkoy.lifeagent.data.local.db.LifeAgentDatabase
 import ru.andriyshkoy.lifeagent.data.local.db.LifeAgentDatabaseFactory
+import ru.andriyshkoy.lifeagent.data.local.db.BootstrapIntentPersistence
 import ru.andriyshkoy.lifeagent.data.local.db.ReplicaChangePersistence
 import ru.andriyshkoy.lifeagent.data.local.db.ReplicaIntegrityException
 import ru.andriyshkoy.lifeagent.data.local.db.SyncPersistenceStore
 import ru.andriyshkoy.lifeagent.data.local.db.TerminalHttpResponsePersistence
+import ru.andriyshkoy.lifeagent.data.local.db.entity.LocalIdentityStateEntity
+import ru.andriyshkoy.lifeagent.data.local.db.entity.LocalInstallationEntity
+import ru.andriyshkoy.lifeagent.data.local.db.entity.LocalOwnerEntity
+import ru.andriyshkoy.lifeagent.data.local.db.entity.SyncAuthStateEntity
+import ru.andriyshkoy.lifeagent.data.local.db.entity.SyncAuthTokenFingerprintEntity
 import ru.andriyshkoy.lifeagent.data.local.db.entity.SyncBootstrapSessionEntity
 import ru.andriyshkoy.lifeagent.data.local.db.entity.SyncHttpRequestEntity
 import ru.andriyshkoy.lifeagent.data.local.db.entity.SyncPageReceiptEntity
@@ -65,20 +72,13 @@ class SyncReplicaPersistenceInstrumentedTest {
     }
 
     @Test
-    fun bootstrapShadowPromotesOnlyOnFinalPageAndSurvivesReopen() = runBlocking {
+    fun nonFinalBootstrapPageFailsClosedWithoutDurableContinuationIntent() =
+        runBlocking {
         createLocalPendingNote()
         seedStream(appliedCursor = "cursor-before-bootstrap")
         seedBootstrapSession()
 
         val root = fixture.change(sequence = 1)
-        val second = fixture.change(
-            sequence = 2,
-            revisionId = REVISION_TWO_ID,
-            captureId = CAPTURE_TWO_ID,
-            operationId = OPERATION_TWO_ID,
-            revisionNo = 2,
-            parentRevisionId = REVISION_ONE_ID,
-        )
         val firstRequestId = uuid(101)
         val firstPageId = uuid(102)
         val firstAttemptId = uuid(103)
@@ -101,130 +101,38 @@ class SyncReplicaPersistenceInstrumentedTest {
             receivedAt = firstResponse.terminalAtUtc,
         )
 
-        SyncPersistenceStore(requireDatabase()).commitBootstrapPage(
-            response = firstResponse,
-            receipt = firstReceipt,
-            changes = listOf(root),
+        assertTrue(
+            runCatching {
+                SyncPersistenceStore(requireDatabase()).commitBootstrapPage(
+                    response = firstResponse,
+                    receipt = firstReceipt,
+                    changes = listOf(root),
+                )
+            }.exceptionOrNull() is IllegalArgumentException,
         )
-
-        assertNull(
-            requireDatabase().syncReplicaDao().findServerChange(root.operationId),
-        )
-        assertEquals(
-            "cursor-before-bootstrap",
-            requireNotNull(requireDatabase().syncReplicaDao().findStreamState())
-                .appliedCursor,
-        )
-        assertEquals(1, requireDatabase().noteMutationDao().tableCounts().outboxOperations)
 
         closeDatabase()
         openDatabase()
-        assertEquals(
-            1,
-            requireDatabase()
-                .syncReplicaDao()
-                .findStagedChanges(BOOTSTRAP_ID)
-                .size,
-        )
         assertNull(
             requireDatabase().syncReplicaDao().findServerChange(root.operationId),
         )
-
-        val finalRequestId = uuid(104)
-        val finalPageId = uuid(105)
-        val finalAttemptId = uuid(106)
-        val finalResponse = terminalResponse(
-            endpoint = "sync_bootstrap",
-            requestId = finalRequestId,
-            attemptId = finalAttemptId,
-            body = "bootstrap-page-two",
-            terminalAt = "2030-01-01T00:01:10Z",
+        assertEquals(0, requireDatabase().syncReplicaDao().findStagedChanges(BOOTSTRAP_ID).size)
+        val stream = requireNotNull(
+            requireDatabase().syncReplicaDao().findStreamState(),
         )
-        seedSendingRequest(finalResponse, finalAttemptId)
-        val finalReceipt = bootstrapReceipt(
-            requestId = finalRequestId,
-            pageId = finalPageId,
-            pageIndex = 1,
-            fromCursor = "bootstrap-page-two",
-            nextCursor = null,
-            complete = true,
-            changes = listOf(second),
-            receivedAt = finalResponse.terminalAtUtc,
-        )
-        val store = SyncPersistenceStore(requireDatabase())
-        store.commitBootstrapPage(
-            response = finalResponse,
-            receipt = finalReceipt,
-            changes = listOf(second),
-        )
-
-        // Exact replay verifies retained request/page/materialized receipts.
-        store.commitBootstrapPage(
-            response = finalResponse,
-            receipt = finalReceipt,
-            changes = listOf(second),
-        )
-        store.commitBootstrapPage(
-            response = finalResponse.copy(terminalAtUtc = "2030-01-01T00:01:40Z"),
-            receipt = finalReceipt.copy(receivedAtUtc = "2030-01-01T00:01:40Z"),
-            changes = listOf(second),
-        )
-        closeDatabase()
-        openDatabase()
-
-        val counts = requireDatabase().noteMutationDao().tableCounts()
-        assertEquals(3, counts.captures)
-        assertEquals(3, counts.revisions)
-        assertEquals(1, counts.outboxOperations)
-        assertNotNull(
-            requireDatabase().syncReplicaDao().findServerChange(root.operationId),
-        )
-        assertNotNull(
-            requireDatabase().syncReplicaDao().findServerChange(second.operationId),
-        )
-        val stream = requireNotNull(requireDatabase().syncReplicaDao().findStreamState())
-        assertEquals("bootstrap-incremental-cursor", stream.appliedCursor)
-        assertEquals(2L, stream.lastAppliedServerSequence)
-        assertFalse(stream.bootstrapRequired)
+        assertEquals("cursor-before-bootstrap", stream.appliedCursor)
+        assertTrue(stream.bootstrapRequired)
         val session = requireNotNull(
             requireDatabase().syncReplicaDao().findBootstrapSession(BOOTSTRAP_ID),
         )
-        assertEquals("complete", session.state)
-        assertNull(session.activeSlot)
-        assertEquals(
-            finalResponse.terminalAtUtc,
-            requireNotNull(
-                requireDatabase()
-                    .syncTransportDao()
-                    .findRequest("sync_bootstrap", finalRequestId),
-            ).terminalAtUtc,
+        assertEquals("staging", session.state)
+        assertEquals(1, session.activeSlot)
+        val request = requireNotNull(
+            requireDatabase().syncTransportDao()
+                .findRequest("sync_bootstrap", firstRequestId),
         )
-        assertEquals(
-            finalResponse.terminalAtUtc,
-            requireNotNull(
-                requireDatabase().syncReplicaDao().findPageReceipt(finalPageId),
-            ).receivedAtUtc,
-        )
-        assertEquals(
-            CURRENT_LOCAL_OPERATION_ID,
-            requireDatabase().outboxDao().pending(10).single().operationId,
-        )
-        assertEquals(
-            REPLACEMENT_DEVICE_ID,
-            requireNotNull(
-                requireDatabase()
-                    .identityDao()
-                    .findIdentity(),
-            ).serverDeviceId,
-        )
-        assertEquals(
-            SUBMITTING_DEVICE_ID,
-            requireNotNull(
-                requireDatabase()
-                    .syncReplicaDao()
-                    .findInstallation(HISTORICAL_INSTALLATION_ID),
-            ).serverDeviceId,
-        )
+        assertEquals("sending", request.state)
+        assertNull(request.terminalAtUtc)
     }
 
     @Test
@@ -1222,19 +1130,38 @@ class SyncReplicaPersistenceInstrumentedTest {
             terminalAt = "2030-01-01T00:00:10Z",
         )
         seedSendingRequest(pageResponse, pageAttemptId)
-        SyncPersistenceStore(requireDatabase()).commitBootstrapPage(
-            response = pageResponse,
-            receipt = bootstrapReceipt(
-                requestId = pageRequestId,
-                pageId = uuid(303),
-                pageIndex = 0,
-                fromCursor = null,
-                nextCursor = "expired-continuation",
-                complete = false,
-                changes = listOf(root),
-                receivedAt = pageResponse.terminalAtUtc,
+        assertEquals(
+            1,
+            requireDatabase().syncTransportDao().storeTerminalResponse(
+                endpointId = pageResponse.endpointId,
+                requestIdentity = pageResponse.requestIdentity,
+                expectedAttemptId = pageResponse.expectedAttemptId,
+                httpStatus = pageResponse.httpStatus,
+                exactResponseBody = pageResponse.exactResponseBody,
+                responseSha256 = pageResponse.responseSha256,
+                terminalAtUtc = pageResponse.terminalAtUtc,
+                terminalErrorCode = pageResponse.terminalErrorCode,
             ),
+        )
+        val stagedReceipt = bootstrapReceipt(
+            requestId = pageRequestId,
+            pageId = uuid(303),
+            pageIndex = 0,
+            fromCursor = null,
+            nextCursor = "expired-continuation",
+            complete = false,
             changes = listOf(root),
+            receivedAt = pageResponse.terminalAtUtc,
+        )
+        requireDatabase().syncReplicaDao().stageBootstrapPage(
+            receipt = stagedReceipt,
+            changes = listOf(
+                root.asStaged(
+                    bootstrapId = BOOTSTRAP_ID,
+                    pageId = stagedReceipt.pageId,
+                ),
+            ),
+            responseBodyBytes = pageResponse.exactResponseBody.size.toLong(),
         )
 
         val expiredRequestId = uuid(304)
@@ -1250,10 +1177,19 @@ class SyncReplicaPersistenceInstrumentedTest {
         )
         seedSendingRequest(expired, expiredAttemptId)
         val store = SyncPersistenceStore(requireDatabase())
-        store.commitBootstrapCursorExpired(expired, BOOTSTRAP_ID)
+        val replacementIntent = bootstrapIntent(
+            bootstrapId = uuid(308),
+            requestId = uuid(309),
+        )
+        store.commitBootstrapCursorExpired(
+            expired,
+            BOOTSTRAP_ID,
+            replacementIntent,
+        )
         store.commitBootstrapCursorExpired(
             expired.copy(terminalAtUtc = "2030-01-01T00:01:40Z"),
             BOOTSTRAP_ID,
+            replacementIntent,
         )
 
         val expiredSession = requireNotNull(
@@ -1286,7 +1222,11 @@ class SyncReplicaPersistenceInstrumentedTest {
 
         val wrongBinding = assertThrows(ReplicaIntegrityException::class.java) {
             runBlocking {
-                store.commitBootstrapCursorExpired(expired, uuid(399))
+                store.commitBootstrapCursorExpired(
+                    expired,
+                    uuid(399),
+                    replacementIntent,
+                )
             }
         }
         assertEquals("bootstrap_session_missing", wrongBinding.errorCode)
@@ -1412,6 +1352,10 @@ class SyncReplicaPersistenceInstrumentedTest {
                 SyncPersistenceStore(requireDatabase()).commitBootstrapCursorExpired(
                     expired,
                     BOOTSTRAP_ID,
+                    bootstrapIntent(
+                        bootstrapId = uuid(353),
+                        requestId = uuid(354),
+                    ),
                 )
             }
         }
@@ -1974,6 +1918,84 @@ class SyncReplicaPersistenceInstrumentedTest {
     }
 
     private suspend fun seedStream(appliedCursor: String) {
+        val identityDao = requireDatabase().identityDao()
+        if (identityDao.findIdentity() == null) {
+            identityDao.insertInstallation(
+                LocalInstallationEntity(
+                    installationId = CURRENT_INSTALLATION_ID,
+                    createdAtUtc = "2030-01-01T00:00:00Z",
+                ),
+            )
+            identityDao.insertOwner(
+                LocalOwnerEntity(
+                    localOwnerId = CURRENT_OWNER_ID,
+                    installationId = CURRENT_INSTALLATION_ID,
+                    createdAtUtc = "2030-01-01T00:00:00Z",
+                ),
+            )
+            identityDao.insertIdentityState(
+                LocalIdentityStateEntity(
+                    installationId = CURRENT_INSTALLATION_ID,
+                    localOwnerId = CURRENT_OWNER_ID,
+                    selectedAtUtc = "2030-01-01T00:00:00Z",
+                ),
+            )
+        }
+        val identity = requireNotNull(identityDao.findIdentity())
+        identityDao.bindCurrentServerIdentity(
+            installationId = identity.installationId,
+            localOwnerId = identity.localOwnerId,
+            deviceId = REPLACEMENT_DEVICE_ID,
+            personId = uuid(77),
+        )
+        if (requireDatabase().syncAuthDao().findState() == null) {
+            requireDatabase().syncAuthDao().installEnrollment(
+                state = SyncAuthStateEntity(
+                    credentialEpochId = CREDENTIAL_EPOCH_ID,
+                    installationId = identity.installationId,
+                    localOwnerId = identity.localOwnerId,
+                    deviceId = REPLACEMENT_DEVICE_ID,
+                    personId = uuid(77),
+                    tokenType = "Bearer",
+                    refreshTokenCiphertext = byteArrayOf(1, 2, 3),
+                    refreshTokenNonce = ByteArray(12) { 4 },
+                    refreshTokenKeyAlias = "replica-test-refresh",
+                    refreshTokenKeyGeneration = 1,
+                    refreshTokenAadVersion = 1,
+                    accessExpiresAtUtc = "2031-01-01T00:00:00Z",
+                    accessExpiresAtEpochMs =
+                        Instant.parse("2031-01-01T00:00:00Z").toEpochMilli(),
+                    refreshExpiresAtUtc = "2031-02-01T00:00:00Z",
+                    refreshExpiresAtEpochMs =
+                        Instant.parse("2031-02-01T00:00:00Z").toEpochMilli(),
+                    familyExpiresAtUtc = "2031-03-01T00:00:00Z",
+                    familyExpiresAtEpochMs =
+                        Instant.parse("2031-03-01T00:00:00Z").toEpochMilli(),
+                    generation = 1,
+                    state = "active",
+                    bootstrapRequired = true,
+                    installedAtUtc = "2030-01-01T00:00:00Z",
+                    updatedAtUtc = "2030-01-01T00:00:00Z",
+                    failureCode = null,
+                ),
+                accessFingerprint = SyncAuthTokenFingerprintEntity(
+                    credentialEpochId = CREDENTIAL_EPOCH_ID,
+                    generation = 1,
+                    tokenKind = "access",
+                    tokenHmac = ByteArray(32) { 5 },
+                    hmacKeyGeneration = 1,
+                    createdAtUtc = "2030-01-01T00:00:00Z",
+                ),
+                refreshFingerprint = SyncAuthTokenFingerprintEntity(
+                    credentialEpochId = CREDENTIAL_EPOCH_ID,
+                    generation = 1,
+                    tokenKind = "refresh",
+                    tokenHmac = ByteArray(32) { 6 },
+                    hmacKeyGeneration = 1,
+                    createdAtUtc = "2030-01-01T00:00:00Z",
+                ),
+            )
+        }
         requireDatabase().syncReplicaDao().insertStreamState(
             SyncStreamStateEntity(
                 credentialEpochId = CREDENTIAL_EPOCH_ID,
@@ -2004,6 +2026,64 @@ class SyncReplicaPersistenceInstrumentedTest {
                 lastStagedServerSequence = null,
                 createdAtUtc = "2030-01-01T00:00:00Z",
                 updatedAtUtc = "2030-01-01T00:00:00Z",
+            ),
+        )
+    }
+
+    private fun bootstrapIntent(
+        bootstrapId: String,
+        requestId: String,
+    ): BootstrapIntentPersistence {
+        val createdAtUtc = "2030-01-01T00:01:11Z"
+        val body = buildJsonObject {
+            put("protocol_version", "1.0.0")
+            put("message_type", "bootstrap_request")
+            put("request_id", requestId)
+            put("bootstrap_id", bootstrapId)
+            put("device_id", REPLACEMENT_DEVICE_ID)
+            put("page_size", 100)
+            put("page_cursor", JsonNull)
+        }.toString().toByteArray(StandardCharsets.UTF_8)
+        return BootstrapIntentPersistence(
+            session = SyncBootstrapSessionEntity(
+                bootstrapId = bootstrapId,
+                credentialEpochId = CREDENTIAL_EPOCH_ID,
+                deviceId = REPLACEMENT_DEVICE_ID,
+                state = "staging",
+                activeSlot = 1,
+                snapshotId = null,
+                nextPageCursor = null,
+                candidateIncrementalCursor = null,
+                nextPageIndex = 0,
+                lastStagedServerSequence = null,
+                createdAtUtc = createdAtUtc,
+                updatedAtUtc = createdAtUtc,
+            ),
+            firstRequest = SyncHttpRequestEntity(
+                endpointId = "sync_bootstrap",
+                requestIdentity = requestId,
+                protocolVersion = "1.0.0",
+                credentialEpochId = CREDENTIAL_EPOCH_ID,
+                deviceId = REPLACEMENT_DEVICE_ID,
+                idempotencyKey = null,
+                rawRequestBody = body,
+                rawBodyHmac = ByteArray(32) { 8 },
+                hmacKeyGeneration = 1,
+                state = "ready",
+                attemptBudget = 8,
+                deadlineAtEpochMs =
+                    Instant.parse("2030-01-01T00:31:11Z").toEpochMilli(),
+                nextAttemptAtEpochMs = null,
+                lastAttemptAtEpochMs = null,
+                leaseExpiresAtEpochMs = null,
+                accessGenerationUsed = 1,
+                terminalHttpStatus = null,
+                exactResponseBody = null,
+                responseSha256 = null,
+                terminalAtUtc = null,
+                terminalErrorCode = null,
+                createdAtUtc = createdAtUtc,
+                updatedAtUtc = createdAtUtc,
             ),
         )
     }
@@ -2200,6 +2280,10 @@ class SyncReplicaPersistenceInstrumentedTest {
 
     private companion object {
         const val CREDENTIAL_EPOCH_ID = "90000000-0000-4000-8000-000000000001"
+        const val CURRENT_INSTALLATION_ID =
+            "90000000-0000-4000-8000-000000000101"
+        const val CURRENT_OWNER_ID =
+            "90000000-0000-4000-8000-000000000102"
         const val BOOTSTRAP_ID = "90000000-0000-4000-8000-000000000002"
         const val SNAPSHOT_ID = "90000000-0000-4000-8000-000000000003"
         const val REPLACEMENT_BOOTSTRAP_ID = "90000000-0000-4000-8000-000000000004"

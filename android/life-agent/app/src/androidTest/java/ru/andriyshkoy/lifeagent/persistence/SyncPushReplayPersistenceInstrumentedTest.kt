@@ -28,6 +28,10 @@ import ru.andriyshkoy.lifeagent.data.local.db.PushErrorPersistence
 import ru.andriyshkoy.lifeagent.data.local.db.ReplicaIntegrityException
 import ru.andriyshkoy.lifeagent.data.local.db.SyncPersistenceStore
 import ru.andriyshkoy.lifeagent.data.local.db.TerminalHttpResponsePersistence
+import ru.andriyshkoy.lifeagent.data.local.db.entity.LocalIdentityStateEntity
+import ru.andriyshkoy.lifeagent.data.local.db.entity.LocalInstallationEntity
+import ru.andriyshkoy.lifeagent.data.local.db.entity.LocalOwnerEntity
+import ru.andriyshkoy.lifeagent.data.local.db.entity.SyncAuthStateEntity
 import ru.andriyshkoy.lifeagent.data.local.db.entity.SyncHttpRequestEntity
 import ru.andriyshkoy.lifeagent.data.local.db.entity.SyncOutboxEntity
 import ru.andriyshkoy.lifeagent.data.local.db.entity.SyncPushBatchEntity
@@ -230,7 +234,7 @@ class SyncPushReplayPersistenceInstrumentedTest {
     }
 
     @Test
-    fun oldMissingParentReplayAfterNewerAckIsVerifiedNoOp() = runBlocking {
+    fun rootMissingParentHaltsStreamAndRollsBackTerminalReduction() = runBlocking {
         seedStream()
         val outbox = createPendingOperation(seed = 50)
         val missingBatch = seedClaimedBatch(
@@ -250,36 +254,30 @@ class SyncPushReplayPersistenceInstrumentedTest {
             detailsJcs = EMPTY_FIELD_ERRORS,
         )
         val store = SyncPersistenceStore(requireDatabase())
-        store.commitPushResponse(missingBatch.response, listOf(missingParent))
-
-        val ackBatch = seedClaimedBatch(
-            batchId = uuid(402),
-            attemptId = uuid(403),
-            operations = listOf(outbox),
-            responseBody = """{"kind":"ack-after-parent"}""",
-            terminalAtUtc = "2030-01-01T00:06:01Z",
-        )
-        val ack = ack(
-            operation = outbox,
-            batch = ackBatch,
-            committedAtUtc = ackBatch.response.terminalAtUtc,
-        )
-        store.commitPushResponse(ackBatch.response, listOf(ack))
-
-        store.commitPushResponse(missingBatch.response, listOf(missingParent))
+        assertReplicaFailure {
+            store.commitPushResponse(missingBatch.response, listOf(missingParent))
+        }
         val retained = requireNotNull(
             requireDatabase().noteMutationDao().findOutbox(outbox.operationId),
         )
-        assertEquals("acked", retained.state)
-        assertEquals(ackBatch.batchId, retained.lastResultBatchId)
-        assertEquals(1L, retained.serverSequence)
-        assertEquals(
-            ack.change,
-            requireDatabase().syncReplicaDao().findServerChange(outbox.operationId),
+        assertEquals("batched", retained.state)
+        assertEquals(missingBatch.batchId, retained.activeBatchId)
+        assertNull(retained.lastResultBatchId)
+        val request = requireNotNull(
+            requireDatabase().syncTransportDao().findRequest(
+                "sync_push",
+                missingBatch.batchId,
+            ),
         )
-        assertNull(
-            requireDatabase().syncReplicaDao().findStreamState()?.integrityErrorCode,
+        assertEquals("sending", request.state)
+        assertEquals(missingBatch.response.expectedAttemptId, request.activeAttemptId)
+        assertNull(request.exactResponseBody)
+        assertNull(request.terminalErrorCode)
+        val stream = requireNotNull(
+            requireDatabase().syncReplicaDao().findStreamState(),
         )
+        assertEquals("integrity_halted", stream.phase)
+        assertEquals("missing_parent_root_invalid", stream.integrityErrorCode)
     }
 
     @Test
@@ -1138,7 +1136,64 @@ class SyncPushReplayPersistenceInstrumentedTest {
         }
 
     private suspend fun seedStream() {
-        requireDatabase().syncReplicaDao().insertStreamState(
+        val database = requireDatabase()
+        if (database.identityDao().findIdentity() == null) {
+            database.identityDao().insertInstallation(
+                LocalInstallationEntity(
+                    installationId = INSTALLATION_ID,
+                    createdAtUtc = "2030-01-01T00:00:00Z",
+                    serverDeviceId = DEVICE_ID,
+                ),
+            )
+            database.identityDao().insertOwner(
+                LocalOwnerEntity(
+                    localOwnerId = LOCAL_OWNER_ID,
+                    installationId = INSTALLATION_ID,
+                    createdAtUtc = "2030-01-01T00:00:00Z",
+                    serverPersonId = PERSON_ID,
+                ),
+            )
+            database.identityDao().insertIdentityState(
+                LocalIdentityStateEntity(
+                    installationId = INSTALLATION_ID,
+                    localOwnerId = LOCAL_OWNER_ID,
+                    selectedAtUtc = "2030-01-01T00:00:00Z",
+                ),
+            )
+        }
+        if (database.syncAuthDao().findState() == null) {
+            database.syncAuthDao().insertStateRow(
+                SyncAuthStateEntity(
+                    credentialEpochId = CREDENTIAL_EPOCH_ID,
+                    installationId = INSTALLATION_ID,
+                    localOwnerId = LOCAL_OWNER_ID,
+                    deviceId = DEVICE_ID,
+                    personId = PERSON_ID,
+                    tokenType = "Bearer",
+                    refreshTokenCiphertext = byteArrayOf(1),
+                    refreshTokenNonce = byteArrayOf(2),
+                    refreshTokenKeyAlias = "push-test-key",
+                    refreshTokenKeyGeneration = 1,
+                    refreshTokenAadVersion = 1,
+                    accessExpiresAtUtc = "2031-01-01T00:00:00Z",
+                    accessExpiresAtEpochMs =
+                        Instant.parse("2031-01-01T00:00:00Z").toEpochMilli(),
+                    refreshExpiresAtUtc = "2032-01-01T00:00:00Z",
+                    refreshExpiresAtEpochMs =
+                        Instant.parse("2032-01-01T00:00:00Z").toEpochMilli(),
+                    familyExpiresAtUtc = "2033-01-01T00:00:00Z",
+                    familyExpiresAtEpochMs =
+                        Instant.parse("2033-01-01T00:00:00Z").toEpochMilli(),
+                    generation = 1,
+                    state = "active",
+                    bootstrapRequired = false,
+                    installedAtUtc = "2030-01-01T00:00:00Z",
+                    updatedAtUtc = "2030-01-01T00:00:00Z",
+                    failureCode = null,
+                ),
+            )
+        }
+        database.syncReplicaDao().insertStreamState(
             SyncStreamStateEntity(
                 credentialEpochId = CREDENTIAL_EPOCH_ID,
                 deviceId = DEVICE_ID,
@@ -1208,9 +1263,28 @@ class SyncPushReplayPersistenceInstrumentedTest {
             terminalAtUtc = terminalAtUtc,
         )
         requireDatabase().syncTransportDao().insertPushRequest(
-            request = seeded.request,
+            request = seeded.request.copy(
+                state = "ready",
+                attemptCount = 0,
+                lastAttemptAtEpochMs = null,
+                leaseExpiresAtEpochMs = null,
+                activeAttemptId = null,
+            ),
             batch = seeded.batch,
             items = seeded.items,
+        )
+        assertEquals(
+            1,
+            requireDatabase().syncTransportDao().claimAttempt(
+                endpointId = "sync_push",
+                requestIdentity = batchId,
+                credentialEpochId = CREDENTIAL_EPOCH_ID,
+                accessGenerationUsed = 1,
+                attemptId = attemptId,
+                attemptedAtEpochMs = 1,
+                leaseExpiresAtEpochMs = 2,
+                updatedAtUtc = "2030-01-01T00:00:00Z",
+            ),
         )
         return seeded
     }
@@ -1376,6 +1450,9 @@ class SyncPushReplayPersistenceInstrumentedTest {
     )
 
     private companion object {
+        const val INSTALLATION_ID = "92000000-0000-4000-8000-000000000101"
+        const val LOCAL_OWNER_ID = "93000000-0000-4000-8000-000000000101"
+        const val PERSON_ID = "94000000-0000-4000-8000-000000000101"
         const val CREDENTIAL_EPOCH_ID = "90000000-0000-4000-8000-000000000101"
         const val DEVICE_ID = "91000000-0000-4000-8000-000000000101"
         const val REPLACEMENT_CREDENTIAL_EPOCH_ID =
