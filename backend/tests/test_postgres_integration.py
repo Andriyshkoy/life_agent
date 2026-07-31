@@ -9,6 +9,8 @@ import re
 import secrets
 import subprocess
 import sys
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -23,8 +25,9 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import MetaData, Table, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
-from sqlalchemy.ext.asyncio import create_async_engine
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncSession, create_async_engine
 from sqlalchemy.sql.schema import ColumnCollectionConstraint
+from starlette.requests import Request
 
 from life_agent_backend import auth_service as auth_service_module
 from life_agent_backend import models as schema_models
@@ -36,6 +39,7 @@ from life_agent_backend.admin_cli import (
     reconcile_replay_quotas as reconcile_replay_quotas_from_cli,
 )
 from life_agent_backend.app import create_app
+from life_agent_backend.auth_contract import RevokeRequest
 from life_agent_backend.auth_service import AuthService, IssuedEnrollmentGrant
 from life_agent_backend.database import (
     EXPECTED_DATABASE_REVISION,
@@ -1731,6 +1735,17 @@ async def exercise_revoke_request_id_collision_across_generations(
         )
         assert refreshed.status_code == 200
         generation_two = refreshed.json()["credentials"]
+        async with engine.begin() as connection:
+            await connection.execute(
+                text(
+                    """
+                    UPDATE person
+                    SET purge_generation = 7
+                    WHERE person_id = :person_id
+                    """
+                ),
+                {"person_id": person_id},
+            )
 
         colliding_request_id = "13000000-0000-4000-8000-000000000016"
         spent_document = {
@@ -1750,6 +1765,17 @@ async def exercise_revoke_request_id_collision_across_generations(
         assert spent.status_code == 401
         assert spent.json()["error_code"] == "credential_unavailable"
         frozen_spent_response = spent.content
+        async with engine.begin() as connection:
+            await connection.execute(
+                text(
+                    """
+                    UPDATE person
+                    SET purge_generation = 8
+                    WHERE person_id = :person_id
+                    """
+                ),
+                {"person_id": person_id},
+            )
 
         current_collision_document = {
             **spent_document,
@@ -1788,13 +1814,22 @@ async def exercise_revoke_request_id_collision_across_generations(
                                 SELECT count(*)
                                 FROM http_replay
                                 WHERE credential_family_id = :family_id
-                            ) AS replay_count
+                            ) AS replay_count,
+                            (
+                                SELECT purge_generation
+                                FROM http_replay
+                                WHERE credential_family_id = :family_id
+                                  AND request_identity = :spent_request_id
+                            ) AS replay_purge_generation
                         """
                     ),
-                    {"family_id": grant.credential_family_id},
+                    {
+                        "family_id": grant.credential_family_id,
+                        "spent_request_id": UUID(colliding_request_id),
+                    },
                 )
             ).one()
-            assert tuple(collision_state) == ("active", 2, 1)
+            assert tuple(collision_state) == ("active", 2, 1, 7)
 
         exact_spent = await client.post(
             "/api/v1/auth/revoke",
@@ -1829,13 +1864,29 @@ async def exercise_revoke_request_id_collision_across_generations(
                                 SELECT count(*)
                                 FROM http_replay
                                 WHERE credential_family_id = :family_id
-                            ) AS replay_count
+                            ) AS replay_count,
+                            (
+                                SELECT purge_generation
+                                FROM http_replay
+                                WHERE credential_family_id = :family_id
+                                  AND request_identity = :spent_request_id
+                            ) AS spent_replay_purge_generation,
+                            (
+                                SELECT purge_generation
+                                FROM http_replay
+                                WHERE credential_family_id = :family_id
+                                  AND request_identity = :current_request_id
+                            ) AS current_replay_purge_generation
                         """
                     ),
-                    {"family_id": grant.credential_family_id},
+                    {
+                        "family_id": grant.credential_family_id,
+                        "spent_request_id": UUID(colliding_request_id),
+                        "current_request_id": UUID("13000000-0000-4000-8000-000000000017"),
+                    },
                 )
             ).one()
-            assert tuple(terminal_state) == ("revoked", 2)
+            assert tuple(terminal_state) == ("revoked", 2, 7, 8)
 
 
 @pytest.mark.postgres
@@ -2203,6 +2254,86 @@ def test_postgres_concurrent_cross_person_identity_claim_fails_closed(
         asyncio.run(reset_public_schema(database_url, postgres_reset_permit))
 
 
+async def _insert_retention_test_replay(
+    connection: AsyncConnection,
+    *,
+    family_id: UUID,
+    replay_id: UUID,
+    request_id: UUID,
+    nonce_suffix: int,
+    committed_at: datetime,
+    retention_until: datetime,
+) -> None:
+    await connection.execute(
+        text(
+            """
+            INSERT INTO http_replay (
+                http_replay_id,
+                endpoint_id,
+                protocol_version,
+                request_identity_kind,
+                request_identity,
+                person_id,
+                credential_family_id,
+                device_id,
+                family_tombstone_until,
+                request_fingerprint_hmac,
+                fingerprint_key_generation,
+                outcome_class,
+                stored_outcome,
+                http_status,
+                response_body_ciphertext,
+                response_body_nonce,
+                response_body_sha256,
+                response_body_plaintext_bytes,
+                response_encryption_key_generation,
+                committed_at,
+                retention_until,
+                purge_generation
+            )
+            SELECT
+                :replay_id,
+                'sync_push',
+                '1.0.0',
+                'batch_id',
+                :request_id,
+                family.person_id,
+                family.credential_family_id,
+                family.device_id,
+                family.tombstone_until,
+                decode(repeat('71', 32), 'hex'),
+                1,
+                'success',
+                'terminal_operation_result_batch',
+                200,
+                decode(repeat('72', 17), 'hex'),
+                decode(
+                    lpad(to_hex(CAST(:nonce_suffix AS bigint)), 24, '0'),
+                    'hex'
+                ),
+                decode(repeat('73', 32), 'hex'),
+                1,
+                1,
+                :committed_at,
+                :retention_until,
+                person.purge_generation
+            FROM credential_family AS family
+            JOIN person
+              ON person.person_id = family.person_id
+            WHERE family.credential_family_id = :family_id
+            """
+        ),
+        {
+            "family_id": family_id,
+            "replay_id": replay_id,
+            "request_id": request_id,
+            "nonce_suffix": nonce_suffix,
+            "committed_at": committed_at,
+            "retention_until": retention_until,
+        },
+    )
+
+
 async def exercise_replay_retention_extension(settings: Settings) -> None:
     clock = _MutableClock(datetime(2033, 1, 1, 12, 0, tzinfo=UTC))
     engine = create_database_engine(settings)
@@ -2435,6 +2566,61 @@ async def exercise_replay_quota_rejection(settings: Settings) -> None:
         )
         assert [response.status_code for response in capped_refreshes] == [429, 429]
         assert all(response.json()["error_code"] == "rate_limited" for response in capped_refreshes)
+        async with engine.begin() as connection:
+            original_tombstone = cast(
+                datetime,
+                await connection.scalar(
+                    text(
+                        """
+                        SELECT tombstone_until
+                        FROM credential_family
+                        WHERE credential_family_id = :family_id
+                        """
+                    ),
+                    {"family_id": grant.credential_family_id},
+                ),
+            )
+            clock.value = original_tombstone - timedelta(days=1)
+            await _insert_retention_test_replay(
+                connection,
+                family_id=grant.credential_family_id,
+                replay_id=UUID("51000000-0000-4000-8000-000000000041"),
+                request_id=UUID("52000000-0000-4000-8000-000000000041"),
+                nonce_suffix=41,
+                committed_at=clock.value - timedelta(days=32),
+                retention_until=clock.value - timedelta(hours=1),
+            )
+        async with engine.connect() as connection:
+            before_rejection = tuple(
+                (
+                    await connection.execute(
+                        text(
+                            """
+                            SELECT
+                                family.tombstone_until,
+                                generation.retained_until,
+                                replay.retention_until,
+                                replay.response_body_ciphertext,
+                                replay.response_body_sha256,
+                                quota.record_count,
+                                quota.response_body_plaintext_bytes
+                            FROM credential_family AS family
+                            JOIN credential_generation AS generation
+                              ON generation.credential_family_id =
+                                 family.credential_family_id
+                            JOIN http_replay AS replay
+                              ON replay.credential_family_id =
+                                 family.credential_family_id
+                            JOIN device_replay_quota AS quota
+                              ON quota.person_id = family.person_id
+                             AND quota.device_id = family.device_id
+                            WHERE family.credential_family_id = :family_id
+                            """
+                        ),
+                        {"family_id": grant.credential_family_id},
+                    )
+                ).one()
+            )
         quota_rejection = await client.post(
             "/api/v1/auth/revoke",
             json={
@@ -2477,7 +2663,38 @@ async def exercise_replay_quota_rejection(settings: Settings) -> None:
                     {"family_id": grant.credential_family_id},
                 )
             ).one()
-            assert tuple(state) == ("active", None, 0, 0, 1)
+            assert tuple(state) == ("active", None, 1, 1, 1)
+            after_rejection = tuple(
+                (
+                    await connection.execute(
+                        text(
+                            """
+                            SELECT
+                                family.tombstone_until,
+                                generation.retained_until,
+                                replay.retention_until,
+                                replay.response_body_ciphertext,
+                                replay.response_body_sha256,
+                                quota.record_count,
+                                quota.response_body_plaintext_bytes
+                            FROM credential_family AS family
+                            JOIN credential_generation AS generation
+                              ON generation.credential_family_id =
+                                 family.credential_family_id
+                            JOIN http_replay AS replay
+                              ON replay.credential_family_id =
+                                 family.credential_family_id
+                            JOIN device_replay_quota AS quota
+                              ON quota.person_id = family.person_id
+                             AND quota.device_id = family.device_id
+                            WHERE family.credential_family_id = :family_id
+                            """
+                        ),
+                        {"family_id": grant.credential_family_id},
+                    )
+                ).one()
+            )
+            assert after_rejection == before_rejection
 
 
 @pytest.mark.postgres
@@ -2522,6 +2739,438 @@ def test_postgres_replay_quota_rejects_before_revoke_mutation(
             )
         )
         asyncio.run(exercise_replay_quota_rejection(settings))
+    finally:
+        asyncio.run(reset_public_schema(database_url, postgres_reset_permit))
+
+
+async def _wait_for_postgres_lock(
+    observer: AsyncConnection,
+    *,
+    query_fragment: str | None,
+    wait_event: str | None,
+    excluded_wait_event: str | None = None,
+    timeout_seconds: float = 3.0,
+) -> int:
+    deadline = asyncio.get_running_loop().time() + timeout_seconds
+    while asyncio.get_running_loop().time() < deadline:
+        await observer.execute(text("SELECT pg_stat_clear_snapshot()"))
+        waiter_pid = await observer.scalar(
+            text(
+                """
+                SELECT min(pid)
+                FROM pg_stat_activity
+                WHERE datname = current_database()
+                  AND pid <> pg_backend_pid()
+                  AND state = 'active'
+                  AND wait_event_type = 'Lock'
+                  AND (
+                      CAST(:wait_event AS text) IS NULL
+                      OR wait_event = CAST(:wait_event AS text)
+                  )
+                  AND (
+                      CAST(:excluded_wait_event AS text) IS NULL
+                      OR wait_event <> CAST(:excluded_wait_event AS text)
+                  )
+                  AND (
+                      CAST(:query_fragment AS text) IS NULL
+                      OR position(CAST(:query_fragment AS text) in query) > 0
+                  )
+                """
+            ),
+            {
+                "query_fragment": query_fragment,
+                "wait_event": wait_event,
+                "excluded_wait_event": excluded_wait_event,
+            },
+        )
+        if isinstance(waiter_pid, int) and waiter_pid > 0:
+            return waiter_pid
+        await asyncio.sleep(0.01)
+    raise TimeoutError(f"PostgreSQL lock waiter did not appear for {query_fragment!r}")
+
+
+async def _wait_for_postgres_blocking_edge(
+    observer: AsyncConnection,
+    *,
+    waiter_pid: int,
+    blocker_pid: int,
+    timeout_seconds: float = 3.0,
+) -> None:
+    deadline = asyncio.get_running_loop().time() + timeout_seconds
+    last_row: Any = None
+    while asyncio.get_running_loop().time() < deadline:
+        await observer.execute(text("SELECT pg_stat_clear_snapshot()"))
+        row = (
+            await observer.execute(
+                text(
+                    """
+                    SELECT
+                        state,
+                        wait_event_type,
+                        wait_event,
+                        pg_blocking_pids(pid),
+                        left(query, 160)
+                    FROM pg_stat_activity
+                    WHERE datname = current_database()
+                      AND pid = :waiter_pid
+                    """
+                ),
+                {"waiter_pid": waiter_pid},
+            )
+        ).one_or_none()
+        last_row = tuple(row) if row is not None else None
+        if (
+            row is not None
+            and row[1] == "Lock"
+            and isinstance(row[3], list)
+            and blocker_pid in row[3]
+        ):
+            return
+        await asyncio.sleep(0.01)
+    raise TimeoutError(
+        f"PostgreSQL backend {waiter_pid} was not blocked by {blocker_pid}: {last_row!r}"
+    )
+
+
+async def exercise_replay_gc_and_revoke_lock_order(settings: Settings) -> None:
+    clock = _MutableClock(datetime(2036, 1, 1, 12, 0, tzinfo=UTC))
+    engine = create_database_engine(settings)
+    application = create_app(
+        settings,
+        database_engine=engine,
+        clock=clock,
+    )
+    service = cast(AuthService, application.state.auth_service)
+    person_id = UUID("10000000-0000-4000-8000-000000000091")
+    barrier_key = 7_116_709_163_289_409_591
+    revoke_backend_pids: asyncio.Queue[int] = asyncio.Queue()
+    original_prepare_replay: Any = service._prepare_replay_retention_and_quota
+
+    async def capture_revoke_backend_pid(
+        session: AsyncSession,
+        **kwargs: Any,
+    ) -> bool:
+        backend_pid = await session.scalar(text("SELECT pg_backend_pid()"))
+        if not isinstance(backend_pid, int):
+            raise AssertionError("revoke PostgreSQL backend PID is unavailable")
+        revoke_backend_pids.put_nowait(backend_pid)
+        prepared = await original_prepare_replay(session, **kwargs)
+        if not isinstance(prepared, bool):
+            raise AssertionError("revoke replay preparation returned an invalid result")
+        return prepared
+
+    service._prepare_replay_retention_and_quota = (  # type: ignore[method-assign]
+        capture_revoke_backend_pid
+    )
+
+    @asynccontextmanager
+    async def restore_service_and_dispose_engine() -> AsyncIterator[None]:
+        try:
+            yield
+        finally:
+            service._prepare_replay_retention_and_quota = (  # type: ignore[method-assign]
+                original_prepare_replay
+            )
+            await engine.dispose()
+
+    async with (
+        restore_service_and_dispose_engine(),
+        application.router.lifespan_context(application),
+    ):
+        grant = await service.issue_enrollment_grant(
+            person_id=person_id,
+            replacement_allowed=False,
+        )
+        async with AsyncClient(
+            transport=ASGITransport(
+                app=application,
+                raise_app_exceptions=False,
+            ),
+            base_url="http://test.invalid",
+        ) as client:
+            enrollment = await client.post(
+                "/api/v1/auth/enroll",
+                json={
+                    "protocol_version": "1.0.0",
+                    "message_type": "enrollment_claim_request",
+                    "request_id": "11000000-0000-4000-8000-000000000091",
+                    "enrollment_code": grant.code,
+                    "installation_id": ("21000000-0000-4000-8000-000000000091"),
+                    "local_owner_id": ("22000000-0000-4000-8000-000000000091"),
+                    "replace_active_device": False,
+                },
+            )
+        assert enrollment.status_code == 200
+        enrolled = enrollment.json()
+
+        async with engine.begin() as connection:
+            await connection.execute(
+                text(
+                    f"""
+                    CREATE FUNCTION pause_test_replay_gc()
+                    RETURNS trigger
+                    LANGUAGE plpgsql
+                    AS $$
+                    BEGIN
+                        PERFORM pg_advisory_xact_lock({barrier_key});
+                        RETURN OLD;
+                    END;
+                    $$
+                    """
+                )
+            )
+            await connection.execute(
+                text(
+                    """
+                    CREATE TRIGGER aa_pause_test_replay_gc_after_delete
+                    AFTER DELETE ON http_replay
+                    FOR EACH ROW
+                    EXECUTE FUNCTION pause_test_replay_gc()
+                    """
+                )
+            )
+
+        try:
+            for iteration in range(3):
+                suffix = 91 + iteration
+                async with engine.begin() as connection:
+                    current_tombstone = cast(
+                        datetime,
+                        await connection.scalar(
+                            text(
+                                """
+                                SELECT tombstone_until
+                                FROM credential_family
+                                WHERE credential_family_id = :family_id
+                                """
+                            ),
+                            {"family_id": grant.credential_family_id},
+                        ),
+                    )
+                    clock.value = current_tombstone - timedelta(days=1)
+                    expired_replay_id = UUID(f"51000000-0000-4000-8000-{suffix:012d}")
+                    await _insert_retention_test_replay(
+                        connection,
+                        family_id=grant.credential_family_id,
+                        replay_id=expired_replay_id,
+                        request_id=UUID(f"52000000-0000-4000-8000-{suffix:012d}"),
+                        nonce_suffix=suffix,
+                        committed_at=clock.value - timedelta(days=32),
+                        retention_until=clock.value - timedelta(hours=1),
+                    )
+
+                revoke_document = {
+                    "protocol_version": "1.0.0",
+                    "message_type": "revoke_request",
+                    "request_id": f"13000000-0000-4000-8000-{suffix:012d}",
+                    "device_id": enrolled["device_id"],
+                    "generation": 1,
+                    "refresh_token": enrolled["credentials"]["refresh_token"],
+                }
+                revoke_body = json.dumps(
+                    revoke_document,
+                    separators=(",", ":"),
+                ).encode()
+                revoke_payload = RevokeRequest.model_validate(revoke_document)
+                api_request = Request(
+                    {
+                        "type": "http",
+                        "asgi": {"version": "3.0"},
+                        "http_version": "1.1",
+                        "method": "POST",
+                        "scheme": "http",
+                        "path": "/api/v1/auth/revoke",
+                        "raw_path": b"/api/v1/auth/revoke",
+                        "query_string": b"",
+                        "headers": [],
+                        "client": ("test", 123),
+                        "server": ("test", 80),
+                    }
+                )
+
+                barrier = await engine.connect()
+                observer = await engine.connect()
+                barrier_held = False
+                gc_task: asyncio.Task[int] | None = None
+                revoke_task: asyncio.Task[Any] | None = None
+                try:
+                    assert (
+                        await barrier.scalar(
+                            text("SELECT pg_advisory_lock(:barrier_key)"),
+                            {"barrier_key": barrier_key},
+                        )
+                        is None
+                    )
+                    barrier_held = True
+                    gc_task = asyncio.create_task(service.purge_expired_replays(batch_size=1))
+                    await asyncio.sleep(0.05)
+                    if gc_task.done():
+                        raise AssertionError(
+                            f"replay GC completed before its barrier: {gc_task.result()}"
+                        )
+                    gc_backend_pid = await _wait_for_postgres_lock(
+                        observer,
+                        query_fragment="DELETE FROM http_replay",
+                        wait_event=None,
+                    )
+                    revoke_task = asyncio.create_task(
+                        service.revoke(
+                            revoke_payload,
+                            raw_body=revoke_body,
+                            api_request=api_request,
+                        )
+                    )
+                    revoke_backend_pid = await asyncio.wait_for(
+                        revoke_backend_pids.get(),
+                        timeout=3,
+                    )
+                    assert revoke_backend_pid != gc_backend_pid
+                    await asyncio.sleep(0.05)
+                    if revoke_task.done():
+                        raise AssertionError(
+                            "revoke completed before waiting on the GC-held replay row: "
+                            f"{revoke_task.result()!r}"
+                        )
+                    await _wait_for_postgres_blocking_edge(
+                        observer,
+                        waiter_pid=revoke_backend_pid,
+                        blocker_pid=gc_backend_pid,
+                    )
+                    assert (
+                        await barrier.scalar(
+                            text("SELECT pg_advisory_unlock(:barrier_key)"),
+                            {"barrier_key": barrier_key},
+                        )
+                        is True
+                    )
+                    barrier_held = False
+                    try:
+                        deleted, revoke_result = await asyncio.wait_for(
+                            asyncio.gather(gc_task, revoke_task),
+                            timeout=5,
+                        )
+                    except SQLAlchemyError as error:
+                        sqlstate = getattr(getattr(error, "orig", None), "sqlstate", None)
+                        assert sqlstate != "40P01", "GC and revoke deadlocked"
+                        raise
+                    except TimeoutError:
+                        pytest.fail("GC and revoke exceeded the bounded concurrency timeout")
+                    assert deleted == 1
+                    assert revoke_result.status_code == 401
+                finally:
+                    if barrier_held:
+                        await barrier.scalar(
+                            text("SELECT pg_advisory_unlock(:barrier_key)"),
+                            {"barrier_key": barrier_key},
+                        )
+                    pending_tasks = [
+                        task
+                        for task in (gc_task, revoke_task)
+                        if task is not None and not task.done()
+                    ]
+                    for task in pending_tasks:
+                        task.cancel()
+                    if pending_tasks:
+                        await asyncio.gather(*pending_tasks, return_exceptions=True)
+                    await observer.close()
+                    await barrier.close()
+
+                async with engine.connect() as connection:
+                    quota_state = (
+                        await connection.execute(
+                            text(
+                                """
+                                SELECT
+                                    quota.record_count,
+                                    quota.response_body_plaintext_bytes,
+                                    count(replay.http_replay_id),
+                                    coalesce(
+                                        sum(replay.response_body_plaintext_bytes),
+                                        0
+                                    ),
+                                    count(replay.http_replay_id) FILTER (
+                                        WHERE replay.http_replay_id =
+                                              :expired_replay_id
+                                    ),
+                                    count(replay.http_replay_id) FILTER (
+                                        WHERE replay.request_identity =
+                                              :revoke_request_id
+                                    ),
+                                    count(replay.http_replay_id) FILTER (
+                                        WHERE replay.endpoint_id = 'auth_revoke'
+                                          AND replay.retention_until <>
+                                              family.tombstone_until
+                                    )
+                                FROM credential_family AS family
+                                JOIN device_replay_quota AS quota
+                                  ON quota.person_id = family.person_id
+                                 AND quota.device_id = family.device_id
+                                LEFT JOIN http_replay AS replay
+                                  ON replay.person_id = quota.person_id
+                                 AND replay.device_id = quota.device_id
+                                WHERE family.credential_family_id = :family_id
+                                GROUP BY
+                                    family.tombstone_until,
+                                    quota.record_count,
+                                    quota.response_body_plaintext_bytes
+                                """
+                            ),
+                            {
+                                "expired_replay_id": expired_replay_id,
+                                "revoke_request_id": UUID(cast(str, revoke_document["request_id"])),
+                                "family_id": grant.credential_family_id,
+                            },
+                        )
+                    ).one()
+                    assert quota_state[0] == quota_state[2] == iteration + 1
+                    assert quota_state[1] == quota_state[3]
+                    assert tuple(quota_state[4:]) == (0, 1, 0)
+        finally:
+            async with engine.begin() as connection:
+                await connection.execute(
+                    text(
+                        """
+                        DROP TRIGGER IF EXISTS
+                            aa_pause_test_replay_gc_after_delete
+                        ON http_replay
+                        """
+                    )
+                )
+                await connection.execute(text("DROP FUNCTION IF EXISTS pause_test_replay_gc()"))
+
+
+@pytest.mark.postgres
+@pytest.mark.skipif(
+    not RUN_POSTGRES_INTEGRATION,
+    reason="ephemeral PostgreSQL integration is opt-in",
+)
+def test_postgres_replay_gc_and_revoke_use_consistent_lock_order(
+    monkeypatch: pytest.MonkeyPatch,
+    postgres_reset_permit: _SchemaResetPermit,
+) -> None:
+    database_url = validated_test_database_url(TEST_DATABASE_URL)
+    alembic_config = configure_migration_environment(
+        monkeypatch,
+        database_url,
+    )
+    settings = settings_for(database_url)
+
+    asyncio.run(reset_public_schema(database_url, postgres_reset_permit))
+    try:
+        command.upgrade(alembic_config, "head")
+        asyncio.run(
+            execute_sql(
+                database_url,
+                """
+                INSERT INTO person (person_id, subject_id)
+                VALUES (
+                    '10000000-0000-4000-8000-000000000091',
+                    '10000000-0000-4000-8000-000000000191'
+                )
+                """,
+            )
+        )
+        asyncio.run(exercise_replay_gc_and_revoke_lock_order(settings))
     finally:
         asyncio.run(reset_public_schema(database_url, postgres_reset_permit))
 
@@ -3969,6 +4618,7 @@ def test_postgres_baseline_enforces_security_constraints(
                     capture_id,
                     event_id,
                     revision_id,
+                    expected_current_revision_id,
                     operation_content_sha256,
                     canonical_operation,
                     canonical_byte_size,
@@ -3988,8 +4638,9 @@ def test_postgres_baseline_enforces_security_constraints(
                     '42000000-0000-4000-8000-000000000001',
                     0,
                     '43000000-0000-4000-8000-000000000001',
-                    '44000000-0000-4000-8000-000000000001',
+                    NULL,
                     '45000000-0000-4000-8000-000000000001',
+                    '46000000-0000-4000-8000-000000000001',
                     decode(repeat('55', 32), 'hex'),
                     decode('7b7d', 'hex'),
                     2,
@@ -4024,6 +4675,7 @@ def test_postgres_baseline_enforces_security_constraints(
                         capture_id,
                         event_id,
                         revision_id,
+                        expected_current_revision_id,
                         operation_content_sha256,
                         canonical_operation,
                         canonical_byte_size,
@@ -4043,8 +4695,9 @@ def test_postgres_baseline_enforces_security_constraints(
                         '42000000-0000-4000-8000-000000000002',
                         0,
                         '43000000-0000-4000-8000-000000000002',
-                        '44000000-0000-4000-8000-000000000002',
+                        NULL,
                         '45000000-0000-4000-8000-000000000002',
+                        '46000000-0000-4000-8000-000000000002',
                         decode(repeat('66', 32), 'hex'),
                         decode('7b7d', 'hex'),
                         2,

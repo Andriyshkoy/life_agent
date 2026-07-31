@@ -7,6 +7,8 @@ from life_agent_backend.database import metadata
 
 SAFE_INTEGER_MAX = 9_007_199_254_740_991
 MAX_REPLAY_BODY_BYTES = 4_194_304
+AUTH_REVOKE_MAX_REPLAY_BODY_BYTES = 16_384
+SYNC_PUSH_MAX_REPLAY_BODY_BYTES = 524_288
 
 UUID = postgresql.UUID(as_uuid=True)
 BYTEA = postgresql.BYTEA()
@@ -627,7 +629,7 @@ sync_operation_registry = sa.Table(
     sa.Column("first_batch_id", UUID, nullable=False),
     sa.Column("first_batch_ordinal", sa.SmallInteger(), nullable=False),
     sa.Column("capture_id", UUID, nullable=False),
-    sa.Column("event_id", UUID, nullable=False),
+    sa.Column("event_id", UUID, nullable=True),
     sa.Column("revision_id", UUID, nullable=False),
     sa.Column("expected_current_revision_id", UUID),
     sa.Column("operation_content_sha256", BYTEA, nullable=False),
@@ -703,13 +705,6 @@ sync_operation_registry = sa.Table(
         name="uq_sync_operation_registry_revision",
     ),
     sa.UniqueConstraint(
-        "credential_family_id",
-        "submitting_device_id",
-        "first_batch_id",
-        "first_batch_ordinal",
-        name="uq_sync_operation_registry_first_batch_membership",
-    ),
-    sa.UniqueConstraint(
         "operation_id",
         "person_id",
         "sync_stream_id",
@@ -747,6 +742,17 @@ sync_operation_registry = sa.Table(
     sa.CheckConstraint(
         "registry_state IN ('pending_missing_parent', 'terminal_error', 'committed')",
         name="registry_state_allowed",
+    ),
+    sa.CheckConstraint(
+        "("
+        "registry_state = 'pending_missing_parent' "
+        "AND event_id IS NULL "
+        "AND expected_current_revision_id IS NOT NULL"
+        ") OR ("
+        "registry_state IN ('terminal_error', 'committed') "
+        "AND event_id IS NOT NULL"
+        ")",
+        name="pending_parent_identity_coherent",
     ),
     sa.CheckConstraint(
         "("
@@ -807,6 +813,13 @@ sa.Index(
 sa.Index(
     "ix_sync_operation_registry_event_id",
     sync_operation_registry.c.event_id,
+)
+sa.Index(
+    "ix_sync_operation_registry_first_batch_membership",
+    sync_operation_registry.c.credential_family_id,
+    sync_operation_registry.c.submitting_device_id,
+    sync_operation_registry.c.first_batch_id,
+    sync_operation_registry.c.first_batch_ordinal,
 )
 
 
@@ -1029,15 +1042,15 @@ event_revision = sa.Table(
     sa.Column("source_record_id", sa.Text()),
     sa.Column("source_record_version", sa.Text()),
     sa.Column("recorded_at", UTC_TIMESTAMP, nullable=False),
-    sa.Column("effective_start_utc", UTC_TIMESTAMP, nullable=False),
+    sa.Column("effective_start_utc", UTC_TIMESTAMP, nullable=True),
     sa.Column("effective_end_utc", UTC_TIMESTAMP),
-    sa.Column("original_local_start", LOCAL_TIMESTAMP, nullable=False),
+    sa.Column("original_local_start", LOCAL_TIMESTAMP, nullable=True),
     sa.Column("original_local_end", LOCAL_TIMESTAMP),
     sa.Column("timezone_id", sa.String(64), nullable=False),
-    sa.Column("start_offset_seconds", sa.Integer(), nullable=False),
+    sa.Column("start_offset_seconds", sa.Integer(), nullable=True),
     sa.Column("end_offset_seconds", sa.Integer()),
     sa.Column("temporal_precision", sa.String(16), nullable=False),
-    sa.Column("local_date", sa.Date(), nullable=False),
+    sa.Column("local_date", sa.Date(), nullable=True),
     sa.Column("revision_content_sha256", BYTEA, nullable=False),
     sa.Column("canonical_document", BYTEA, nullable=False),
     sa.Column("canonical_document_sha256", BYTEA, nullable=False),
@@ -1176,7 +1189,8 @@ event_revision = sa.Table(
     sa.CheckConstraint(
         "(effective_end_utc IS NULL AND original_local_end IS NULL "
         "AND end_offset_seconds IS NULL) OR "
-        "(effective_end_utc IS NOT NULL AND original_local_end IS NOT NULL "
+        "(effective_end_utc IS NOT NULL AND effective_start_utc IS NOT NULL "
+        "AND original_local_end IS NOT NULL "
         "AND end_offset_seconds IS NOT NULL AND effective_end_utc >= effective_start_utc)",
         name="interval_fields_coherent",
     ),
@@ -1186,6 +1200,40 @@ event_revision = sa.Table(
         "'approximate', 'unknown'"
         ")",
         name="temporal_precision_allowed",
+    ),
+    sa.CheckConstraint(
+        "("
+        "temporal_precision IN ('exact', 'minute', 'hour') "
+        "AND effective_start_utc IS NOT NULL "
+        "AND original_local_start IS NOT NULL "
+        "AND start_offset_seconds IS NOT NULL "
+        "AND local_date IS NOT NULL"
+        ") OR ("
+        "temporal_precision IN ('date', 'part_of_day') "
+        "AND effective_start_utc IS NULL "
+        "AND original_local_start IS NOT NULL "
+        "AND start_offset_seconds IS NULL "
+        "AND local_date IS NOT NULL"
+        ") OR ("
+        "temporal_precision = 'unknown' "
+        "AND effective_start_utc IS NULL "
+        "AND original_local_start IS NULL "
+        "AND start_offset_seconds IS NULL "
+        "AND local_date IS NULL"
+        ") OR ("
+        "temporal_precision = 'approximate' AND ("
+        "("
+        "effective_start_utc IS NOT NULL "
+        "AND original_local_start IS NOT NULL "
+        "AND start_offset_seconds IS NOT NULL "
+        "AND local_date IS NOT NULL"
+        ") OR ("
+        "effective_start_utc IS NULL "
+        "AND start_offset_seconds IS NULL"
+        ")"
+        ")"
+        ")",
+        name="start_time_precision_coherent",
     ),
     sa.CheckConstraint(
         "octet_length(revision_content_sha256) = 32 "
@@ -1389,13 +1437,6 @@ sync_operation = sa.Table(
         "server_sequence",
         name="uq_sync_operation_stream_server_sequence",
     ),
-    sa.UniqueConstraint(
-        "credential_family_id",
-        "submitting_device_id",
-        "first_batch_id",
-        "first_batch_ordinal",
-        name="uq_sync_operation_first_batch_membership",
-    ),
     sa.CheckConstraint(
         f"client_sequence BETWEEN 1 AND {SAFE_INTEGER_MAX}",
         name="client_sequence_range",
@@ -1451,6 +1492,13 @@ sa.Index(
 sa.Index(
     "ix_sync_operation_event_id",
     sync_operation.c.event_id,
+)
+sa.Index(
+    "ix_sync_operation_first_batch_membership",
+    sync_operation.c.credential_family_id,
+    sync_operation.c.submitting_device_id,
+    sync_operation.c.first_batch_id,
+    sync_operation.c.first_batch_ordinal,
 )
 
 
@@ -1572,8 +1620,6 @@ http_replay = sa.Table(
         "'authenticated_success', "
         "'authenticated_nonretryable_terminal_api_error', "
         "'terminal_auth_revoke_401_credential_unavailable', "
-        "'terminal_sync_401_after_one_allowed_credential_recovery_"
-        "and_current_generation_exact_original_request_retry_exhausted', "
         "'terminal_operation_result_batch'"
         ")",
         name="stored_outcome_allowed",
@@ -1596,12 +1642,6 @@ http_replay = sa.Table(
         ") OR ("
         "endpoint_id = 'auth_revoke' "
         "AND stored_outcome = 'terminal_auth_revoke_401_credential_unavailable' "
-        "AND http_status = 401 AND error_code = 'credential_unavailable'"
-        ") OR ("
-        "endpoint_id IN ('sync_push', 'sync_bootstrap', 'sync_pull') "
-        "AND stored_outcome = "
-        "'terminal_sync_401_after_one_allowed_credential_recovery_"
-        "and_current_generation_exact_original_request_retry_exhausted' "
         "AND http_status = 401 AND error_code = 'credential_unavailable'"
         ")"
         ")"
@@ -1677,6 +1717,19 @@ http_replay = sa.Table(
         f"response_body_plaintext_bytes BETWEEN 1 AND {MAX_REPLAY_BODY_BYTES} "
         "AND octet_length(response_body_ciphertext) = response_body_plaintext_bytes + 16",
         name="encrypted_response_size",
+    ),
+    sa.CheckConstraint(
+        "("
+        "endpoint_id = 'auth_revoke' "
+        f"AND response_body_plaintext_bytes <= {AUTH_REVOKE_MAX_REPLAY_BODY_BYTES}"
+        ") OR ("
+        "endpoint_id = 'sync_push' "
+        f"AND response_body_plaintext_bytes <= {SYNC_PUSH_MAX_REPLAY_BODY_BYTES}"
+        ") OR ("
+        "endpoint_id IN ('sync_bootstrap', 'sync_pull') "
+        f"AND response_body_plaintext_bytes <= {MAX_REPLAY_BODY_BYTES}"
+        ")",
+        name="endpoint_response_plaintext_size",
     ),
     sa.CheckConstraint(
         "retention_until >= committed_at + INTERVAL '30 days' "
