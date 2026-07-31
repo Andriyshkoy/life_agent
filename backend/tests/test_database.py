@@ -147,6 +147,13 @@ async def test_readiness_probe_audits_only_configured_key_generations(
     assert (
         "'replay_encryption', response_encryption_key_generation FROM http_replay UNION"
     ) in " ".join(key_query.split())
+    normalized_query = " ".join(key_query.split())
+    cursor_epoch_clause = normalized_query.split(
+        "'cursor', signing_key_generation FROM sync_cursor",
+        maxsplit=1,
+    )[1].split(") SELECT", maxsplit=1)[0]
+    assert "revoked_at" not in cursor_epoch_clause
+    assert "expires_at" not in cursor_epoch_clause
 
 
 @pytest.mark.asyncio

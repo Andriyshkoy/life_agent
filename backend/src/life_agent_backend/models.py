@@ -9,6 +9,9 @@ SAFE_INTEGER_MAX = 9_007_199_254_740_991
 MAX_REPLAY_BODY_BYTES = 4_194_304
 AUTH_REVOKE_MAX_REPLAY_BODY_BYTES = 16_384
 SYNC_PUSH_MAX_REPLAY_BODY_BYTES = 524_288
+SYNC_DATA_PROTOCOL_STREAM = "life_events"
+SYNC_BOOTSTRAP_CURSOR_PROTOCOL_STREAM = "sync_bootstrap_v1"
+SYNC_INCREMENTAL_CURSOR_PROTOCOL_STREAM = "sync_incremental_v1"
 
 UUID = postgresql.UUID(as_uuid=True)
 BYTEA = postgresql.BYTEA()
@@ -1587,6 +1590,24 @@ http_replay = sa.Table(
         "response_body_nonce",
         name="uq_http_replay_encryption_nonce",
     ),
+    sa.UniqueConstraint(
+        "http_replay_id",
+        "endpoint_id",
+        "protocol_version",
+        "request_identity_kind",
+        "request_identity",
+        "person_id",
+        "credential_family_id",
+        "device_id",
+        "outcome_class",
+        "stored_outcome",
+        "http_status",
+        "response_body_sha256",
+        "response_body_plaintext_bytes",
+        "committed_at",
+        "purge_generation",
+        name="uq_http_replay_read_page_binding",
+    ),
     sa.CheckConstraint(
         "endpoint_id IN ('auth_revoke', 'sync_push', 'sync_bootstrap', 'sync_pull')",
         name="endpoint_id_allowed",
@@ -1767,13 +1788,21 @@ sync_snapshot = sa.Table(
     "sync_snapshot",
     metadata,
     sa.Column("snapshot_id", UUID, primary_key=True),
-    sa.Column("bootstrap_id", UUID, nullable=False),
+    sa.Column("snapshot_kind", sa.String(16), nullable=False),
+    sa.Column("bootstrap_id", UUID),
     sa.Column("person_id", UUID, nullable=False),
     sa.Column("device_id", UUID, nullable=False),
     sa.Column("credential_family_id", UUID, nullable=False),
     sa.Column("sync_stream_id", UUID, nullable=False),
     sa.Column("protocol_stream", sa.String(32), nullable=False),
+    sa.Column("start_sequence", sa.BigInteger(), nullable=False),
     sa.Column("high_watermark_sequence", sa.BigInteger(), nullable=False),
+    sa.Column("source_cursor_id", UUID),
+    sa.Column("source_cursor_kind", sa.String(24)),
+    sa.Column("source_cursor_protocol_stream", sa.String(32)),
+    sa.Column("bootstrap_incremental_cursor_id", UUID),
+    sa.Column("bootstrap_incremental_cursor_kind", sa.String(24)),
+    sa.Column("bootstrap_incremental_cursor_protocol_stream", sa.String(32)),
     sa.Column("purge_generation", sa.BigInteger(), nullable=False),
     sa.Column("status", sa.String(16), nullable=False),
     sa.Column(
@@ -1816,8 +1845,8 @@ sync_snapshot = sa.Table(
         "device_id",
         "credential_family_id",
         "sync_stream_id",
-        "protocol_stream",
         "purge_generation",
+        "snapshot_kind",
         "high_watermark_sequence",
         name="uq_sync_snapshot_cursor_binding",
     ),
@@ -1826,13 +1855,57 @@ sync_snapshot = sa.Table(
         "bootstrap_id",
         name="uq_sync_snapshot_bootstrap_binding",
     ),
+    sa.UniqueConstraint(
+        "snapshot_id",
+        "person_id",
+        "device_id",
+        "credential_family_id",
+        "sync_stream_id",
+        "purge_generation",
+        "snapshot_kind",
+        "status",
+        "bootstrap_id",
+        name="uq_sync_snapshot_read_state_binding",
+    ),
+    sa.UniqueConstraint(
+        "snapshot_id",
+        "person_id",
+        "device_id",
+        "credential_family_id",
+        "sync_stream_id",
+        "purge_generation",
+        "snapshot_kind",
+        name="uq_sync_snapshot_page_binding",
+    ),
     sa.CheckConstraint(
-        "protocol_stream = 'life_events'",
+        f"protocol_stream = '{SYNC_DATA_PROTOCOL_STREAM}'",
         name="protocol_stream_supported",
     ),
     sa.CheckConstraint(
-        f"high_watermark_sequence BETWEEN 0 AND {SAFE_INTEGER_MAX}",
-        name="high_watermark_range",
+        "(snapshot_kind = 'bootstrap' "
+        "AND bootstrap_id IS NOT NULL "
+        "AND start_sequence = 0 "
+        "AND source_cursor_id IS NULL "
+        "AND source_cursor_kind IS NULL "
+        "AND source_cursor_protocol_stream IS NULL "
+        "AND bootstrap_incremental_cursor_id IS NOT NULL "
+        "AND bootstrap_incremental_cursor_kind = 'incremental' "
+        "AND bootstrap_incremental_cursor_protocol_stream = 'sync_incremental_v1'"
+        ") OR (snapshot_kind = 'incremental' "
+        "AND bootstrap_id IS NULL "
+        "AND source_cursor_id IS NOT NULL "
+        "AND source_cursor_kind = 'incremental' "
+        "AND source_cursor_protocol_stream = 'sync_incremental_v1' "
+        "AND bootstrap_incremental_cursor_id IS NULL "
+        "AND bootstrap_incremental_cursor_kind IS NULL "
+        "AND bootstrap_incremental_cursor_protocol_stream IS NULL)",
+        name="snapshot_kind_binding_coherent",
+    ),
+    sa.CheckConstraint(
+        f"start_sequence BETWEEN 0 AND {SAFE_INTEGER_MAX} "
+        f"AND high_watermark_sequence BETWEEN 0 AND {SAFE_INTEGER_MAX} "
+        "AND start_sequence <= high_watermark_sequence",
+        name="sequence_window_coherent",
     ),
     sa.CheckConstraint(
         f"purge_generation BETWEEN 0 AND {SAFE_INTEGER_MAX}",
@@ -1844,38 +1917,72 @@ sync_snapshot = sa.Table(
     ),
     sa.CheckConstraint("expires_at > created_at", name="expiry_after_creation"),
     sa.CheckConstraint(
-        "("
-        "status = 'active' AND completed_at IS NULL AND revoked_at IS NULL"
-        ") OR ("
-        "status = 'complete' AND completed_at IS NOT NULL AND revoked_at IS NULL"
-        ") OR ("
-        "status = 'expired' AND revoked_at IS NULL"
-        ") OR ("
-        "status = 'revoked' AND revoked_at IS NOT NULL"
-        ")",
+        "(status = 'active' AND completed_at IS NULL AND revoked_at IS NULL) OR "
+        "(status = 'complete' AND completed_at IS NOT NULL AND revoked_at IS NULL) OR "
+        "(status = 'expired' AND revoked_at IS NULL) OR "
+        "(status = 'revoked' AND revoked_at IS NOT NULL)",
         name="status_metadata_coherent",
+    ),
+    sa.CheckConstraint(
+        "(completed_at IS NULL OR completed_at >= created_at) AND "
+        "(revoked_at IS NULL OR revoked_at >= created_at) AND "
+        "(completed_at IS NULL OR revoked_at IS NULL OR revoked_at >= completed_at)",
+        name="lifecycle_time_order",
     ),
 )
 sa.Index("ix_sync_snapshot_expires_at", sync_snapshot.c.expires_at)
+sa.Index(
+    "uq_sync_snapshot_active_bootstrap_namespace",
+    sync_snapshot.c.person_id,
+    sync_snapshot.c.device_id,
+    sync_snapshot.c.credential_family_id,
+    sync_snapshot.c.sync_stream_id,
+    sync_snapshot.c.purge_generation,
+    unique=True,
+    postgresql_where=sa.text("snapshot_kind = 'bootstrap' AND status = 'active'"),
+)
+sa.Index(
+    "uq_sync_snapshot_active_incremental_namespace",
+    sync_snapshot.c.person_id,
+    sync_snapshot.c.device_id,
+    sync_snapshot.c.credential_family_id,
+    sync_snapshot.c.sync_stream_id,
+    sync_snapshot.c.purge_generation,
+    unique=True,
+    postgresql_where=sa.text("snapshot_kind = 'incremental' AND status = 'active'"),
+)
 
 
 sync_cursor = sa.Table(
     "sync_cursor",
     metadata,
     sa.Column("sync_cursor_id", UUID, primary_key=True),
+    sa.Column("generation", sa.SmallInteger(), nullable=False, server_default=sa.text("1")),
     sa.Column("cursor_kind", sa.String(24), nullable=False),
+    sa.Column("protocol_stream", sa.String(32), nullable=False),
     sa.Column("handle_hmac", BYTEA, nullable=False),
+    sa.Column("derivation_nonce", BYTEA, nullable=False),
     sa.Column("signing_key_generation", sa.Integer(), nullable=False),
     sa.Column("person_id", UUID, nullable=False),
     sa.Column("device_id", UUID, nullable=False),
     sa.Column("credential_family_id", UUID, nullable=False),
     sa.Column("sync_stream_id", UUID, nullable=False),
     sa.Column("snapshot_id", UUID, nullable=False),
+    sa.Column("snapshot_kind", sa.String(16), nullable=False),
     sa.Column("bootstrap_id", UUID),
-    sa.Column("protocol_stream", sa.String(32), nullable=False),
     sa.Column("exact_position", sa.BigInteger(), nullable=False),
     sa.Column("snapshot_high_watermark_sequence", sa.BigInteger(), nullable=False),
     sa.Column("purge_generation", sa.BigInteger(), nullable=False),
+    sa.Column("cursor_state", sa.String(16), nullable=False),
+    sa.Column("lineage_depth", sa.Integer(), nullable=False),
+    sa.Column("parent_cursor_id", UUID),
+    sa.Column("parent_snapshot_id", UUID),
+    sa.Column("parent_snapshot_kind", sa.String(16)),
+    sa.Column("parent_bootstrap_id", UUID),
+    sa.Column("parent_cursor_kind", sa.String(24)),
+    sa.Column("parent_protocol_stream", sa.String(32)),
+    sa.Column("parent_exact_position", sa.BigInteger()),
+    sa.Column("parent_lineage_depth", sa.Integer()),
     sa.Column(
         "issued_at",
         UTC_TIMESTAMP,
@@ -1884,8 +1991,8 @@ sync_cursor = sa.Table(
     ),
     sa.Column("expires_at", UTC_TIMESTAMP, nullable=False),
     sa.Column("last_used_at", UTC_TIMESTAMP),
+    sa.Column("consumed_at", UTC_TIMESTAMP),
     sa.Column("revoked_at", UTC_TIMESTAMP),
-    sa.Column("parent_cursor_id", UUID),
     sa.ForeignKeyConstraint(
         [
             "snapshot_id",
@@ -1893,8 +2000,8 @@ sync_cursor = sa.Table(
             "device_id",
             "credential_family_id",
             "sync_stream_id",
-            "protocol_stream",
             "purge_generation",
+            "snapshot_kind",
             "snapshot_high_watermark_sequence",
         ],
         [
@@ -1903,8 +2010,8 @@ sync_cursor = sa.Table(
             "sync_snapshot.device_id",
             "sync_snapshot.credential_family_id",
             "sync_snapshot.sync_stream_id",
-            "sync_snapshot.protocol_stream",
             "sync_snapshot.purge_generation",
+            "sync_snapshot.snapshot_kind",
             "sync_snapshot.high_watermark_sequence",
         ],
         name="fk_sync_cursor_snapshot_binding",
@@ -1923,9 +2030,13 @@ sync_cursor = sa.Table(
             "device_id",
             "credential_family_id",
             "sync_stream_id",
-            "snapshot_id",
-            "protocol_stream",
             "purge_generation",
+            "parent_snapshot_id",
+            "parent_snapshot_kind",
+            "parent_cursor_kind",
+            "parent_protocol_stream",
+            "parent_exact_position",
+            "parent_lineage_depth",
         ],
         [
             "sync_cursor.sync_cursor_id",
@@ -1933,9 +2044,13 @@ sync_cursor = sa.Table(
             "sync_cursor.device_id",
             "sync_cursor.credential_family_id",
             "sync_cursor.sync_stream_id",
-            "sync_cursor.snapshot_id",
-            "sync_cursor.protocol_stream",
             "sync_cursor.purge_generation",
+            "sync_cursor.snapshot_id",
+            "sync_cursor.snapshot_kind",
+            "sync_cursor.cursor_kind",
+            "sync_cursor.protocol_stream",
+            "sync_cursor.exact_position",
+            "sync_cursor.lineage_depth",
         ],
         name="fk_sync_cursor_parent_namespace",
         ondelete="NO ACTION",
@@ -1947,54 +2062,676 @@ sync_cursor = sa.Table(
         "handle_hmac",
         name="uq_sync_cursor_handle_lookup",
     ),
+    sa.UniqueConstraint("parent_cursor_id", name="uq_sync_cursor_parent_no_fork"),
     sa.UniqueConstraint(
         "sync_cursor_id",
         "person_id",
         "device_id",
         "credential_family_id",
         "sync_stream_id",
-        "snapshot_id",
-        "protocol_stream",
         "purge_generation",
+        "snapshot_kind",
+        "cursor_kind",
+        "protocol_stream",
+        "exact_position",
+        name="uq_sync_cursor_source_binding",
+    ),
+    sa.UniqueConstraint(
+        "sync_cursor_id",
+        "snapshot_id",
+        "person_id",
+        "device_id",
+        "credential_family_id",
+        "sync_stream_id",
+        "purge_generation",
+        "cursor_kind",
+        "protocol_stream",
+        name="uq_sync_cursor_snapshot_kind_binding",
+    ),
+    sa.UniqueConstraint(
+        "sync_cursor_id",
+        "person_id",
+        "device_id",
+        "credential_family_id",
+        "sync_stream_id",
+        "purge_generation",
+        "snapshot_id",
+        "snapshot_kind",
+        "cursor_kind",
+        "protocol_stream",
+        "exact_position",
+        "lineage_depth",
         name="uq_sync_cursor_parent_namespace",
     ),
-    sa.CheckConstraint(
-        "cursor_kind IN ('bootstrap_page', 'incremental')",
-        name="cursor_kind_allowed",
+    sa.UniqueConstraint(
+        "sync_cursor_id",
+        "person_id",
+        "device_id",
+        "credential_family_id",
+        "sync_stream_id",
+        "purge_generation",
+        "cursor_kind",
+        "protocol_stream",
+        "cursor_state",
+        "exact_position",
+        name="uq_sync_cursor_read_state_binding",
     ),
+    sa.UniqueConstraint(
+        "sync_cursor_id",
+        "person_id",
+        "device_id",
+        "credential_family_id",
+        "sync_stream_id",
+        "purge_generation",
+        "cursor_kind",
+        "protocol_stream",
+        "exact_position",
+        name="uq_sync_cursor_page_binding",
+    ),
+    sa.CheckConstraint("generation = 1", name="generation_supported"),
     sa.CheckConstraint(
-        "octet_length(handle_hmac) = 32",
-        name="handle_hmac_length",
+        "(cursor_kind = 'bootstrap_page' "
+        "AND protocol_stream = 'sync_bootstrap_v1' "
+        "AND snapshot_kind = 'bootstrap' "
+        "AND bootstrap_id IS NOT NULL) OR "
+        "(cursor_kind = 'incremental' "
+        "AND protocol_stream = 'sync_incremental_v1' "
+        "AND snapshot_kind IN ('bootstrap', 'incremental') "
+        "AND bootstrap_id IS NULL)",
+        name="kind_protocol_binding_coherent",
+    ),
+    sa.CheckConstraint("octet_length(handle_hmac) = 32", name="handle_hmac_length"),
+    sa.CheckConstraint(
+        "octet_length(derivation_nonce) = 32",
+        name="derivation_nonce_length",
     ),
     sa.CheckConstraint(
         "signing_key_generation > 0",
         name="signing_key_generation_positive",
     ),
     sa.CheckConstraint(
-        "(cursor_kind = 'bootstrap_page' AND bootstrap_id IS NOT NULL) OR "
-        "(cursor_kind = 'incremental' AND bootstrap_id IS NULL)",
-        name="bootstrap_binding_coherent",
-    ),
-    sa.CheckConstraint(
-        "protocol_stream = 'life_events'",
-        name="protocol_stream_supported",
-    ),
-    sa.CheckConstraint(
-        f"exact_position BETWEEN 0 AND {SAFE_INTEGER_MAX}",
-        name="exact_position_range",
-    ),
-    sa.CheckConstraint(
-        "exact_position <= snapshot_high_watermark_sequence",
+        f"exact_position BETWEEN 0 AND {SAFE_INTEGER_MAX} "
+        "AND exact_position <= snapshot_high_watermark_sequence",
         name="position_within_snapshot",
     ),
     sa.CheckConstraint(
         f"purge_generation BETWEEN 0 AND {SAFE_INTEGER_MAX}",
         name="purge_generation_range",
     ),
+    sa.CheckConstraint(
+        "lineage_depth BETWEEN 0 AND 2147483647",
+        name="lineage_depth_range",
+    ),
+    sa.CheckConstraint(
+        "(parent_cursor_id IS NULL "
+        "AND parent_snapshot_id IS NULL "
+        "AND parent_snapshot_kind IS NULL "
+        "AND parent_bootstrap_id IS NULL "
+        "AND parent_cursor_kind IS NULL "
+        "AND parent_protocol_stream IS NULL "
+        "AND parent_exact_position IS NULL "
+        "AND parent_lineage_depth IS NULL "
+        "AND lineage_depth = 0) OR "
+        "(parent_cursor_id IS NOT NULL "
+        "AND parent_cursor_id <> sync_cursor_id "
+        "AND parent_snapshot_id IS NOT NULL "
+        "AND parent_snapshot_kind IS NOT NULL "
+        "AND parent_cursor_kind IS NOT NULL "
+        "AND parent_protocol_stream IS NOT NULL "
+        "AND parent_cursor_kind = cursor_kind "
+        "AND parent_protocol_stream = protocol_stream "
+        "AND parent_exact_position IS NOT NULL "
+        "AND parent_lineage_depth IS NOT NULL "
+        "AND lineage_depth = parent_lineage_depth + 1 "
+        "AND exact_position >= parent_exact_position "
+        "AND ((cursor_kind = 'bootstrap_page' "
+        "AND parent_snapshot_id = snapshot_id "
+        "AND parent_snapshot_kind = 'bootstrap' "
+        "AND parent_bootstrap_id IS NOT NULL "
+        "AND parent_bootstrap_id = bootstrap_id) OR "
+        "(cursor_kind = 'incremental' "
+        "AND snapshot_kind = 'incremental' "
+        "AND parent_snapshot_kind IN ('bootstrap', 'incremental') "
+        "AND parent_bootstrap_id IS NULL)))",
+        name="lineage_coherent",
+    ),
+    sa.CheckConstraint(
+        "parent_cursor_id IS NOT NULL OR cursor_kind = 'bootstrap_page' "
+        "OR snapshot_kind = 'bootstrap'",
+        name="incremental_root_uses_bootstrap_snapshot",
+    ),
+    sa.CheckConstraint(
+        "(cursor_state = 'staged' AND consumed_at IS NULL AND revoked_at IS NULL) OR "
+        "(cursor_state = 'current' AND consumed_at IS NULL AND revoked_at IS NULL) OR "
+        "(cursor_state = 'consumed' AND consumed_at IS NOT NULL "
+        "AND consumed_at >= issued_at AND revoked_at IS NULL) OR "
+        "(cursor_state = 'revoked' AND revoked_at IS NOT NULL "
+        "AND revoked_at >= issued_at "
+        "AND (consumed_at IS NULL OR consumed_at >= issued_at) "
+        "AND (consumed_at IS NULL OR revoked_at >= consumed_at))",
+        name="state_metadata_coherent",
+    ),
     sa.CheckConstraint("expires_at > issued_at", name="expiry_after_issue"),
+    sa.CheckConstraint(
+        "last_used_at IS NULL OR last_used_at >= issued_at",
+        name="last_use_after_issue",
+    ),
 )
 sa.Index(
     "ix_sync_cursor_expiry",
     sync_cursor.c.expires_at,
-    postgresql_where=sa.text("revoked_at IS NULL"),
+    postgresql_where=sa.text("cursor_state <> 'revoked'"),
+)
+sa.Index(
+    "uq_sync_cursor_current_incremental_namespace",
+    sync_cursor.c.person_id,
+    sync_cursor.c.device_id,
+    sync_cursor.c.credential_family_id,
+    sync_cursor.c.sync_stream_id,
+    unique=True,
+    postgresql_where=sa.text("cursor_kind = 'incremental' AND cursor_state = 'current'"),
+)
+sa.Index(
+    "uq_sync_cursor_current_bootstrap_snapshot",
+    sync_cursor.c.snapshot_id,
+    unique=True,
+    postgresql_where=sa.text("cursor_kind = 'bootstrap_page' AND cursor_state = 'current'"),
+)
+sa.Index(
+    "uq_sync_cursor_incremental_root_snapshot",
+    sync_cursor.c.snapshot_id,
+    unique=True,
+    postgresql_where=sa.text("cursor_kind = 'incremental' AND parent_cursor_id IS NULL"),
+)
+
+
+sync_read_state = sa.Table(
+    "sync_read_state",
+    metadata,
+    sa.Column("sync_read_state_id", UUID, primary_key=True),
+    sa.Column("person_id", UUID, nullable=False),
+    sa.Column("device_id", UUID, nullable=False),
+    sa.Column("credential_family_id", UUID, nullable=False),
+    sa.Column("sync_stream_id", UUID, nullable=False),
+    sa.Column("protocol_stream", sa.String(32), nullable=False),
+    sa.Column("purge_generation", sa.BigInteger(), nullable=False),
+    sa.Column("bootstrap_snapshot_id", UUID, nullable=False),
+    sa.Column("bootstrap_snapshot_kind", sa.String(16), nullable=False),
+    sa.Column("bootstrap_snapshot_status", sa.String(16), nullable=False),
+    sa.Column("bootstrap_id", UUID, nullable=False),
+    sa.Column("current_incremental_cursor_id", UUID, nullable=False),
+    sa.Column("current_cursor_kind", sa.String(24), nullable=False),
+    sa.Column("current_cursor_protocol_stream", sa.String(32), nullable=False),
+    sa.Column("current_cursor_state", sa.String(16), nullable=False),
+    sa.Column("current_exact_position", sa.BigInteger(), nullable=False),
+    sa.Column(
+        "created_at",
+        UTC_TIMESTAMP,
+        nullable=False,
+        server_default=sa.text("CURRENT_TIMESTAMP"),
+    ),
+    sa.Column(
+        "updated_at",
+        UTC_TIMESTAMP,
+        nullable=False,
+        server_default=sa.text("CURRENT_TIMESTAMP"),
+    ),
+    sa.ForeignKeyConstraint(
+        ["sync_stream_id", "person_id"],
+        ["sync_stream.sync_stream_id", "sync_stream.person_id"],
+        name="fk_sync_read_state_stream_person",
+        ondelete="CASCADE",
+    ),
+    sa.ForeignKeyConstraint(
+        ["credential_family_id", "person_id", "device_id"],
+        [
+            "credential_family.credential_family_id",
+            "credential_family.person_id",
+            "credential_family.device_id",
+        ],
+        name="fk_sync_read_state_credential_namespace",
+        ondelete="CASCADE",
+        deferrable=True,
+        initially="DEFERRED",
+    ),
+    sa.ForeignKeyConstraint(
+        [
+            "bootstrap_snapshot_id",
+            "person_id",
+            "device_id",
+            "credential_family_id",
+            "sync_stream_id",
+            "purge_generation",
+            "bootstrap_snapshot_kind",
+            "bootstrap_snapshot_status",
+            "bootstrap_id",
+        ],
+        [
+            "sync_snapshot.snapshot_id",
+            "sync_snapshot.person_id",
+            "sync_snapshot.device_id",
+            "sync_snapshot.credential_family_id",
+            "sync_snapshot.sync_stream_id",
+            "sync_snapshot.purge_generation",
+            "sync_snapshot.snapshot_kind",
+            "sync_snapshot.status",
+            "sync_snapshot.bootstrap_id",
+        ],
+        name="fk_sync_read_state_bootstrap_snapshot",
+        ondelete="NO ACTION",
+        deferrable=True,
+        initially="DEFERRED",
+    ),
+    sa.ForeignKeyConstraint(
+        [
+            "current_incremental_cursor_id",
+            "person_id",
+            "device_id",
+            "credential_family_id",
+            "sync_stream_id",
+            "purge_generation",
+            "current_cursor_kind",
+            "current_cursor_protocol_stream",
+            "current_cursor_state",
+            "current_exact_position",
+        ],
+        [
+            "sync_cursor.sync_cursor_id",
+            "sync_cursor.person_id",
+            "sync_cursor.device_id",
+            "sync_cursor.credential_family_id",
+            "sync_cursor.sync_stream_id",
+            "sync_cursor.purge_generation",
+            "sync_cursor.cursor_kind",
+            "sync_cursor.protocol_stream",
+            "sync_cursor.cursor_state",
+            "sync_cursor.exact_position",
+        ],
+        name="fk_sync_read_state_current_cursor",
+        ondelete="NO ACTION",
+        deferrable=True,
+        initially="DEFERRED",
+    ),
+    sa.UniqueConstraint(
+        "person_id",
+        "device_id",
+        "credential_family_id",
+        "sync_stream_id",
+        name="uq_sync_read_state_namespace",
+    ),
+    sa.UniqueConstraint(
+        "current_incremental_cursor_id",
+        name="uq_sync_read_state_current_cursor",
+    ),
+    sa.CheckConstraint(
+        "protocol_stream = 'life_events' "
+        "AND bootstrap_snapshot_kind = 'bootstrap' "
+        "AND bootstrap_snapshot_status = 'complete' "
+        "AND current_cursor_kind = 'incremental' "
+        "AND current_cursor_protocol_stream = 'sync_incremental_v1' "
+        "AND current_cursor_state = 'current'",
+        name="authority_binding_coherent",
+    ),
+    sa.CheckConstraint(
+        f"purge_generation BETWEEN 0 AND {SAFE_INTEGER_MAX} "
+        f"AND current_exact_position BETWEEN 0 AND {SAFE_INTEGER_MAX}",
+        name="position_generation_range",
+    ),
+    sa.CheckConstraint("updated_at >= created_at", name="update_time_order"),
+)
+
+
+sync_read_page = sa.Table(
+    "sync_read_page",
+    metadata,
+    sa.Column("page_id", UUID, primary_key=True),
+    sa.Column("endpoint_id", sa.String(32), nullable=False),
+    sa.Column("protocol_version", sa.String(16), nullable=False),
+    sa.Column("request_identity_kind", sa.String(16), nullable=False),
+    sa.Column("request_id", UUID, nullable=False),
+    sa.Column("http_replay_id", UUID, nullable=False),
+    sa.Column("replay_outcome_class", sa.String(16), nullable=False),
+    sa.Column("replay_stored_outcome", sa.String(128), nullable=False),
+    sa.Column("replay_http_status", sa.SmallInteger(), nullable=False),
+    sa.Column("person_id", UUID, nullable=False),
+    sa.Column("device_id", UUID, nullable=False),
+    sa.Column("credential_family_id", UUID, nullable=False),
+    sa.Column("sync_stream_id", UUID, nullable=False),
+    sa.Column("protocol_stream", sa.String(32), nullable=False),
+    sa.Column("purge_generation", sa.BigInteger(), nullable=False),
+    sa.Column("snapshot_id", UUID, nullable=False),
+    sa.Column("snapshot_kind", sa.String(16), nullable=False),
+    sa.Column("bootstrap_id", UUID),
+    sa.Column("page_ordinal", sa.Integer(), nullable=False),
+    sa.Column("requested_page_size", sa.SmallInteger(), nullable=False),
+    sa.Column("from_cursor_id", UUID),
+    sa.Column("from_cursor_kind", sa.String(24)),
+    sa.Column("from_cursor_protocol_stream", sa.String(32)),
+    sa.Column("from_exact_position", sa.BigInteger()),
+    sa.Column("next_cursor_id", UUID),
+    sa.Column("next_cursor_kind", sa.String(24)),
+    sa.Column("next_cursor_protocol_stream", sa.String(32)),
+    sa.Column("next_exact_position", sa.BigInteger()),
+    sa.Column("incremental_cursor_id", UUID),
+    sa.Column("incremental_cursor_kind", sa.String(24)),
+    sa.Column("incremental_cursor_protocol_stream", sa.String(32)),
+    sa.Column("incremental_exact_position", sa.BigInteger()),
+    sa.Column("change_count", sa.SmallInteger(), nullable=False),
+    sa.Column("first_server_sequence", sa.BigInteger()),
+    sa.Column("last_server_sequence", sa.BigInteger()),
+    sa.Column("has_more", sa.Boolean(), nullable=False),
+    sa.Column("page_sha256", BYTEA, nullable=False),
+    sa.Column("response_body_sha256", BYTEA, nullable=False),
+    sa.Column("response_body_plaintext_bytes", sa.Integer(), nullable=False),
+    sa.Column("server_time", UTC_TIMESTAMP, nullable=False),
+    sa.Column(
+        "committed_at",
+        UTC_TIMESTAMP,
+        nullable=False,
+        server_default=sa.text("CURRENT_TIMESTAMP"),
+    ),
+    sa.ForeignKeyConstraint(
+        ["sync_stream_id", "person_id"],
+        ["sync_stream.sync_stream_id", "sync_stream.person_id"],
+        name="fk_sync_read_page_stream_person",
+        ondelete="CASCADE",
+    ),
+    sa.ForeignKeyConstraint(
+        ["credential_family_id", "person_id", "device_id"],
+        [
+            "credential_family.credential_family_id",
+            "credential_family.person_id",
+            "credential_family.device_id",
+        ],
+        name="fk_sync_read_page_credential_namespace",
+        ondelete="CASCADE",
+        deferrable=True,
+        initially="DEFERRED",
+    ),
+    sa.ForeignKeyConstraint(
+        [
+            "snapshot_id",
+            "person_id",
+            "device_id",
+            "credential_family_id",
+            "sync_stream_id",
+            "purge_generation",
+            "snapshot_kind",
+        ],
+        [
+            "sync_snapshot.snapshot_id",
+            "sync_snapshot.person_id",
+            "sync_snapshot.device_id",
+            "sync_snapshot.credential_family_id",
+            "sync_snapshot.sync_stream_id",
+            "sync_snapshot.purge_generation",
+            "sync_snapshot.snapshot_kind",
+        ],
+        name="fk_sync_read_page_snapshot",
+        ondelete="NO ACTION",
+    ),
+    sa.ForeignKeyConstraint(
+        ["snapshot_id", "bootstrap_id"],
+        ["sync_snapshot.snapshot_id", "sync_snapshot.bootstrap_id"],
+        name="fk_sync_read_page_bootstrap_snapshot",
+        ondelete="NO ACTION",
+        deferrable=True,
+        initially="DEFERRED",
+    ),
+    sa.ForeignKeyConstraint(
+        [
+            "from_cursor_id",
+            "person_id",
+            "device_id",
+            "credential_family_id",
+            "sync_stream_id",
+            "purge_generation",
+            "from_cursor_kind",
+            "from_cursor_protocol_stream",
+            "from_exact_position",
+        ],
+        [
+            "sync_cursor.sync_cursor_id",
+            "sync_cursor.person_id",
+            "sync_cursor.device_id",
+            "sync_cursor.credential_family_id",
+            "sync_cursor.sync_stream_id",
+            "sync_cursor.purge_generation",
+            "sync_cursor.cursor_kind",
+            "sync_cursor.protocol_stream",
+            "sync_cursor.exact_position",
+        ],
+        name="fk_sync_read_page_from_cursor",
+        ondelete="NO ACTION",
+        deferrable=True,
+        initially="DEFERRED",
+    ),
+    sa.ForeignKeyConstraint(
+        [
+            "next_cursor_id",
+            "person_id",
+            "device_id",
+            "credential_family_id",
+            "sync_stream_id",
+            "purge_generation",
+            "next_cursor_kind",
+            "next_cursor_protocol_stream",
+            "next_exact_position",
+        ],
+        [
+            "sync_cursor.sync_cursor_id",
+            "sync_cursor.person_id",
+            "sync_cursor.device_id",
+            "sync_cursor.credential_family_id",
+            "sync_cursor.sync_stream_id",
+            "sync_cursor.purge_generation",
+            "sync_cursor.cursor_kind",
+            "sync_cursor.protocol_stream",
+            "sync_cursor.exact_position",
+        ],
+        name="fk_sync_read_page_next_cursor",
+        ondelete="NO ACTION",
+        deferrable=True,
+        initially="DEFERRED",
+    ),
+    sa.ForeignKeyConstraint(
+        [
+            "incremental_cursor_id",
+            "person_id",
+            "device_id",
+            "credential_family_id",
+            "sync_stream_id",
+            "purge_generation",
+            "incremental_cursor_kind",
+            "incremental_cursor_protocol_stream",
+            "incremental_exact_position",
+        ],
+        [
+            "sync_cursor.sync_cursor_id",
+            "sync_cursor.person_id",
+            "sync_cursor.device_id",
+            "sync_cursor.credential_family_id",
+            "sync_cursor.sync_stream_id",
+            "sync_cursor.purge_generation",
+            "sync_cursor.cursor_kind",
+            "sync_cursor.protocol_stream",
+            "sync_cursor.exact_position",
+        ],
+        name="fk_sync_read_page_incremental_cursor",
+        ondelete="NO ACTION",
+        deferrable=True,
+        initially="DEFERRED",
+    ),
+    sa.ForeignKeyConstraint(
+        [
+            "http_replay_id",
+            "endpoint_id",
+            "protocol_version",
+            "request_identity_kind",
+            "request_id",
+            "person_id",
+            "credential_family_id",
+            "device_id",
+            "replay_outcome_class",
+            "replay_stored_outcome",
+            "replay_http_status",
+            "response_body_sha256",
+            "response_body_plaintext_bytes",
+            "committed_at",
+            "purge_generation",
+        ],
+        [
+            "http_replay.http_replay_id",
+            "http_replay.endpoint_id",
+            "http_replay.protocol_version",
+            "http_replay.request_identity_kind",
+            "http_replay.request_identity",
+            "http_replay.person_id",
+            "http_replay.credential_family_id",
+            "http_replay.device_id",
+            "http_replay.outcome_class",
+            "http_replay.stored_outcome",
+            "http_replay.http_status",
+            "http_replay.response_body_sha256",
+            "http_replay.response_body_plaintext_bytes",
+            "http_replay.committed_at",
+            "http_replay.purge_generation",
+        ],
+        name="fk_sync_read_page_replay_binding",
+        ondelete="CASCADE",
+        deferrable=True,
+        initially="DEFERRED",
+    ),
+    sa.UniqueConstraint("http_replay_id", name="uq_sync_read_page_replay"),
+    sa.UniqueConstraint(
+        "endpoint_id",
+        "credential_family_id",
+        "device_id",
+        "request_id",
+        name="uq_sync_read_page_request_namespace",
+    ),
+    sa.UniqueConstraint(
+        "snapshot_id",
+        "page_ordinal",
+        name="uq_sync_read_page_snapshot_ordinal",
+    ),
+    sa.CheckConstraint(
+        "protocol_version = '1.0.0' "
+        "AND request_identity_kind = 'request_id' "
+        "AND protocol_stream = 'life_events' "
+        "AND replay_outcome_class = 'success' "
+        "AND replay_stored_outcome = 'authenticated_success' "
+        "AND replay_http_status = 200",
+        name="protocol_binding_coherent",
+    ),
+    sa.CheckConstraint(
+        "page_ordinal BETWEEN 0 AND 2147483647 "
+        "AND requested_page_size BETWEEN 1 AND 500 "
+        "AND change_count BETWEEN 0 AND requested_page_size",
+        name="page_bounds",
+    ),
+    sa.CheckConstraint(
+        "(change_count = 0 "
+        "AND first_server_sequence IS NULL "
+        "AND last_server_sequence IS NULL) OR "
+        "(change_count > 0 "
+        "AND first_server_sequence IS NOT NULL "
+        "AND last_server_sequence IS NOT NULL "
+        "AND first_server_sequence <= last_server_sequence "
+        "AND last_server_sequence - first_server_sequence + 1 >= change_count)",
+        name="sequence_evidence_coherent",
+    ),
+    sa.CheckConstraint(
+        "(endpoint_id = 'sync_bootstrap' "
+        "AND snapshot_kind = 'bootstrap' "
+        "AND bootstrap_id IS NOT NULL "
+        "AND incremental_cursor_id IS NOT NULL "
+        "AND incremental_cursor_kind IS NOT NULL "
+        "AND incremental_cursor_protocol_stream IS NOT NULL "
+        "AND incremental_cursor_kind = 'incremental' "
+        "AND incremental_cursor_protocol_stream = 'sync_incremental_v1' "
+        "AND incremental_exact_position IS NOT NULL "
+        "AND ((page_ordinal = 0 "
+        "AND from_cursor_id IS NULL "
+        "AND from_cursor_kind IS NULL "
+        "AND from_cursor_protocol_stream IS NULL "
+        "AND from_exact_position IS NULL) OR "
+        "(page_ordinal > 0 "
+        "AND from_cursor_id IS NOT NULL "
+        "AND from_cursor_kind IS NOT NULL "
+        "AND from_cursor_protocol_stream IS NOT NULL "
+        "AND from_cursor_kind = 'bootstrap_page' "
+        "AND from_cursor_protocol_stream = 'sync_bootstrap_v1' "
+        "AND from_exact_position IS NOT NULL)) "
+        "AND ((has_more = true "
+        "AND change_count > 0 "
+        "AND next_cursor_id IS NOT NULL "
+        "AND next_cursor_kind IS NOT NULL "
+        "AND next_cursor_protocol_stream IS NOT NULL "
+        "AND next_cursor_kind = 'bootstrap_page' "
+        "AND next_cursor_protocol_stream = 'sync_bootstrap_v1' "
+        "AND next_exact_position IS NOT NULL) OR "
+        "(has_more = false "
+        "AND next_cursor_id IS NULL "
+        "AND next_cursor_kind IS NULL "
+        "AND next_cursor_protocol_stream IS NULL "
+        "AND next_exact_position IS NULL))) OR "
+        "(endpoint_id = 'sync_pull' "
+        "AND snapshot_kind = 'incremental' "
+        "AND bootstrap_id IS NULL "
+        "AND incremental_cursor_id IS NULL "
+        "AND incremental_cursor_kind IS NULL "
+        "AND incremental_cursor_protocol_stream IS NULL "
+        "AND incremental_exact_position IS NULL "
+        "AND from_cursor_id IS NOT NULL "
+        "AND from_cursor_kind IS NOT NULL "
+        "AND from_cursor_protocol_stream IS NOT NULL "
+        "AND from_cursor_kind = 'incremental' "
+        "AND from_cursor_protocol_stream = 'sync_incremental_v1' "
+        "AND from_exact_position IS NOT NULL "
+        "AND next_cursor_id IS NOT NULL "
+        "AND next_cursor_kind IS NOT NULL "
+        "AND next_cursor_protocol_stream IS NOT NULL "
+        "AND next_cursor_kind = 'incremental' "
+        "AND next_cursor_protocol_stream = 'sync_incremental_v1' "
+        "AND next_exact_position IS NOT NULL "
+        "AND ((change_count = 0 "
+        "AND has_more = false "
+        "AND next_cursor_id = from_cursor_id "
+        "AND next_exact_position = from_exact_position) OR "
+        "(change_count > 0 "
+        "AND next_cursor_id <> from_cursor_id "
+        "AND next_exact_position > from_exact_position)))",
+        name="endpoint_cursor_binding_coherent",
+    ),
+    sa.CheckConstraint(
+        "(endpoint_id = 'sync_bootstrap' AND ("
+        "(change_count = 0 "
+        "AND has_more = false "
+        "AND COALESCE(from_exact_position, 0) = incremental_exact_position) OR "
+        "(change_count > 0 "
+        "AND first_server_sequence > COALESCE(from_exact_position, 0) "
+        "AND ((has_more = true AND last_server_sequence <= next_exact_position) OR "
+        "(has_more = false AND last_server_sequence <= incremental_exact_position))))) OR "
+        "(endpoint_id = 'sync_pull' AND ("
+        "(change_count = 0 "
+        "AND first_server_sequence IS NULL "
+        "AND last_server_sequence IS NULL "
+        "AND next_exact_position = from_exact_position) OR "
+        "(change_count > 0 "
+        "AND first_server_sequence > from_exact_position "
+        "AND last_server_sequence <= next_exact_position)))",
+        name="sequence_cursor_progress_coherent",
+    ),
+    sa.CheckConstraint(
+        "octet_length(page_sha256) = 32 "
+        "AND octet_length(response_body_sha256) = 32 "
+        f"AND response_body_plaintext_bytes BETWEEN 1 AND {MAX_REPLAY_BODY_BYTES}",
+        name="response_evidence_coherent",
+    ),
+    sa.CheckConstraint(
+        f"purge_generation BETWEEN 0 AND {SAFE_INTEGER_MAX}",
+        name="purge_generation_range",
+    ),
+    sa.CheckConstraint("server_time <= committed_at", name="commit_time_order"),
 )

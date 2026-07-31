@@ -24,7 +24,7 @@ NAMING_CONVENTION = {
 }
 
 metadata = MetaData(naming_convention=NAMING_CONVENTION)
-EXPECTED_DATABASE_REVISION = "20260730_0003"
+EXPECTED_DATABASE_REVISION = "20260731_0004"
 
 
 @dataclass(frozen=True, slots=True)
@@ -177,8 +177,6 @@ class DatabaseReadinessProbe:
                                     'cursor',
                                     signing_key_generation
                                 FROM sync_cursor
-                                WHERE revoked_at IS NULL
-                                  AND expires_at >= CURRENT_TIMESTAMP
                             )
                             SELECT NOT EXISTS (
                                 SELECT 1

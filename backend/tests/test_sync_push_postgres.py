@@ -16,7 +16,7 @@ from alembic import command
 from httpx import ASGITransport, AsyncClient, Response
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.ext.asyncio import AsyncEngine
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from life_agent_backend.app import create_app
 from life_agent_backend.auth_crypto import AuthKeyMaterial
@@ -317,6 +317,8 @@ async def _seed_identity(
     clock: _MutableClock,
     *,
     bootstrap_proof: bool,
+    bootstrap_proof_expires_at: datetime | None = None,
+    bootstrap_cursor_expires_at: datetime | None = None,
 ) -> None:
     keys = AuthKeyMaterial.from_settings(settings)
     refresh_token = _wire_token("lar_", identity.suffix)
@@ -489,117 +491,418 @@ async def _seed_identity(
         )
 
     if bootstrap_proof:
-        await _insert_bootstrap_proof(engine, identity, clock)
+        await _insert_bootstrap_proof(
+            engine,
+            identity,
+            clock,
+            expires_at=bootstrap_proof_expires_at,
+            cursor_expires_at=bootstrap_cursor_expires_at,
+        )
 
 
 async def _insert_bootstrap_proof(
     engine: AsyncEngine,
     identity: _SeededIdentity,
     clock: _MutableClock,
+    *,
+    expires_at: datetime | None = None,
+    cursor_expires_at: datetime | None = None,
 ) -> None:
     issued_at = clock.value - timedelta(minutes=5)
-    expires_at = clock.value + timedelta(days=180)
+    proof_expires_at = clock.value + timedelta(days=180) if expires_at is None else expires_at
     async with engine.begin() as connection:
-        await connection.execute(
-            text(
-                """
-                INSERT INTO sync_snapshot (
-                    snapshot_id,
-                    bootstrap_id,
-                    person_id,
-                    device_id,
-                    credential_family_id,
-                    sync_stream_id,
-                    protocol_stream,
-                    high_watermark_sequence,
-                    purge_generation,
-                    status,
-                    created_at,
-                    expires_at,
-                    completed_at
-                )
-                VALUES (
-                    :snapshot_id,
-                    :bootstrap_id,
-                    :person_id,
-                    :device_id,
-                    :family_id,
-                    :stream_id,
-                    'life_events',
-                    0,
-                    0,
-                    'complete',
-                    :issued_at,
-                    :expires_at,
-                    :completed_at
-                )
-                """
-            ),
-            {
-                "snapshot_id": identity.snapshot_id,
-                "bootstrap_id": identity.bootstrap_id,
-                "person_id": identity.person_id,
-                "device_id": identity.device_id,
-                "family_id": identity.credential_family_id,
-                "stream_id": identity.sync_stream_id,
-                "issued_at": issued_at,
-                "expires_at": expires_at,
-                "completed_at": issued_at + timedelta(seconds=1),
-            },
+        await _insert_bootstrap_proof_rows(
+            connection,
+            identity=identity,
+            snapshot_id=identity.snapshot_id,
+            bootstrap_id=identity.bootstrap_id,
+            cursor_id=identity.sync_cursor_id,
+            purge_generation=0,
+            high_watermark_sequence=0,
+            proof_suffix=identity.suffix,
+            created_at=issued_at,
+            completed_at=issued_at + timedelta(seconds=1),
+            expires_at=proof_expires_at,
+            cursor_expires_at=cursor_expires_at,
         )
-        await connection.execute(
-            text(
-                """
-                INSERT INTO sync_cursor (
-                    sync_cursor_id,
-                    cursor_kind,
-                    handle_hmac,
-                    signing_key_generation,
-                    person_id,
-                    device_id,
-                    credential_family_id,
-                    sync_stream_id,
-                    snapshot_id,
-                    bootstrap_id,
-                    protocol_stream,
-                    exact_position,
-                    snapshot_high_watermark_sequence,
-                    purge_generation,
-                    issued_at,
-                    expires_at
-                )
-                VALUES (
-                    :cursor_id,
-                    'incremental',
-                    :handle_hmac,
-                    1,
-                    :person_id,
-                    :device_id,
-                    :family_id,
-                    :stream_id,
-                    :snapshot_id,
-                    NULL,
-                    'life_events',
-                    0,
-                    0,
-                    0,
-                    :issued_at,
-                    :expires_at
-                )
-                """
-            ),
-            {
-                "cursor_id": identity.sync_cursor_id,
-                "handle_hmac": hashlib.sha256(f"sync-cursor-{identity.suffix}".encode()).digest(),
-                "person_id": identity.person_id,
-                "device_id": identity.device_id,
-                "family_id": identity.credential_family_id,
-                "stream_id": identity.sync_stream_id,
-                "snapshot_id": identity.snapshot_id,
-                "issued_at": issued_at,
-                "expires_at": expires_at,
-            },
-        )
+
+
+async def _insert_bootstrap_proof_rows(
+    connection: AsyncConnection,
+    *,
+    identity: _SeededIdentity,
+    snapshot_id: UUID,
+    bootstrap_id: UUID,
+    cursor_id: UUID,
+    purge_generation: int,
+    high_watermark_sequence: int,
+    proof_suffix: int,
+    created_at: datetime,
+    completed_at: datetime,
+    expires_at: datetime,
+    cursor_expires_at: datetime | None = None,
+) -> None:
+    assert 0 <= high_watermark_sequence <= 500
+    replay_id = _uuid(0x99200000, proof_suffix)
+    request_id = _uuid(0x99200001, proof_suffix)
+    page_id = _uuid(0x99200002, proof_suffix)
+    read_state_id = _uuid(0x99200003, proof_suffix)
+    handle_hmac = hashlib.sha256(f"proof-cursor-{proof_suffix}".encode()).digest()
+    derivation_nonce = hashlib.sha256(f"proof-nonce-{proof_suffix}".encode()).digest()
+    response_hash = hashlib.sha256(f"proof-response-{proof_suffix}".encode()).digest()
+    response_nonce = hashlib.sha256(f"proof-replay-{proof_suffix}".encode()).digest()[:12]
+
+    await connection.execute(
+        text(
+            """
+            INSERT INTO sync_snapshot (
+                snapshot_id,
+                snapshot_kind,
+                bootstrap_id,
+                person_id,
+                device_id,
+                credential_family_id,
+                sync_stream_id,
+                protocol_stream,
+                start_sequence,
+                high_watermark_sequence,
+                bootstrap_incremental_cursor_id,
+                bootstrap_incremental_cursor_kind,
+                bootstrap_incremental_cursor_protocol_stream,
+                purge_generation,
+                status,
+                created_at,
+                expires_at,
+                completed_at
+            )
+            VALUES (
+                :snapshot_id,
+                'bootstrap',
+                :bootstrap_id,
+                :person_id,
+                :device_id,
+                :family_id,
+                :stream_id,
+                'life_events',
+                0,
+                :high_watermark_sequence,
+                :cursor_id,
+                'incremental',
+                'sync_incremental_v1',
+                :purge_generation,
+                'complete',
+                :created_at,
+                :expires_at,
+                :completed_at
+            )
+            """
+        ),
+        {
+            "snapshot_id": snapshot_id,
+            "bootstrap_id": bootstrap_id,
+            "person_id": identity.person_id,
+            "device_id": identity.device_id,
+            "family_id": identity.credential_family_id,
+            "stream_id": identity.sync_stream_id,
+            "cursor_id": cursor_id,
+            "purge_generation": purge_generation,
+            "high_watermark_sequence": high_watermark_sequence,
+            "created_at": created_at,
+            "expires_at": expires_at,
+            "completed_at": completed_at,
+        },
+    )
+    await connection.execute(
+        text(
+            """
+            INSERT INTO sync_cursor (
+                sync_cursor_id,
+                generation,
+                cursor_kind,
+                protocol_stream,
+                handle_hmac,
+                derivation_nonce,
+                signing_key_generation,
+                person_id,
+                device_id,
+                credential_family_id,
+                sync_stream_id,
+                snapshot_id,
+                snapshot_kind,
+                bootstrap_id,
+                exact_position,
+                snapshot_high_watermark_sequence,
+                purge_generation,
+                cursor_state,
+                lineage_depth,
+                issued_at,
+                expires_at
+            )
+            VALUES (
+                :cursor_id,
+                1,
+                'incremental',
+                'sync_incremental_v1',
+                :handle_hmac,
+                :derivation_nonce,
+                1,
+                :person_id,
+                :device_id,
+                :family_id,
+                :stream_id,
+                :snapshot_id,
+                'bootstrap',
+                NULL,
+                :exact_position,
+                :high_watermark_sequence,
+                :purge_generation,
+                'current',
+                0,
+                :issued_at,
+                :expires_at
+            )
+            """
+        ),
+        {
+            "cursor_id": cursor_id,
+            "handle_hmac": handle_hmac,
+            "derivation_nonce": derivation_nonce,
+            "person_id": identity.person_id,
+            "device_id": identity.device_id,
+            "family_id": identity.credential_family_id,
+            "stream_id": identity.sync_stream_id,
+            "snapshot_id": snapshot_id,
+            "exact_position": high_watermark_sequence,
+            "high_watermark_sequence": high_watermark_sequence,
+            "purge_generation": purge_generation,
+            "issued_at": created_at,
+            "expires_at": expires_at if cursor_expires_at is None else cursor_expires_at,
+        },
+    )
+    await connection.execute(
+        text(
+            """
+            INSERT INTO http_replay (
+                http_replay_id,
+                endpoint_id,
+                protocol_version,
+                request_identity_kind,
+                request_identity,
+                person_id,
+                credential_family_id,
+                device_id,
+                family_tombstone_until,
+                request_fingerprint_hmac,
+                fingerprint_key_generation,
+                outcome_class,
+                stored_outcome,
+                http_status,
+                response_body_ciphertext,
+                response_body_nonce,
+                response_body_sha256,
+                response_body_plaintext_bytes,
+                response_encryption_key_generation,
+                committed_at,
+                retention_until,
+                purge_generation
+            )
+            SELECT
+                :replay_id,
+                'sync_bootstrap',
+                '1.0.0',
+                'request_id',
+                :request_id,
+                :person_id,
+                :family_id,
+                :device_id,
+                family.tombstone_until,
+                :request_fingerprint_hmac,
+                1,
+                'success',
+                'authenticated_success',
+                200,
+                :response_body_ciphertext,
+                :response_body_nonce,
+                :response_body_sha256,
+                1,
+                1,
+                :committed_at,
+                family.tombstone_until,
+                :purge_generation
+            FROM credential_family AS family
+            WHERE family.credential_family_id = :family_id
+            """
+        ),
+        {
+            "replay_id": replay_id,
+            "request_id": request_id,
+            "person_id": identity.person_id,
+            "family_id": identity.credential_family_id,
+            "device_id": identity.device_id,
+            "request_fingerprint_hmac": hashlib.sha256(
+                f"proof-request-{proof_suffix}".encode()
+            ).digest(),
+            "response_body_ciphertext": bytes(17),
+            "response_body_nonce": response_nonce,
+            "response_body_sha256": response_hash,
+            "committed_at": completed_at,
+            "purge_generation": purge_generation,
+        },
+    )
+    await connection.execute(
+        text(
+            """
+            INSERT INTO sync_read_page (
+                page_id,
+                endpoint_id,
+                protocol_version,
+                request_identity_kind,
+                request_id,
+                http_replay_id,
+                replay_outcome_class,
+                replay_stored_outcome,
+                replay_http_status,
+                person_id,
+                device_id,
+                credential_family_id,
+                sync_stream_id,
+                protocol_stream,
+                purge_generation,
+                snapshot_id,
+                snapshot_kind,
+                bootstrap_id,
+                page_ordinal,
+                requested_page_size,
+                incremental_cursor_id,
+                incremental_cursor_kind,
+                incremental_cursor_protocol_stream,
+                incremental_exact_position,
+                change_count,
+                first_server_sequence,
+                last_server_sequence,
+                has_more,
+                page_sha256,
+                response_body_sha256,
+                response_body_plaintext_bytes,
+                server_time,
+                committed_at
+            )
+            VALUES (
+                :page_id,
+                'sync_bootstrap',
+                '1.0.0',
+                'request_id',
+                :request_id,
+                :replay_id,
+                'success',
+                'authenticated_success',
+                200,
+                :person_id,
+                :device_id,
+                :family_id,
+                :stream_id,
+                'life_events',
+                :purge_generation,
+                :snapshot_id,
+                'bootstrap',
+                :bootstrap_id,
+                0,
+                500,
+                :cursor_id,
+                'incremental',
+                'sync_incremental_v1',
+                :exact_position,
+                :change_count,
+                :first_server_sequence,
+                :last_server_sequence,
+                false,
+                :response_body_sha256,
+                :response_body_sha256,
+                1,
+                :committed_at,
+                :committed_at
+            )
+            """
+        ),
+        {
+            "page_id": page_id,
+            "request_id": request_id,
+            "replay_id": replay_id,
+            "person_id": identity.person_id,
+            "device_id": identity.device_id,
+            "family_id": identity.credential_family_id,
+            "stream_id": identity.sync_stream_id,
+            "purge_generation": purge_generation,
+            "snapshot_id": snapshot_id,
+            "bootstrap_id": bootstrap_id,
+            "cursor_id": cursor_id,
+            "exact_position": high_watermark_sequence,
+            "change_count": high_watermark_sequence,
+            "first_server_sequence": 1 if high_watermark_sequence else None,
+            "last_server_sequence": (high_watermark_sequence if high_watermark_sequence else None),
+            "response_body_sha256": response_hash,
+            "committed_at": completed_at,
+        },
+    )
+    await connection.execute(
+        text(
+            """
+            INSERT INTO sync_read_state (
+                sync_read_state_id,
+                person_id,
+                device_id,
+                credential_family_id,
+                sync_stream_id,
+                protocol_stream,
+                purge_generation,
+                bootstrap_snapshot_id,
+                bootstrap_snapshot_kind,
+                bootstrap_snapshot_status,
+                bootstrap_id,
+                current_incremental_cursor_id,
+                current_cursor_kind,
+                current_cursor_protocol_stream,
+                current_cursor_state,
+                current_exact_position,
+                created_at,
+                updated_at
+            )
+            VALUES (
+                :read_state_id,
+                :person_id,
+                :device_id,
+                :family_id,
+                :stream_id,
+                'life_events',
+                :purge_generation,
+                :snapshot_id,
+                'bootstrap',
+                'complete',
+                :bootstrap_id,
+                :cursor_id,
+                'incremental',
+                'sync_incremental_v1',
+                'current',
+                :exact_position,
+                :committed_at,
+                :committed_at
+            )
+            """
+        ),
+        {
+            "read_state_id": read_state_id,
+            "person_id": identity.person_id,
+            "device_id": identity.device_id,
+            "family_id": identity.credential_family_id,
+            "stream_id": identity.sync_stream_id,
+            "purge_generation": purge_generation,
+            "snapshot_id": snapshot_id,
+            "bootstrap_id": bootstrap_id,
+            "cursor_id": cursor_id,
+            "exact_position": high_watermark_sequence,
+            "committed_at": completed_at,
+        },
+    )
 
 
 async def _advance_purge_and_replace_bootstrap_proof(
@@ -616,17 +919,33 @@ async def _advance_purge_and_replace_bootstrap_proof(
     cursor_id = _uuid(0x99100002, proof_suffix)
     created_at = clock.value - timedelta(minutes=4)
     completed_at = clock.value - timedelta(minutes=3)
-    issued_at = clock.value - timedelta(minutes=2)
     expires_at = clock.value + timedelta(days=180)
     async with engine.begin() as connection:
         await connection.execute(
             text(
                 """
-                UPDATE sync_cursor
-                SET revoked_at = :revoked_at
+                DELETE FROM sync_read_state
                 WHERE person_id = :person_id
                   AND device_id = :device_id
-                  AND credential_family_id = :family_id
+                  AND sync_stream_id = :stream_id
+                """
+            ),
+            {
+                "person_id": identity.person_id,
+                "device_id": identity.device_id,
+                "family_id": identity.credential_family_id,
+                "stream_id": identity.sync_stream_id,
+            },
+        )
+        await connection.execute(
+            text(
+                """
+                UPDATE sync_cursor
+                SET
+                    cursor_state = 'revoked',
+                    revoked_at = :revoked_at
+                WHERE person_id = :person_id
+                  AND device_id = :device_id
                   AND sync_stream_id = :stream_id
                   AND revoked_at IS NULL
                 """
@@ -648,7 +967,6 @@ async def _advance_purge_and_replace_bootstrap_proof(
                     revoked_at = :revoked_at
                 WHERE person_id = :person_id
                   AND device_id = :device_id
-                  AND credential_family_id = :family_id
                   AND sync_stream_id = :stream_id
                   AND revoked_at IS NULL
                 """
@@ -693,107 +1011,33 @@ async def _advance_purge_and_replace_bootstrap_proof(
         await connection.execute(
             text(
                 """
-                INSERT INTO sync_snapshot (
-                    snapshot_id,
-                    bootstrap_id,
-                    person_id,
-                    device_id,
-                    credential_family_id,
-                    sync_stream_id,
-                    protocol_stream,
-                    high_watermark_sequence,
-                    purge_generation,
-                    status,
-                    created_at,
-                    expires_at,
-                    completed_at
-                )
-                VALUES (
-                    :snapshot_id,
-                    :bootstrap_id,
-                    :person_id,
-                    :device_id,
-                    :family_id,
-                    :stream_id,
-                    'life_events',
-                    :high_watermark_sequence,
-                    :purge_generation,
-                    'complete',
-                    :created_at,
-                    :expires_at,
-                    :completed_at
-                )
+                UPDATE sync_operation
+                SET purge_generation = :purge_generation
+                WHERE person_id = :person_id
+                  AND sync_stream_id = :stream_id
+                  AND server_sequence <= :high_watermark_sequence
                 """
             ),
             {
-                "snapshot_id": snapshot_id,
-                "bootstrap_id": bootstrap_id,
+                "purge_generation": purge_generation,
                 "person_id": identity.person_id,
-                "device_id": identity.device_id,
-                "family_id": identity.credential_family_id,
                 "stream_id": identity.sync_stream_id,
                 "high_watermark_sequence": high_watermark_sequence,
-                "purge_generation": purge_generation,
-                "created_at": created_at,
-                "expires_at": expires_at,
-                "completed_at": completed_at,
             },
         )
-        await connection.execute(
-            text(
-                """
-                INSERT INTO sync_cursor (
-                    sync_cursor_id,
-                    cursor_kind,
-                    handle_hmac,
-                    signing_key_generation,
-                    person_id,
-                    device_id,
-                    credential_family_id,
-                    sync_stream_id,
-                    snapshot_id,
-                    bootstrap_id,
-                    protocol_stream,
-                    exact_position,
-                    snapshot_high_watermark_sequence,
-                    purge_generation,
-                    issued_at,
-                    expires_at
-                )
-                VALUES (
-                    :cursor_id,
-                    'incremental',
-                    :handle_hmac,
-                    1,
-                    :person_id,
-                    :device_id,
-                    :family_id,
-                    :stream_id,
-                    :snapshot_id,
-                    NULL,
-                    'life_events',
-                    :exact_position,
-                    :high_watermark_sequence,
-                    :purge_generation,
-                    :issued_at,
-                    :expires_at
-                )
-                """
-            ),
-            {
-                "cursor_id": cursor_id,
-                "handle_hmac": hashlib.sha256(f"purge-cursor-{proof_suffix}".encode()).digest(),
-                "person_id": identity.person_id,
-                "device_id": identity.device_id,
-                "family_id": identity.credential_family_id,
-                "stream_id": identity.sync_stream_id,
-                "snapshot_id": snapshot_id,
-                "exact_position": high_watermark_sequence,
-                "high_watermark_sequence": high_watermark_sequence,
-                "purge_generation": purge_generation,
-                "issued_at": issued_at,
-                "expires_at": expires_at,
-            },
+        await connection.execute(text("SET CONSTRAINTS ALL DEFERRED"))
+        await _insert_bootstrap_proof_rows(
+            connection,
+            identity=identity,
+            snapshot_id=snapshot_id,
+            bootstrap_id=bootstrap_id,
+            cursor_id=cursor_id,
+            purge_generation=purge_generation,
+            high_watermark_sequence=high_watermark_sequence,
+            proof_suffix=proof_suffix,
+            created_at=created_at,
+            completed_at=completed_at,
+            expires_at=expires_at,
         )
 
 
@@ -1222,7 +1466,7 @@ async def _exercise_bootstrap_core_and_replay(
                         },
                     )
                 ).one()
-                assert tuple(final_state) == (3, 2)
+                assert tuple(final_state) == (3, 3)
     finally:
         await engine.dispose()
         await _cleanup_identity(database_url, identity)
@@ -1666,7 +1910,7 @@ async def _exercise_device_mismatch_replay_order(
                         },
                     )
                 ).one()
-                assert tuple(state) == (0, 0, 1)
+                assert tuple(state) == (0, 0, 2)
     finally:
         await engine.dispose()
         await _cleanup_identity(database_url, identity)
@@ -1829,8 +2073,8 @@ async def _exercise_concurrent_pushes(
                     )
                     for row in rows
                 }
-                assert by_person[exact_identity.person_id] == (1, 1, 1)
-                assert by_person[operation_identity.person_id] == (1, 1, 2)
+                assert by_person[exact_identity.person_id] == (1, 1, 2)
+                assert by_person[operation_identity.person_id] == (1, 1, 3)
     finally:
         await engine.dispose()
         for identity in identities:
@@ -2243,6 +2487,7 @@ async def _exercise_bootstrap_proof_invalidation(
             identity,
             clock,
             bootstrap_proof=True,
+            bootstrap_cursor_expires_at=clock.value + timedelta(seconds=1),
         )
         application = create_app(
             settings,
@@ -2306,20 +2551,7 @@ async def _exercise_bootstrap_proof_invalidation(
             assert refreshed_push.status_code == 200
             assert _response_json(refreshed_push)["results"][0]["result_code"] == "applied"
 
-            async with engine.begin() as connection:
-                await connection.execute(
-                    text(
-                        """
-                        UPDATE sync_cursor
-                        SET expires_at = :expired_at
-                        WHERE sync_cursor_id = :cursor_id
-                        """
-                    ),
-                    {
-                        "expired_at": clock.value - timedelta(seconds=1),
-                        "cursor_id": identity.sync_cursor_id,
-                    },
-                )
+            clock.value += timedelta(seconds=2)
 
             expired_cursor_operation = _operation(
                 refreshed_identity,
@@ -2359,13 +2591,48 @@ async def _exercise_bootstrap_proof_invalidation(
                     text(
                         """
                         UPDATE sync_cursor
-                        SET expires_at = :expires_at
+                        SET
+                            cursor_state = 'revoked',
+                            revoked_at = :revoked_at
                         WHERE sync_cursor_id = :cursor_id
                         """
                     ),
                     {
-                        "expires_at": clock.value + timedelta(days=180),
+                        "revoked_at": clock.value,
                         "cursor_id": identity.sync_cursor_id,
+                    },
+                )
+                await connection.execute(
+                    text(
+                        """
+                        DELETE FROM sync_read_state
+                        WHERE person_id = :person_id
+                          AND device_id = :device_id
+                          AND sync_stream_id = :stream_id
+                        """
+                    ),
+                    {
+                        "person_id": identity.person_id,
+                        "device_id": identity.device_id,
+                        "stream_id": identity.sync_stream_id,
+                    },
+                )
+                await connection.execute(
+                    text(
+                        """
+                        UPDATE sync_snapshot
+                        SET status = 'revoked', revoked_at = :revoked_at
+                        WHERE person_id = :person_id
+                          AND device_id = :device_id
+                          AND sync_stream_id = :stream_id
+                          AND status IN ('active', 'complete')
+                        """
+                    ),
+                    {
+                        "revoked_at": clock.value,
+                        "person_id": identity.person_id,
+                        "device_id": identity.device_id,
+                        "stream_id": identity.sync_stream_id,
                     },
                 )
                 await connection.execute(
@@ -2388,7 +2655,6 @@ async def _exercise_bootstrap_proof_invalidation(
                     ),
                     {"stream_id": identity.sync_stream_id},
                 )
-
             purge_operation = _operation(
                 refreshed_identity,
                 ordinal=0,
@@ -2528,7 +2794,7 @@ async def _exercise_bootstrap_proof_invalidation(
                         },
                     )
                 ).one()
-                assert tuple(state) == (1, 1, 4, 2)
+                assert tuple(state) == (1, 1, 5, 2)
     finally:
         await engine.dispose()
         await _cleanup_identity(database_url, identity)
@@ -2555,6 +2821,7 @@ async def _exercise_response_quota_rollback(
             identity,
             clock,
             bootstrap_proof=True,
+            bootstrap_proof_expires_at=clock.value + timedelta(days=270),
         )
         application = create_app(
             settings,
@@ -2693,7 +2960,7 @@ async def _exercise_response_quota_rollback(
                         """
                         UPDATE device_replay_quota
                         SET
-                            record_count = 1,
+                            record_count = 2,
                             response_body_plaintext_bytes = :near_limit
                         WHERE person_id = :person_id
                           AND device_id = :device_id
@@ -2844,10 +3111,10 @@ async def _exercise_response_quota_rollback(
                     1,
                     1,
                     1,
-                    1,
+                    2,
                     0,
                     0,
-                    1,
+                    2,
                     MAX_REPLAY_PLAINTEXT_BYTES_PER_DEVICE - 1,
                 )
     finally:
@@ -3003,7 +3270,7 @@ async def _exercise_replay_gc_releases_batch_membership(
                         },
                     )
                 ).one()
-                assert tuple(quota_after_gc) == (0, 0)
+                assert tuple(quota_after_gc) == (1, 1)
 
             replacement_operation = _operation(
                 identity,
@@ -3108,8 +3375,8 @@ async def _exercise_replay_gc_releases_batch_membership(
                     2,
                     2,
                     1,
-                    1,
-                    len(replacement.content),
+                    2,
+                    len(replacement.content) + 1,
                 )
     finally:
         await engine.dispose()
@@ -3674,7 +3941,7 @@ async def _exercise_purge_generation_lineage_boundaries(
                         },
                     )
                 ).one()
-                assert tuple(proof_state) == (1, 1, 3, 1, 1, 1, 1, 0, 3, 0)
+                assert tuple(proof_state) == (1, 1, 3, 1, 1, 1, 1, 2, 3, 2)
 
             current_event_id = _uuid(0xA3000000, 11104)
             current_root_revision_id = _uuid(0xA4000000, 11104)
@@ -3897,7 +4164,7 @@ async def _exercise_purge_generation_lineage_boundaries(
                         },
                     )
                 ).one()
-                assert tuple(state) == (4, 1, 1, 3, 4, 4, 4, 7, 3, 3, 3)
+                assert tuple(state) == (4, 1, 1, 3, 4, 4, 4, 7, 3, 5, 5)
 
                 lineage_rows = (
                     await connection.execute(
@@ -4043,14 +4310,41 @@ async def _exercise_purge_generation_lineage_boundaries(
                     1,
                     3,
                     1,
-                    3,
-                    1,
+                    0,
+                    4,
                     3,
                     1,
                     3,
                     0,
                     3,
                 )
+                bootstrap_evidence_counts = (
+                    await connection.execute(
+                        text(
+                            """
+                            SELECT
+                                (SELECT count(*) FROM sync_read_page
+                                 WHERE person_id = :person_id
+                                   AND endpoint_id = 'sync_bootstrap'
+                                   AND purge_generation = 0),
+                                (SELECT count(*) FROM sync_read_page
+                                 WHERE person_id = :person_id
+                                   AND endpoint_id = 'sync_bootstrap'
+                                   AND purge_generation = 1),
+                                (SELECT count(*) FROM http_replay
+                                 WHERE person_id = :person_id
+                                   AND endpoint_id = 'sync_bootstrap'
+                                   AND purge_generation = 0),
+                                (SELECT count(*) FROM http_replay
+                                 WHERE person_id = :person_id
+                                   AND endpoint_id = 'sync_bootstrap'
+                                   AND purge_generation = 1)
+                            """
+                        ),
+                        {"person_id": identity.person_id},
+                    )
+                ).one()
+                assert tuple(bootstrap_evidence_counts) == (1, 1, 1, 1)
 
                 terminal_rows = (
                     await connection.execute(
@@ -4632,8 +4926,8 @@ async def _exercise_operation_receipts_survive_authorized_reenrollment(
                     2,
                     2,
                     1,
-                    10,
-                    10,
+                    13,
+                    13,
                 )
                 assert state[13] == state[14]
 
@@ -4745,7 +5039,7 @@ async def _exercise_operation_receipts_survive_authorized_reenrollment(
                         0,
                         2,
                         "applied",
-                        0,
+                        1,
                     ),
                     UUID(cast(str, parent["operation_id"])): (
                         replacement_identity.credential_family_id,
@@ -4756,7 +5050,7 @@ async def _exercise_operation_receipts_survive_authorized_reenrollment(
                         0,
                         1,
                         "applied",
-                        0,
+                        1,
                     ),
                 }
 
@@ -4822,8 +5116,8 @@ async def _exercise_operation_receipts_survive_authorized_reenrollment(
                     )
                 ).all()
                 assert [tuple(row) for row in replay_generation_counts] == [
-                    (0, 9),
-                    (1, 1),
+                    (0, 11),
+                    (1, 2),
                 ]
                 replay_family_counts = (
                     await connection.execute(
@@ -4841,8 +5135,42 @@ async def _exercise_operation_receipts_survive_authorized_reenrollment(
                     )
                 ).all()
                 assert {row.credential_family_id: row[1] for row in replay_family_counts} == {
-                    identity.credential_family_id: 1,
-                    replacement_identity.credential_family_id: 9,
+                    identity.credential_family_id: 2,
+                    replacement_identity.credential_family_id: 11,
+                }
+                bootstrap_evidence = (
+                    await connection.execute(
+                        text(
+                            """
+                            SELECT
+                                page.credential_family_id,
+                                page.purge_generation,
+                                count(*) AS page_count,
+                                count(replay.http_replay_id) AS replay_count
+                            FROM sync_read_page AS page
+                            JOIN http_replay AS replay
+                              ON replay.http_replay_id = page.http_replay_id
+                             AND replay.endpoint_id = 'sync_bootstrap'
+                            WHERE page.person_id = :person_id
+                              AND page.endpoint_id = 'sync_bootstrap'
+                            GROUP BY
+                                page.credential_family_id,
+                                page.purge_generation
+                            """
+                        ),
+                        {"person_id": identity.person_id},
+                    )
+                ).all()
+                assert {
+                    (row.credential_family_id, row.purge_generation): (
+                        row.page_count,
+                        row.replay_count,
+                    )
+                    for row in bootstrap_evidence
+                } == {
+                    (identity.credential_family_id, 0): (1, 1),
+                    (replacement_identity.credential_family_id, 0): (1, 1),
+                    (replacement_identity.credential_family_id, 1): (1, 1),
                 }
     finally:
         await engine.dispose()
@@ -5110,7 +5438,7 @@ async def _exercise_sync_push_and_revoke_person_lock_order(
                 assert exact_revoke.content == revoke_response.content
 
                 expected_mutations = 1 if expected_push_status == 200 else 0
-                expected_replays = expected_mutations + 1
+                expected_replays = expected_mutations + 2
                 async with engine.connect() as connection:
                     state = (
                         await connection.execute(
@@ -5263,6 +5591,7 @@ async def _exercise_replay_gc_and_sync_push_retention_lock_order(
                 identity,
                 clock,
                 bootstrap_proof=True,
+                bootstrap_proof_expires_at=family_expires_at,
             )
         application = create_app(
             settings,
@@ -5675,8 +6004,8 @@ async def _exercise_replay_gc_and_sync_push_retention_lock_order(
                         extended_retention,
                     )
                     assert tuple(state[2:8]) == (2, 2, 2, 2, 2, 2)
-                    assert tuple(state[8:12]) == (1, 0, 1, 1)
-                    assert state[12] == state[13] == len(response.content)
+                    assert tuple(state[8:12]) == (2, 0, 1, 2)
+                    assert state[12] == state[13] == len(response.content) + 1
                     assert state[14] == 0
     finally:
         await engine.dispose()
