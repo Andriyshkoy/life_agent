@@ -4,7 +4,7 @@ import copy
 import hashlib
 import json
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 from uuid import UUID
 
 import pytest
@@ -13,16 +13,26 @@ from pydantic import ValidationError
 from life_agent_backend.api_errors import ApiEndpoint, ApiErrorCode, ApiRequestError
 from life_agent_backend.http_ingress import JsonValue
 from life_agent_backend.sync_contract import (
+    FROZEN_SCHEMA_SHA256,
+    FROZEN_SYNC_SCHEMA_SHA256,
     PUSH_RESPONSE_MAX_BYTES,
+    READ_CANONICAL_MAX_NODES,
+    READ_RESPONSE_MAX_BYTES,
+    BootstrapResponse,
     CanonicalJsonError,
     OperationError,
     OperationErrorCode,
     OperationFieldErrorCode,
+    PullResponse,
     PushBatchResponse,
     ResponseBodyTooLargeError,
     ValidatedPushOperation,
     canonical_json_bytes,
+    parse_bootstrap_request,
+    parse_pull_request,
     parse_push_envelope,
+    read_canonical_json_bytes,
+    read_page_sha256,
     sha256_bytes,
     validate_batch_hash,
     validate_push_operation,
@@ -90,6 +100,36 @@ def recompute_revision_hash(operation: dict[str, JsonValue]) -> None:
     revision["content_sha256"] = sha256_bytes(canonical_json_bytes(digest_input)).hex()
 
 
+def recompute_page_hash(document: dict[str, JsonValue]) -> None:
+    digest_input = copy.deepcopy(document)
+    digest_input.pop("page_sha256")
+    document["page_sha256"] = sha256_bytes(read_canonical_json_bytes(digest_input)).hex()
+
+
+def recompute_change_revision_hash(change: dict[str, JsonValue]) -> None:
+    event = cast(dict[str, JsonValue], change["event"])
+    source = cast(dict[str, JsonValue], event["source"])
+    revision = cast(dict[str, JsonValue], event["revision"])
+    parents = cast(list[JsonValue], revision["parents"])
+    parent_revision_id: JsonValue = None
+    if parents:
+        parent_revision_id = cast(dict[str, JsonValue], parents[0])["revision_id"]
+    digest_input: dict[str, JsonValue] = {
+        "event_id": event["event_id"],
+        "revision_id": event["revision_id"],
+        "revision_no": event["revision_no"],
+        "capture_id": source["capture_id"],
+        "operation_id": source["operation_id"],
+        "record_status": event["record_status"],
+        "effective_time": event["time"],
+        "recorded_at": source["recorded_at"],
+        "payload": event["payload"],
+        "correction_reason": revision["correction_reason"],
+        "parent_revision_id": parent_revision_id,
+    }
+    revision["content_sha256"] = sha256_bytes(canonical_json_bytes(digest_input)).hex()
+
+
 @pytest.mark.parametrize(
     "schema_name",
     [
@@ -100,9 +140,9 @@ def recompute_revision_hash(operation: dict[str, JsonValue]) -> None:
     ],
 )
 def test_vendored_runtime_schema_is_byte_exact(schema_name: str) -> None:
-    assert (VENDORED_SCHEMA_DIR / schema_name).read_bytes() == (
-        SCHEMA_DIR / schema_name
-    ).read_bytes()
+    vendored = (VENDORED_SCHEMA_DIR / schema_name).read_bytes()
+    assert vendored == (SCHEMA_DIR / schema_name).read_bytes()
+    assert hashlib.sha256(vendored).hexdigest() == FROZEN_SCHEMA_SHA256[schema_name]
 
 
 @pytest.mark.parametrize(
@@ -558,3 +598,329 @@ def test_canonical_helpers_match_integer_only_jcs_subset() -> None:
         canonical_json_bytes({"value": 1.0})
     with pytest.raises(CanonicalJsonError):
         canonical_json_bytes({"не_ascii": 1})
+
+
+@pytest.mark.parametrize(
+    "example_name",
+    [
+        "sync-bootstrap-request.json",
+        "sync-bootstrap-page-2-request.json",
+        "sync-bootstrap-replacement-request.json",
+    ],
+)
+def test_frozen_bootstrap_requests_are_accepted(example_name: str) -> None:
+    document = load_example(example_name)
+
+    request = parse_bootstrap_request(cast(JsonValue, document))
+
+    assert request.model_dump(mode="json") == document
+
+
+@pytest.mark.parametrize(
+    "example_name",
+    [
+        "sync-pull-request.json",
+        "sync-pull-page-2-request.json",
+    ],
+)
+def test_frozen_pull_requests_are_accepted(example_name: str) -> None:
+    document = load_example(example_name)
+
+    request = parse_pull_request(cast(JsonValue, document))
+
+    assert request.model_dump(mode="json") == document
+
+
+@pytest.mark.parametrize(
+    ("example_name", "expected_hash"),
+    [
+        (
+            "sync-bootstrap-response.json",
+            "97ff9d7e294357cebad46dedaa7a0bbc16b8781d97a8d392be7433564210253d",
+        ),
+        (
+            "sync-bootstrap-page-1-replay-response.json",
+            "97ff9d7e294357cebad46dedaa7a0bbc16b8781d97a8d392be7433564210253d",
+        ),
+        (
+            "sync-bootstrap-page-2-response.json",
+            "51f59efc0bf4c8536448cb4fcb82bccb6649af24769a13f506186007ce93c9f1",
+        ),
+        (
+            "sync-bootstrap-replacement-response.json",
+            "72ea5c3d0796a8a1ec500e625615aa5f4d74aee71372df73a47660d7045ff7c9",
+        ),
+    ],
+)
+def test_frozen_bootstrap_responses_have_published_page_hashes(
+    example_name: str,
+    expected_hash: str,
+) -> None:
+    document = load_example(example_name)
+
+    response = BootstrapResponse.model_validate(document)
+
+    assert response.page_sha256 == expected_hash
+    assert read_page_sha256(response).hex() == expected_hash
+    assert json.loads(response.to_bytes()) == document
+    assert len(response.to_bytes()) <= READ_RESPONSE_MAX_BYTES
+
+
+@pytest.mark.parametrize(
+    ("example_name", "expected_hash"),
+    [
+        (
+            "sync-pull-response.json",
+            "a51578f6331398111d3767789b10f9f09826eab55b1f65f2c471631c98f9c67f",
+        ),
+        (
+            "sync-pull-replay-response.json",
+            "a51578f6331398111d3767789b10f9f09826eab55b1f65f2c471631c98f9c67f",
+        ),
+        (
+            "sync-pull-page-2-response.json",
+            "0cd802c4cde9417bdabf09629367af9194a0c0d63108c3fc99d1d3b830e397e6",
+        ),
+    ],
+)
+def test_frozen_pull_responses_have_published_page_hashes(
+    example_name: str,
+    expected_hash: str,
+) -> None:
+    document = load_example(example_name)
+
+    response = PullResponse.model_validate(document)
+
+    assert response.page_sha256 == expected_hash
+    assert read_page_sha256(response).hex() == expected_hash
+    assert json.loads(response.to_bytes()) == document
+    assert len(response.to_bytes()) <= READ_RESPONSE_MAX_BYTES
+
+
+def test_read_request_errors_are_typed_and_content_free() -> None:
+    bootstrap = load_example("sync-bootstrap-request.json")
+    bootstrap["page_size"] = cast(JsonValue, 1.0)
+    pull = load_example("sync-pull-request.json")
+    pull["attacker_controlled"] = "never reflected"
+
+    for parser, document, endpoint in (
+        (parse_bootstrap_request, bootstrap, ApiEndpoint.SYNC_BOOTSTRAP),
+        (parse_pull_request, pull, ApiEndpoint.SYNC_PULL),
+    ):
+        with pytest.raises(ApiRequestError) as captured:
+            parser(cast(JsonValue, document))
+        assert captured.value.endpoint is endpoint
+        assert captured.value.error_code is ApiErrorCode.REQUEST_SCHEMA_INVALID
+        assert "attacker_controlled" not in str(captured.value)
+
+
+def test_read_response_rejects_hash_drift_and_duplicate_change_identity() -> None:
+    drifted = load_example("sync-pull-response.json")
+    drifted["server_time"] = "2030-01-01T00:00:00.001Z"
+    with pytest.raises(ValidationError):
+        PullResponse.model_validate(drifted)
+
+    duplicate = load_example("sync-bootstrap-response.json")
+    changes = cast(list[JsonValue], duplicate["changes"])
+    changes[1] = copy.deepcopy(changes[0])
+    recompute_page_hash(duplicate)
+    with pytest.raises(ValidationError):
+        BootstrapResponse.model_validate(duplicate)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "bootstrap_continuation_did_not_advance",
+        "pull_nonempty_did_not_advance",
+        "pull_empty_advanced",
+    ],
+)
+def test_read_response_rejects_cursor_progress_drift(mutation: str) -> None:
+    if mutation == "bootstrap_continuation_did_not_advance":
+        document = load_example("sync-bootstrap-response.json")
+        document["from_page_cursor"] = document["next_page_cursor"]
+        recompute_page_hash(document)
+        with pytest.raises(ValidationError):
+            BootstrapResponse.model_validate(document)
+        return
+
+    document = load_example("sync-pull-response.json")
+    if mutation == "pull_nonempty_did_not_advance":
+        document["next_cursor"] = document["from_cursor"]
+    else:
+        document["changes"] = []
+        document["has_more"] = False
+    recompute_page_hash(document)
+    with pytest.raises(ValidationError):
+        PullResponse.model_validate(document)
+
+
+def test_first_bootstrap_page_rejects_unknown_parent_after_rehash() -> None:
+    document = load_example("sync-bootstrap-response.json")
+    changes = cast(list[JsonValue], document["changes"])
+    correction = cast(dict[str, JsonValue], changes[1])
+    event = cast(dict[str, JsonValue], correction["event"])
+    revision = cast(dict[str, JsonValue], event["revision"])
+    parents = cast(list[JsonValue], revision["parents"])
+    cast(dict[str, JsonValue], parents[0])["revision_id"] = "93000000-0000-4000-8000-000000000099"
+    recompute_change_revision_hash(correction)
+    recompute_page_hash(document)
+
+    with pytest.raises(ValidationError):
+        BootstrapResponse.model_validate(document)
+
+
+@pytest.mark.parametrize("mutation", ["root_conflict", "stale_applied_branch"])
+def test_read_page_rejects_topology_and_cas_drift_after_rehash(
+    mutation: str,
+) -> None:
+    response_type: type[BootstrapResponse] | type[PullResponse]
+    if mutation == "root_conflict":
+        document = load_example("sync-pull-response.json")
+        changes = cast(list[JsonValue], document["changes"])
+        root = cast(dict[str, JsonValue], changes[0])
+        root["result_code"] = "conflict"
+        root["current_revision_id"] = "93000000-0000-4000-8000-000000000099"
+        response_type = PullResponse
+    else:
+        document = load_example("sync-bootstrap-response.json")
+        changes = cast(list[JsonValue], document["changes"])
+        root = cast(dict[str, JsonValue], changes[0])
+        correction = cast(dict[str, JsonValue], changes[1])
+        correction["result_code"] = "conflict"
+        correction["current_revision_id"] = root["revision_id"]
+        response_type = BootstrapResponse
+    recompute_page_hash(document)
+
+    with pytest.raises(ValidationError):
+        response_type.model_validate(document)
+
+
+def test_pull_page_rejects_forward_parent_cycle_after_rehash() -> None:
+    document = load_example("sync-pull-response.json")
+    continuation = load_example("sync-pull-page-2-response.json")
+    changes = cast(list[JsonValue], document["changes"])
+    continuation_changes = cast(list[JsonValue], continuation["changes"])
+    first = cast(dict[str, JsonValue], changes[0])
+    second = cast(dict[str, JsonValue], continuation_changes[0])
+    first_event = cast(dict[str, JsonValue], first["event"])
+    second_event = cast(dict[str, JsonValue], second["event"])
+    first_revision = cast(dict[str, JsonValue], first_event["revision"])
+    second_revision = cast(dict[str, JsonValue], second_event["revision"])
+    first_event["revision_no"] = 2
+    first_revision["correction_reason"] = "Forward-parent cycle fixture."
+    first_revision["parents"] = [
+        {
+            "revision_id": second["revision_id"],
+            "relation": "supersedes",
+        }
+    ]
+    second_event["revision_no"] = 3
+    second_revision["parents"] = [
+        {
+            "revision_id": first["revision_id"],
+            "relation": "supersedes",
+        }
+    ]
+    recompute_change_revision_hash(first)
+    recompute_change_revision_hash(second)
+    document["changes"] = [first, second]
+    recompute_page_hash(document)
+
+    with pytest.raises(ValidationError):
+        PullResponse.model_validate(document)
+
+
+def test_pull_page_rejects_cross_event_conflict_head_after_rehash() -> None:
+    document = load_example("sync-pull-response.json")
+    conflict_document = load_example("sync-bootstrap-page-2-response.json")
+    changes = cast(list[JsonValue], document["changes"])
+    conflict_changes = cast(list[JsonValue], conflict_document["changes"])
+    root = cast(dict[str, JsonValue], changes[0])
+    conflict = cast(dict[str, JsonValue], conflict_changes[0])
+    conflict_event = cast(dict[str, JsonValue], conflict["event"])
+    conflict_server = cast(dict[str, JsonValue], conflict_event["server"])
+    conflict["server_sequence"] = 5
+    conflict_server["server_sequence"] = 5
+    conflict["current_revision_id"] = root["revision_id"]
+    document["changes"] = [root, conflict]
+    recompute_page_hash(document)
+
+    with pytest.raises(ValidationError):
+        PullResponse.model_validate(document)
+
+
+def test_page_hash_omits_only_the_root_hash_field() -> None:
+    first: dict[str, JsonValue] = {
+        "page_sha256": "0" * 64,
+        "nested": {"page_sha256": "a"},
+    }
+    second = copy.deepcopy(first)
+    cast(dict[str, JsonValue], second["nested"])["page_sha256"] = "b"
+
+    assert read_page_sha256(first) != read_page_sha256(second)
+
+
+@pytest.mark.parametrize(
+    ("example_name", "response_type"),
+    [
+        ("sync-bootstrap-response.json", BootstrapResponse),
+        ("sync-pull-response.json", PullResponse),
+    ],
+)
+def test_validated_read_bytes_are_immutable_after_nested_mutation(
+    example_name: str,
+    response_type: type[BootstrapResponse] | type[PullResponse],
+) -> None:
+    document = load_example(example_name)
+    response = response_type.model_validate(document)
+    validated_bytes = response.to_bytes()
+    first_change = response.changes[0]
+    first_change["server_sequence"] = 99
+    event = cast(dict[str, JsonValue], first_change["event"])
+    payload = cast(dict[str, JsonValue], event["payload"])
+    payload["text"] = "mutated after validation"
+
+    assert response.to_bytes() == validated_bytes
+    assert json.loads(response.to_bytes()) == document
+
+
+@pytest.mark.parametrize(
+    ("example_name", "response_type"),
+    [
+        ("sync-bootstrap-response.json", BootstrapResponse),
+        ("sync-pull-response.json", PullResponse),
+    ],
+)
+def test_read_responses_reject_raw_float_before_nested_integer_coercion(
+    example_name: str,
+    response_type: type[BootstrapResponse] | type[PullResponse],
+) -> None:
+    document = cast(dict[str, Any], load_example(example_name))
+    changes = cast(list[dict[str, Any]], document["changes"])
+    first_change = changes[0]
+    server_sequence = cast(int, first_change["server_sequence"])
+    first_change["server_sequence"] = float(server_sequence)
+    event = cast(dict[str, Any], first_change["event"])
+    server = cast(dict[str, Any], event["server"])
+    server["server_sequence"] = float(server_sequence)
+
+    # The original digest is exactly the digest Pydantic used to accept after
+    # normalizing both raw floats back to integers.
+    with pytest.raises(ValidationError):
+        response_type.model_validate(document)
+
+
+def test_read_canonical_limits_are_independent_and_byte_derived() -> None:
+    assert READ_CANONICAL_MAX_NODES == (READ_RESPONSE_MAX_BYTES + 1) // 2 + 1
+    assert read_canonical_json_bytes({"value": 1}) == b'{"value":1}'
+
+    with pytest.raises(ResponseBodyTooLargeError):
+        read_canonical_json_bytes({"values": ["x" * 4_195] * 1_000})
+
+
+def test_frozen_sync_schema_digest_matches_public_source() -> None:
+    assert hashlib.sha256((SCHEMA_DIR / "sync-wire.schema.json").read_bytes()).hexdigest() == (
+        FROZEN_SYNC_SCHEMA_SHA256
+    )

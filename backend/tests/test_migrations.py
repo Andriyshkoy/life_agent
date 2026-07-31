@@ -30,6 +30,8 @@ EXPECTED_MODEL_TABLES = {
     "life_event",
     "person",
     "sync_cursor",
+    "sync_read_page",
+    "sync_read_state",
     "sync_operation",
     "sync_operation_registry",
     "sync_snapshot",
@@ -43,7 +45,7 @@ def test_migration_history_has_one_linear_head() -> None:
 
     assert scripts.get_heads() == [EXPECTED_DATABASE_REVISION]
     assert scripts.get_base() == "20260730_0001"
-    assert scripts.get_revision(EXPECTED_DATABASE_REVISION).down_revision == "20260730_0002"
+    assert scripts.get_revision(EXPECTED_DATABASE_REVISION).down_revision == "20260730_0003"
 
 
 def test_alembic_environment_loads_all_model_metadata_in_fresh_process() -> None:

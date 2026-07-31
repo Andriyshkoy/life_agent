@@ -52,4 +52,5 @@ export LIFE_AGENT_TEST_DATABASE_URL="postgresql+asyncpg://life_agent_test:life-a
 cd "$backend_root"
 uv run pytest -q \
   tests/test_postgres_integration.py \
-  tests/test_sync_push_postgres.py
+  tests/test_sync_push_postgres.py \
+  tests/test_sync_read_invariants_postgres.py

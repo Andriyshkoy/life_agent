@@ -1,9 +1,8 @@
 from __future__ import annotations
 
 import copy
-import hashlib
 from dataclasses import dataclass, field
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime
 from typing import Any, Literal, cast
 from uuid import UUID
 
@@ -11,7 +10,6 @@ import sqlalchemy as sa
 from fastapi import Request
 from sqlalchemy.engine import RowMapping
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
-from sqlalchemy.sql.elements import ColumnElement
 
 from life_agent_backend import models
 from life_agent_backend.api_errors import (
@@ -47,13 +45,50 @@ from life_agent_backend.sync_contract import (
     wire_json_bytes,
 )
 from life_agent_backend.sync_crypto import SyncKeyMaterial
+from life_agent_backend.sync_primitives import (
+    AccessCredential as _AccessCredential,
+)
+from life_agent_backend.sync_primitives import (
+    ReplayQuota as _ReplayQuota,
+)
+from life_agent_backend.sync_primitives import (
+    ReplayRecord as _ReplayRecord,
+)
+from life_agent_backend.sync_primitives import (
+    StreamRecord as _StreamRecord,
+)
+from life_agent_backend.sync_primitives import (
+    access_candidate_person_query as _access_candidate_person_query,
+)
+from life_agent_backend.sync_primitives import (
+    advisory_lock_key as _shared_advisory_lock_key,
+)
+from life_agent_backend.sync_primitives import (
+    lock_replay_namespace as _shared_lock_replay_namespace,
+)
+from life_agent_backend.sync_primitives import (
+    locked_access_namespace_query as _locked_access_namespace_query,
+)
+from life_agent_backend.sync_primitives import (
+    locked_person_purge_query as _locked_person_purge_query,
+)
+from life_agent_backend.sync_primitives import (
+    locked_read_authority as _locked_read_authority,
+)
+from life_agent_backend.sync_primitives import (
+    locked_replay_quota_query as _locked_replay_quota_query,
+)
+from life_agent_backend.sync_primitives import (
+    locked_stream_query as _locked_stream_query,
+)
+from life_agent_backend.sync_primitives import (
+    replay_lookup_query as _shared_replay_lookup_query,
+)
+from life_agent_backend.sync_primitives import (
+    replay_retention_until as _shared_replay_retention_until,
+)
 
 _PROTOCOL_VERSION = "1.0.0"
-_PROTOCOL_STREAM = "life_events"
-_MINIMUM_REPLAY_RETENTION = timedelta(days=30)
-_REPLAY_RETENTION_EXTENSION = timedelta(days=120)
-_MAX_REPLAY_RECORDS_PER_DEVICE = 100_000
-_MAX_REPLAY_PLAINTEXT_BYTES_PER_DEVICE = 536_870_912
 _RANDOM_NONCE_ATTEMPTS = 8
 
 
@@ -61,75 +96,6 @@ _RANDOM_NONCE_ATTEMPTS = 8
 class SyncPushHttpResult:
     status_code: int
     body: bytes = field(repr=False)
-
-
-@dataclass(frozen=True, slots=True)
-class _AccessCredential:
-    credential_family_id: UUID
-    person_id: UUID
-    purge_generation: int
-    device_id: UUID
-    installation_id: UUID
-    local_owner_id: UUID
-    family_status: str
-    active_generation: int | None
-    family_expires_at: datetime
-    family_tombstone_until: datetime
-    generation: int
-    is_current: bool
-    access_expires_at: datetime
-    refresh_spent_at: datetime | None
-    device_status: str
-
-    def is_active_at(self, now: datetime) -> bool:
-        return (
-            self.family_status == "active"
-            and self.device_status == "active"
-            and self.is_current
-            and self.active_generation == self.generation
-            and self.refresh_spent_at is None
-            and now < self.access_expires_at
-            and now < self.family_expires_at
-        )
-
-
-@dataclass(frozen=True, slots=True)
-class _ReplayRecord:
-    http_replay_id: UUID
-    fingerprint_key_generation: int
-    request_fingerprint_hmac: bytes
-    response_body_ciphertext: bytes
-    response_body_nonce: bytes
-    response_body_sha256: bytes
-    response_body_plaintext_bytes: int
-    response_encryption_key_generation: int
-    http_status: int
-    outcome_class: str
-    stored_outcome: str
-    error_code: str | None
-    retryable: bool | None
-
-
-@dataclass(frozen=True, slots=True)
-class _ReplayQuota:
-    record_count: int
-    response_body_plaintext_bytes: int
-
-    def allows(self, additional_plaintext_bytes: int) -> bool:
-        return (
-            1 <= additional_plaintext_bytes <= PUSH_RESPONSE_MAX_BYTES
-            and self.record_count + 1 <= _MAX_REPLAY_RECORDS_PER_DEVICE
-            and self.response_body_plaintext_bytes + additional_plaintext_bytes
-            <= _MAX_REPLAY_PLAINTEXT_BYTES_PER_DEVICE
-        )
-
-
-@dataclass(slots=True)
-class _StreamRecord:
-    sync_stream_id: UUID
-    person_id: UUID
-    last_server_sequence: int
-    purge_generation: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -512,15 +478,10 @@ class SyncService:
         row = (
             (
                 await session.execute(
-                    sa.select(
-                        models.device_replay_quota.c.record_count,
-                        models.device_replay_quota.c.response_body_plaintext_bytes,
+                    _locked_replay_quota_query(
+                        person_id=person_id,
+                        device_id=device_id,
                     )
-                    .where(
-                        models.device_replay_quota.c.person_id == person_id,
-                        models.device_replay_quota.c.device_id == device_id,
-                    )
-                    .with_for_update()
                 )
             )
             .mappings()
@@ -551,21 +512,7 @@ class SyncService:
         person_id: UUID,
     ) -> _StreamRecord:
         row = (
-            (
-                await session.execute(
-                    sa.select(
-                        models.sync_stream.c.sync_stream_id,
-                        models.sync_stream.c.person_id,
-                        models.sync_stream.c.last_server_sequence,
-                        models.sync_stream.c.purge_generation,
-                    )
-                    .where(
-                        models.sync_stream.c.person_id == person_id,
-                        models.sync_stream.c.protocol_stream == _PROTOCOL_STREAM,
-                    )
-                    .with_for_update()
-                )
-            )
+            (await session.execute(_locked_stream_query(person_id=person_id)))
             .mappings()
             .one_or_none()
         )
@@ -586,16 +533,17 @@ class SyncService:
         stream: _StreamRecord,
         now: datetime,
     ) -> bool:
-        proof = (
-            await session.execute(
-                _bootstrap_proof_query(
-                    credential=credential,
-                    stream=stream,
-                    now=now,
-                )
-            )
-        ).scalar_one_or_none()
-        return isinstance(proof, UUID)
+        authority = await _locked_read_authority(
+            session,
+            person_id=credential.person_id,
+            device_id=credential.device_id,
+            credential_family_id=credential.credential_family_id,
+            sync_stream_id=stream.sync_stream_id,
+        )
+        return authority is not None and authority.is_live_at(
+            now,
+            purge_generation=stream.purge_generation,
+        )
 
     async def _freeze_api_error(
         self,
@@ -1663,160 +1611,17 @@ def _registry_base_values(
     }
 
 
-def _access_candidate_person_query(
-    candidates: tuple[tuple[int, bytes], ...],
-) -> sa.Select[tuple[UUID]]:
-    return (
-        sa.select(models.credential_family.c.person_id)
-        .select_from(
-            models.credential_generation.join(
-                models.credential_family,
-                models.credential_family.c.credential_family_id
-                == models.credential_generation.c.credential_family_id,
-            )
-        )
-        .where(
-            _keyed_hmac_matches(
-                models.credential_generation.c.access_key_generation,
-                models.credential_generation.c.access_token_hmac,
-                candidates,
-            )
-        )
-    )
-
-
-def _locked_person_purge_query(
-    person_id: UUID,
-) -> sa.Select[Any]:
-    return (
-        sa.select(
-            models.person.c.person_id,
-            models.person.c.purge_generation,
-        )
-        .where(models.person.c.person_id == person_id)
-        .with_for_update()
-    )
-
-
-def _locked_access_namespace_query(
-    candidates: tuple[tuple[int, bytes], ...],
-    *,
-    person_id: UUID,
-) -> sa.Select[Any]:
-    return (
-        sa.select(
-            models.credential_generation.c.credential_family_id,
-            models.credential_generation.c.generation,
-            models.credential_generation.c.is_current,
-            models.credential_generation.c.access_expires_at,
-            models.credential_generation.c.refresh_spent_at,
-            models.credential_family.c.person_id,
-            models.credential_family.c.device_id,
-            models.credential_family.c.status.label("family_status"),
-            models.credential_family.c.active_generation,
-            models.credential_family.c.family_expires_at,
-            models.credential_family.c.tombstone_until,
-            models.device.c.installation_id,
-            models.device.c.local_owner_id,
-            models.device.c.status.label("device_status"),
-        )
-        .join(
-            models.credential_family,
-            models.credential_family.c.credential_family_id
-            == models.credential_generation.c.credential_family_id,
-        )
-        .join(
-            models.device,
-            models.device.c.device_id == models.credential_family.c.device_id,
-        )
-        .where(
-            models.credential_family.c.person_id == person_id,
-            _keyed_hmac_matches(
-                models.credential_generation.c.access_key_generation,
-                models.credential_generation.c.access_token_hmac,
-                candidates,
-            ),
-        )
-        .with_for_update(
-            of=(
-                models.credential_generation,
-                models.credential_family,
-                models.device,
-            )
-        )
-    )
-
-
-def _bootstrap_proof_query(
-    *,
-    credential: _AccessCredential,
-    stream: _StreamRecord,
-    now: datetime,
-) -> sa.Select[tuple[UUID]]:
-    return (
-        sa.select(models.sync_cursor.c.sync_cursor_id)
-        .join(
-            models.sync_snapshot,
-            models.sync_snapshot.c.snapshot_id == models.sync_cursor.c.snapshot_id,
-        )
-        .where(
-            models.sync_snapshot.c.person_id == credential.person_id,
-            models.sync_snapshot.c.device_id == credential.device_id,
-            models.sync_snapshot.c.credential_family_id == credential.credential_family_id,
-            models.sync_snapshot.c.sync_stream_id == stream.sync_stream_id,
-            models.sync_snapshot.c.protocol_stream == _PROTOCOL_STREAM,
-            models.sync_snapshot.c.purge_generation == stream.purge_generation,
-            models.sync_snapshot.c.status == "complete",
-            models.sync_snapshot.c.revoked_at.is_(None),
-            models.sync_snapshot.c.expires_at > now,
-            models.sync_cursor.c.person_id == credential.person_id,
-            models.sync_cursor.c.device_id == credential.device_id,
-            models.sync_cursor.c.credential_family_id == credential.credential_family_id,
-            models.sync_cursor.c.sync_stream_id == stream.sync_stream_id,
-            models.sync_cursor.c.protocol_stream == _PROTOCOL_STREAM,
-            models.sync_cursor.c.purge_generation == stream.purge_generation,
-            models.sync_cursor.c.cursor_kind == "incremental",
-            models.sync_cursor.c.revoked_at.is_(None),
-            models.sync_cursor.c.expires_at > now,
-        )
-        .limit(1)
-        .with_for_update(
-            read=True,
-            of=(models.sync_snapshot, models.sync_cursor),
-        )
-    )
-
-
 def _replay_lookup_query(
     *,
     credential_family_id: UUID,
     device_id: UUID,
     batch_id: UUID,
 ) -> sa.Select[Any]:
-    return (
-        sa.select(
-            models.http_replay.c.http_replay_id,
-            models.http_replay.c.fingerprint_key_generation,
-            models.http_replay.c.request_fingerprint_hmac,
-            models.http_replay.c.response_body_ciphertext,
-            models.http_replay.c.response_body_nonce,
-            models.http_replay.c.response_body_sha256,
-            models.http_replay.c.response_body_plaintext_bytes,
-            models.http_replay.c.response_encryption_key_generation,
-            models.http_replay.c.http_status,
-            models.http_replay.c.outcome_class,
-            models.http_replay.c.stored_outcome,
-            models.http_replay.c.error_code,
-            models.http_replay.c.retryable,
-        )
-        .where(
-            models.http_replay.c.endpoint_id == ApiEndpoint.SYNC_PUSH.value,
-            models.http_replay.c.protocol_version == _PROTOCOL_VERSION,
-            models.http_replay.c.credential_family_id == credential_family_id,
-            models.http_replay.c.device_id == device_id,
-            models.http_replay.c.request_identity == batch_id,
-        )
-        .with_for_update()
+    return _shared_replay_lookup_query(
+        endpoint=ApiEndpoint.SYNC_PUSH,
+        credential_family_id=credential_family_id,
+        device_id=device_id,
+        request_id=batch_id,
     )
 
 
@@ -2074,10 +1879,7 @@ def _replay_retention_until(
     *,
     now: datetime,
 ) -> datetime:
-    minimum_retention_until = now + _MINIMUM_REPLAY_RETENTION
-    if credential.family_tombstone_until >= minimum_retention_until:
-        return credential.family_tombstone_until
-    return now + _REPLAY_RETENTION_EXTENSION
+    return _shared_replay_retention_until(credential, now=now)
 
 
 async def _lock_replay_namespace(
@@ -2087,13 +1889,13 @@ async def _lock_replay_namespace(
     device_id: UUID,
     batch_id: UUID,
 ) -> None:
-    key = _advisory_lock_key(
-        b"sync-push-replay",
-        credential_family_id.bytes,
-        device_id.bytes,
-        batch_id.bytes,
+    await _shared_lock_replay_namespace(
+        session,
+        endpoint=ApiEndpoint.SYNC_PUSH,
+        credential_family_id=credential_family_id,
+        device_id=device_id,
+        request_id=batch_id,
     )
-    await session.execute(sa.select(sa.func.pg_advisory_xact_lock(key)))
 
 
 async def _lock_operation_claims(
@@ -2151,30 +1953,7 @@ def _operation_claim_lock_keys(
 
 
 def _advisory_lock_key(domain: bytes, *components: bytes) -> int:
-    framed = bytearray(b"life-agent/postgres-advisory-lock/v1")
-    for component in (domain, *components):
-        framed.extend(len(component).to_bytes(8, "big", signed=False))
-        framed.extend(component)
-    digest = hashlib.sha256(framed).digest()
-    return int.from_bytes(digest[:8], byteorder="big", signed=True)
-
-
-def _keyed_hmac_matches(
-    key_generation_column: ColumnElement[int],
-    hmac_column: ColumnElement[bytes],
-    candidates: tuple[tuple[int, bytes], ...],
-) -> ColumnElement[bool]:
-    if not candidates:
-        raise RuntimeError("cryptographic keyring is empty")
-    return sa.or_(
-        *(
-            sa.and_(
-                key_generation_column == generation,
-                hmac_column == digest,
-            )
-            for generation, digest in candidates
-        )
-    )
+    return _shared_advisory_lock_key(domain, *components)
 
 
 def _aware_utc(value: datetime) -> datetime:

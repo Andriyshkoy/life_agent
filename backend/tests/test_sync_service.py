@@ -22,19 +22,35 @@ from life_agent_backend.sync_contract import (
     validate_push_operation,
     wire_json_bytes,
 )
+from life_agent_backend.sync_primitives import (
+    AccessCredential as _AccessCredential,
+)
+from life_agent_backend.sync_primitives import (
+    ReplayQuota as _ReplayQuota,
+)
+from life_agent_backend.sync_primitives import (
+    ReplayRecord as _ReplayRecord,
+)
+from life_agent_backend.sync_primitives import (
+    StreamRecord as _StreamRecord,
+)
+from life_agent_backend.sync_primitives import (
+    access_candidate_person_query as _access_candidate_person_query,
+)
+from life_agent_backend.sync_primitives import (
+    locked_access_namespace_query as _locked_access_namespace_query,
+)
+from life_agent_backend.sync_primitives import (
+    locked_person_purge_query as _locked_person_purge_query,
+)
 from life_agent_backend.sync_service import (
     SyncService,
-    _access_candidate_person_query,
-    _AccessCredential,
     _advisory_lock_key,
-    _bootstrap_proof_query,
     _committed_receipt_purge_is_current,
     _enriched_documents,
     _event_registry_collision,
     _EventRecord,
     _lineage_shape,
-    _locked_access_namespace_query,
-    _locked_person_purge_query,
     _nullable_aware_instant,
     _nullable_date,
     _nullable_integer,
@@ -51,9 +67,6 @@ from life_agent_backend.sync_service import (
     _replay_lookup_query,
     _replay_metadata_is_valid,
     _replay_retention_until,
-    _ReplayQuota,
-    _ReplayRecord,
-    _StreamRecord,
     _terminal_registry_error,
 )
 
@@ -148,6 +161,18 @@ def test_operation_claim_locks_are_global_sorted_and_order_independent() -> None
     ) != _advisory_lock_key(
         b"sync-revision-id",
         operations[0].event_id.bytes,
+    )
+
+
+def test_push_replay_advisory_lock_key_matches_legacy_golden_vector() -> None:
+    assert (
+        _advisory_lock_key(
+            b"sync-push-replay",
+            FAMILY_ID.bytes,
+            DEVICE_ID.bytes,
+            UUID("96000000-0000-4000-8000-000000000001").bytes,
+        )
+        == 6_616_560_881_465_600_393
     )
 
 
@@ -373,28 +398,12 @@ def test_replay_quota_enforces_both_count_and_plaintext_caps() -> None:
     assert not _ReplayQuota(0, 0).allows(524_289)
 
 
-def test_bootstrap_proof_requires_live_snapshot_and_incremental_cursor() -> None:
-    statement = _bootstrap_proof_query(
-        credential=_credential(),
-        stream=_stream(),
-        now=NOW,
-    )
-    sql = str(
-        statement.compile(
-            dialect=postgresql.dialect(),  # type: ignore[no-untyped-call]
-            compile_kwargs={"literal_binds": True},
-        )
-    )
+def test_bootstrap_proof_uses_sequential_authority_lock_and_live_check() -> None:
+    source = inspect.getsource(SyncService._has_bootstrap_proof)
 
-    assert "sync_snapshot.status = 'complete'" in sql
-    assert "sync_snapshot.revoked_at IS NULL" in sql
-    assert "sync_snapshot.expires_at >" in sql
-    assert "sync_cursor.cursor_kind = 'incremental'" in sql
-    assert "sync_cursor.revoked_at IS NULL" in sql
-    assert "sync_cursor.expires_at >" in sql
-    assert "sync_snapshot.purge_generation = 7" in sql
-    assert "sync_cursor.purge_generation = 7" in sql
-    assert "FOR SHARE OF sync_snapshot, sync_cursor" in sql
+    assert "await _locked_read_authority" in source
+    assert "authority.is_live_at" in source
+    assert "session.execute" not in source
 
 
 def test_replay_lookup_includes_expired_but_not_gced_physical_rows() -> None:

@@ -42,6 +42,8 @@ EXPECTED_TABLES = {
     "http_replay",
     "sync_snapshot",
     "sync_cursor",
+    "sync_read_state",
+    "sync_read_page",
 }
 
 
@@ -60,7 +62,7 @@ def offline_upgrade_sql(monkeypatch: pytest.MonkeyPatch) -> str:
 
 
 def table_statement(sql: str, table_name: str) -> str:
-    start = sql.index(f"CREATE TABLE {table_name} (")
+    start = sql.rindex(f"CREATE TABLE {table_name} (")
     end = sql.index(";\n\n", start)
     return sql[start:end]
 
@@ -102,7 +104,7 @@ def check_expression(sql: str, constraint_name: str) -> str:
 
 def index_statement(sql: str, index_name: str) -> str:
     marker = f"INDEX {index_name}"
-    start = sql.index(marker)
+    start = sql.rindex(marker)
     end = sql.index(";\n\n", start)
     return sql[start:end]
 

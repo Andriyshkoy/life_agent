@@ -9,6 +9,8 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
 from importlib import resources
+from itertools import pairwise
+from types import MappingProxyType
 from typing import Annotated, Any, Final, Literal, Self, cast
 from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -20,9 +22,11 @@ from pydantic import (
     BeforeValidator,
     ConfigDict,
     Field,
+    PrivateAttr,
     StrictBool,
     StrictInt,
     StrictStr,
+    ValidationError,
     field_validator,
     model_validator,
 )
@@ -45,8 +49,33 @@ from life_agent_backend.http_ingress import (
 )
 
 PUSH_RESPONSE_MAX_BYTES: Final = 524_288
+READ_RESPONSE_MAX_BYTES: Final = 4_194_304
+READ_CANONICAL_MAX_NODES: Final = (READ_RESPONSE_MAX_BYTES + 1) // 2 + 1
+FROZEN_SCHEMA_SHA256: Final = MappingProxyType(
+    {
+        "capture-envelope.schema.json": (
+            "8c81100617dfc45a5e917896114cc214e1e31518d9b086975e03bbedc39b16ad"
+        ),
+        "life-event.schema.json": (
+            "8ac879e853f328f6889f6b422eb37d867b18dea8e4355001bab8d87c684fd6ee"
+        ),
+        "mvp-event-payloads.schema.json": (
+            "17df63696c8d42046f9d078e52e541fb012f9cc83a640540f9420faa1f6519f0"
+        ),
+        "sync-wire.schema.json": (
+            "b7c079c8e4eb25f71339d6514d263e78ae50c489205955e01b4a8c85543a174f"
+        ),
+    }
+)
+FROZEN_SYNC_SCHEMA_SHA256: Final = FROZEN_SCHEMA_SHA256["sync-wire.schema.json"]
 __all__ = (
+    "FROZEN_SCHEMA_SHA256",
+    "FROZEN_SYNC_SCHEMA_SHA256",
     "PUSH_RESPONSE_MAX_BYTES",
+    "READ_CANONICAL_MAX_NODES",
+    "READ_RESPONSE_MAX_BYTES",
+    "BootstrapRequest",
+    "BootstrapResponse",
     "CanonicalJsonError",
     "OperationAck",
     "OperationError",
@@ -54,12 +83,19 @@ __all__ = (
     "OperationFieldError",
     "OperationFieldErrorCode",
     "OperationItemError",
+    "PullRequest",
+    "PullResponse",
     "PushBatchEnvelope",
     "PushBatchResponse",
     "ResponseBodyTooLargeError",
     "ValidatedPushOperation",
     "canonical_json_bytes",
+    "parse_bootstrap_request",
+    "parse_pull_request",
     "parse_push_envelope",
+    "read_canonical_json_bytes",
+    "read_page_sha256",
+    "read_wire_json_bytes",
     "sha256_bytes",
     "validate_batch_hash",
     "validate_push_operation",
@@ -182,7 +218,14 @@ SafePositiveInteger = Annotated[StrictInt, Field(ge=1, le=SAFE_INTEGER_MAX)]
 
 def _load_schema(name: str) -> dict[str, Any]:
     package_root = resources.files("life_agent_backend.contracts")
-    document = json.loads(package_root.joinpath(name).read_text(encoding="utf-8"))
+    schema_bytes = package_root.joinpath(name).read_bytes()
+    expected_digest = FROZEN_SCHEMA_SHA256.get(name)
+    if expected_digest is None or not hmac.compare_digest(
+        hashlib.sha256(schema_bytes).hexdigest(),
+        expected_digest,
+    ):
+        raise RuntimeError("bundled sync schema digest does not match the frozen contract")
+    document = json.loads(schema_bytes)
     if not isinstance(document, dict):
         raise RuntimeError("bundled JSON Schema is not an object")
     return cast(dict[str, Any], document)
@@ -208,6 +251,26 @@ _PUSH_ENVELOPE_VALIDATOR: Final = Draft202012Validator(
 )
 _PUSH_OPERATION_VALIDATOR: Final = Draft202012Validator(
     {"$ref": f"{_SYNC_SCHEMA_ID}#/$defs/pushOperation"},
+    registry=_SCHEMA_REGISTRY,
+    format_checker=_FORMAT_CHECKER,
+)
+_BOOTSTRAP_REQUEST_VALIDATOR: Final = Draft202012Validator(
+    {"$ref": f"{_SYNC_SCHEMA_ID}#/$defs/bootstrapRequest"},
+    registry=_SCHEMA_REGISTRY,
+    format_checker=_FORMAT_CHECKER,
+)
+_BOOTSTRAP_RESPONSE_VALIDATOR: Final = Draft202012Validator(
+    {"$ref": f"{_SYNC_SCHEMA_ID}#/$defs/bootstrapResponse"},
+    registry=_SCHEMA_REGISTRY,
+    format_checker=_FORMAT_CHECKER,
+)
+_PULL_REQUEST_VALIDATOR: Final = Draft202012Validator(
+    {"$ref": f"{_SYNC_SCHEMA_ID}#/$defs/pullRequest"},
+    registry=_SCHEMA_REGISTRY,
+    format_checker=_FORMAT_CHECKER,
+)
+_PULL_RESPONSE_VALIDATOR: Final = Draft202012Validator(
+    {"$ref": f"{_SYNC_SCHEMA_ID}#/$defs/pullResponse"},
     registry=_SCHEMA_REGISTRY,
     format_checker=_FORMAT_CHECKER,
 )
@@ -292,6 +355,93 @@ def wire_json_bytes(
     if len(body) > max_bytes:
         raise ResponseBodyTooLargeError
     return body
+
+
+def read_canonical_json_bytes(value: Any) -> bytes:
+    """Return bounded JCS bytes for accepted integer-only M2 read material.
+
+    The node ceiling is derived from the 4 MiB byte cap; the shared M2 depth,
+    string, object, and 1,000-item array bounds remain valid because every
+    delivered change was already accepted through that closed wire subset.
+    """
+
+    stack: list[tuple[Any, int]] = [(value, 0)]
+    nodes = 0
+    while stack:
+        current, depth = stack.pop()
+        nodes += 1
+        if nodes > READ_CANONICAL_MAX_NODES or depth > RAW_JSON_MAX_DEPTH:
+            raise CanonicalJsonError
+        if current is None or isinstance(current, bool):
+            continue
+        if isinstance(current, int):
+            if abs(current) > SAFE_INTEGER_MAX:
+                raise CanonicalJsonError
+            continue
+        if isinstance(current, float):
+            raise CanonicalJsonError
+        if isinstance(current, str):
+            if len(current) > RAW_JSON_MAX_STRING_LENGTH or any(
+                0xD800 <= ord(character) <= 0xDFFF for character in current
+            ):
+                raise CanonicalJsonError
+            continue
+        if isinstance(current, list | tuple):
+            if len(current) > RAW_JSON_MAX_ARRAY_ITEMS:
+                raise CanonicalJsonError
+            stack.extend((item, depth + 1) for item in current)
+            continue
+        if isinstance(current, dict):
+            if len(current) > RAW_JSON_MAX_OBJECT_MEMBERS:
+                raise CanonicalJsonError
+            for key, item in current.items():
+                if not isinstance(key, str) or not key.isascii():
+                    raise CanonicalJsonError
+                stack.append((item, depth + 1))
+            continue
+        raise CanonicalJsonError
+    try:
+        body = json.dumps(
+            value,
+            allow_nan=False,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+    except (RecursionError, TypeError, UnicodeError, ValueError) as error:
+        raise CanonicalJsonError from error
+    if len(body) > READ_RESPONSE_MAX_BYTES:
+        raise ResponseBodyTooLargeError
+    return body
+
+
+def _read_document(
+    value: BaseModel | JsonValue | dict[str, Any],
+) -> dict[str, Any]:
+    document: Any = value.model_dump(mode="json") if isinstance(value, BaseModel) else value
+    if not isinstance(document, dict):
+        raise CanonicalJsonError
+    return copy.deepcopy(cast(dict[str, Any], document))
+
+
+def read_page_sha256(
+    value: BaseModel | JsonValue | dict[str, Any],
+) -> bytes:
+    """Hash a complete read response while omitting only ``page_sha256``."""
+
+    document = _read_document(value)
+    if "page_sha256" not in document:
+        raise ValueError("read response has no page hash field")
+    document.pop("page_sha256")
+    return sha256_bytes(read_canonical_json_bytes(document))
+
+
+def read_wire_json_bytes(
+    value: BaseModel | JsonValue | dict[str, Any],
+) -> bytes:
+    """Serialize one exact read response under its independent 4 MiB bound."""
+
+    return read_canonical_json_bytes(_read_document(value))
 
 
 @dataclass(frozen=True, slots=True, repr=False)
@@ -465,6 +615,328 @@ class PushBatchResponse(_ClosedWireModel):
 
     def to_bytes(self) -> bytes:
         return wire_json_bytes(self)
+
+
+class BootstrapRequest(_ClosedWireModel):
+    protocol_version: Literal["1.0.0"] = "1.0.0"
+    message_type: Literal["bootstrap_request"] = "bootstrap_request"
+    request_id: CanonicalUuid
+    bootstrap_id: CanonicalUuid
+    device_id: CanonicalUuid
+    page_size: Annotated[StrictInt, Field(ge=1, le=500)]
+    page_cursor: Cursor | None
+
+    @model_validator(mode="after")
+    def validate_frozen_schema(self) -> Self:
+        document = self.model_dump(mode="json")
+        if not _BOOTSTRAP_REQUEST_VALIDATOR.is_valid(document):
+            raise ValueError("bootstrap request is outside the frozen schema")
+        return self
+
+
+class PullRequest(_ClosedWireModel):
+    protocol_version: Literal["1.0.0"] = "1.0.0"
+    message_type: Literal["pull_request"] = "pull_request"
+    request_id: CanonicalUuid
+    device_id: CanonicalUuid
+    cursor: Cursor
+    page_size: Annotated[StrictInt, Field(ge=1, le=500)]
+
+    @model_validator(mode="after")
+    def validate_frozen_schema(self) -> Self:
+        document = self.model_dump(mode="json")
+        if not _PULL_REQUEST_VALIDATOR.is_valid(document):
+            raise ValueError("pull request is outside the frozen schema")
+        return self
+
+
+def _validate_raw_read_changes(value: Any) -> Any:
+    """Reject noncanonical nested values before Pydantic can normalize them."""
+
+    read_canonical_json_bytes(value)
+    return value
+
+
+class BootstrapResponse(_ClosedWireModel):
+    _validated_wire_bytes: bytes = PrivateAttr()
+
+    protocol_version: Literal["1.0.0"] = "1.0.0"
+    message_type: Literal["bootstrap_response"] = "bootstrap_response"
+    request_id: CanonicalUuid
+    bootstrap_id: CanonicalUuid
+    device_id: CanonicalUuid
+    from_page_cursor: Cursor | None
+    snapshot_id: CanonicalUuid
+    page_id: CanonicalUuid
+    page_sha256: CanonicalSha256
+    changes: tuple[dict[str, JsonValue], ...] = Field(max_length=500)
+    next_page_cursor: Cursor | None
+    incremental_cursor: Cursor
+    complete: StrictBool
+    server_time: CanonicalServerInstant
+
+    @field_validator("changes", mode="before")
+    @classmethod
+    def validate_raw_changes(cls, value: Any) -> Any:
+        return _validate_raw_read_changes(value)
+
+    @model_validator(mode="after")
+    def validate_response_semantics(self) -> Self:
+        document = self.model_dump(mode="json")
+        if not _BOOTSTRAP_RESPONSE_VALIDATOR.is_valid(document):
+            raise ValueError("bootstrap response is outside the frozen schema")
+        if not _read_changes_are_valid(
+            self.changes,
+            server_time=self.server_time,
+            allow_external_prefix=self.from_page_cursor is not None,
+        ):
+            raise ValueError("bootstrap response changes are semantically invalid")
+        if (
+            not self.complete
+            and self.from_page_cursor is not None
+            and self.next_page_cursor == self.from_page_cursor
+        ):
+            raise ValueError("bootstrap continuation cursor did not advance")
+        if not hmac.compare_digest(read_page_sha256(self), bytes.fromhex(self.page_sha256)):
+            raise ValueError("bootstrap response page hash does not match")
+        object.__setattr__(self, "_validated_wire_bytes", read_wire_json_bytes(self))
+        return self
+
+    def to_bytes(self) -> bytes:
+        return self._validated_wire_bytes
+
+
+class PullResponse(_ClosedWireModel):
+    _validated_wire_bytes: bytes = PrivateAttr()
+
+    protocol_version: Literal["1.0.0"] = "1.0.0"
+    message_type: Literal["pull_response"] = "pull_response"
+    request_id: CanonicalUuid
+    device_id: CanonicalUuid
+    from_cursor: Cursor
+    page_id: CanonicalUuid
+    page_sha256: CanonicalSha256
+    changes: tuple[dict[str, JsonValue], ...] = Field(max_length=500)
+    next_cursor: Cursor
+    has_more: StrictBool
+    server_time: CanonicalServerInstant
+
+    @field_validator("changes", mode="before")
+    @classmethod
+    def validate_raw_changes(cls, value: Any) -> Any:
+        return _validate_raw_read_changes(value)
+
+    @model_validator(mode="after")
+    def validate_response_semantics(self) -> Self:
+        document = self.model_dump(mode="json")
+        if not _PULL_RESPONSE_VALIDATOR.is_valid(document):
+            raise ValueError("pull response is outside the frozen schema")
+        if not _read_changes_are_valid(
+            self.changes,
+            server_time=self.server_time,
+            allow_external_prefix=True,
+        ):
+            raise ValueError("pull response changes are semantically invalid")
+        if (self.changes and self.next_cursor == self.from_cursor) or (
+            not self.changes and self.next_cursor != self.from_cursor
+        ):
+            raise ValueError("pull cursor progress does not match delivered changes")
+        if not hmac.compare_digest(read_page_sha256(self), bytes.fromhex(self.page_sha256)):
+            raise ValueError("pull response page hash does not match")
+        object.__setattr__(self, "_validated_wire_bytes", read_wire_json_bytes(self))
+        return self
+
+    def to_bytes(self) -> bytes:
+        return self._validated_wire_bytes
+
+
+def parse_bootstrap_request(document: JsonValue) -> BootstrapRequest:
+    try:
+        canonical_json_bytes(document)
+        return BootstrapRequest.model_validate(document)
+    except (CanonicalJsonError, ValidationError, RecursionError, TypeError, ValueError):
+        raise ApiRequestError(
+            ApiEndpoint.SYNC_BOOTSTRAP,
+            ApiErrorCode.REQUEST_SCHEMA_INVALID,
+        ) from None
+
+
+def parse_pull_request(document: JsonValue) -> PullRequest:
+    try:
+        canonical_json_bytes(document)
+        return PullRequest.model_validate(document)
+    except (CanonicalJsonError, ValidationError, RecursionError, TypeError, ValueError):
+        raise ApiRequestError(
+            ApiEndpoint.SYNC_PULL,
+            ApiErrorCode.REQUEST_SCHEMA_INVALID,
+        ) from None
+
+
+def _read_changes_are_valid(
+    changes: tuple[dict[str, JsonValue], ...],
+    *,
+    server_time: str,
+    allow_external_prefix: bool,
+) -> bool:
+    try:
+        response_time = _parse_instant(server_time)
+        sequences = tuple(cast(int, change["server_sequence"]) for change in changes)
+        operation_ids = tuple(change["operation_id"] for change in changes)
+        capture_ids = tuple(change["capture_id"] for change in changes)
+        revision_ids = tuple(change["revision_id"] for change in changes)
+        if any(current <= previous for previous, current in pairwise(sequences)) or any(
+            len(set(identities)) != len(identities)
+            for identities in (sequences, operation_ids, capture_ids, revision_ids)
+        ):
+            return False
+
+        revisions: dict[JsonValue, tuple[JsonValue, int]] = {}
+        event_kinds: dict[JsonValue, JsonValue] = {}
+        current_heads: dict[JsonValue, JsonValue] = {}
+        page_created_events: set[JsonValue] = set()
+        external_revision_ids: set[JsonValue] = set()
+        external_revision_events: dict[JsonValue, JsonValue] = {}
+
+        for change in changes:
+            capture = cast(dict[str, JsonValue], change["capture"])
+            event = cast(dict[str, JsonValue], change["event"])
+            capture_identity = cast(dict[str, JsonValue], capture["identity"])
+            event_identity = cast(dict[str, JsonValue], event["identity"])
+            event_source = cast(dict[str, JsonValue], event["source"])
+            server = cast(dict[str, JsonValue], event["server"])
+            revision = cast(dict[str, JsonValue], event["revision"])
+            parents = cast(list[JsonValue], revision["parents"])
+            parent_revision_id: JsonValue = None
+            if parents:
+                parent_revision_id = cast(
+                    dict[str, JsonValue],
+                    parents[0],
+                )["revision_id"]
+            event_id = change["event_id"]
+            revision_id = change["revision_id"]
+            known_parent = revisions.get(parent_revision_id)
+            if revision_id in external_revision_ids or parent_revision_id == revision_id:
+                return False
+            if (
+                change["operation_id"] != capture["operation_id"]
+                or change["operation_id"] != event_source["operation_id"]
+                or change["capture_id"] != capture["capture_id"]
+                or change["capture_id"] != event_source["capture_id"]
+                or change["event_id"] != event["event_id"]
+                or change["revision_id"] != event["revision_id"]
+                or change["server_sequence"] != server["server_sequence"]
+                or capture_identity != event_identity
+                or capture_identity["device_id"] is None
+            ):
+                return False
+            selected_revision = change["current_revision_id"] == change["revision_id"]
+            if (change["result_code"] == "applied") is not selected_revision:
+                return False
+            if parent_revision_id is None:
+                if (
+                    event_id in event_kinds
+                    or change["result_code"] != "applied"
+                    or change["current_revision_id"] != revision_id
+                ):
+                    return False
+                expected_revision_no = 1
+                page_created_events.add(event_id)
+            else:
+                if known_parent is None:
+                    if (
+                        not allow_external_prefix
+                        or event_id in page_created_events
+                        or (
+                            parent_revision_id in external_revision_events
+                            and external_revision_events[parent_revision_id] != event_id
+                        )
+                    ):
+                        return False
+                    expected_revision_no = cast(int, event["revision_no"])
+                    revisions[parent_revision_id] = (
+                        event_id,
+                        expected_revision_no - 1,
+                    )
+                    external_revision_ids.add(parent_revision_id)
+                    external_revision_events[parent_revision_id] = event_id
+                else:
+                    parent_event_id, parent_revision_no = known_parent
+                    if parent_event_id != event_id:
+                        return False
+                    expected_revision_no = parent_revision_no + 1
+            if event["revision_no"] != expected_revision_no:
+                return False
+
+            known_kind = event_kinds.get(event_id)
+            if known_kind is not None and known_kind != event["kind"]:
+                return False
+
+            if change["result_code"] == "conflict":
+                conflict_head_id = change["current_revision_id"]
+                if conflict_head_id == parent_revision_id:
+                    return False
+                known_conflict_head = revisions.get(conflict_head_id)
+                if known_conflict_head is not None:
+                    if known_conflict_head[0] != event_id:
+                        return False
+                elif (
+                    conflict_head_id in external_revision_events
+                    and external_revision_events[conflict_head_id] != event_id
+                ):
+                    return False
+                else:
+                    external_revision_ids.add(conflict_head_id)
+                    external_revision_events[conflict_head_id] = event_id
+
+            prior_head = current_heads.get(event_id)
+            if prior_head is not None:
+                expected_result = "applied" if parent_revision_id == prior_head else "conflict"
+                expected_head = revision_id if expected_result == "applied" else prior_head
+                if (
+                    change["result_code"] != expected_result
+                    or change["current_revision_id"] != expected_head
+                ):
+                    return False
+
+            event_kinds[event_id] = event["kind"]
+            revisions[revision_id] = (
+                event_id,
+                event["revision_no"],
+            )
+            if prior_head is None:
+                current_heads[event_id] = (
+                    revision_id
+                    if change["result_code"] == "applied"
+                    else change["current_revision_id"]
+                )
+            elif change["result_code"] == "applied":
+                current_heads[event_id] = revision_id
+            if _parse_instant(cast(str, server["received_at"])) > response_time:
+                return False
+            semantic_projection: dict[str, JsonValue] = {
+                "operation_id": change["operation_id"],
+                "capture_id": change["capture_id"],
+                "event_id": change["event_id"],
+                "revision_id": change["revision_id"],
+                "event_schema_version": event["schema_version"],
+                "event_kind": event["kind"],
+                "capture": capture,
+                "body": event,
+            }
+            if not _operation_semantics_are_valid(semantic_projection):
+                return False
+    except (
+        CanonicalJsonError,
+        IndexError,
+        KeyError,
+        OverflowError,
+        RecursionError,
+        TypeError,
+        ValueError,
+        ZoneInfoNotFoundError,
+    ):
+        return False
+    return True
 
 
 def parse_push_envelope(document: JsonValue) -> PushBatchEnvelope:
