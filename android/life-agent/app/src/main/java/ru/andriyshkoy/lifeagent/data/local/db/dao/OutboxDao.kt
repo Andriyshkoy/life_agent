@@ -19,6 +19,37 @@ interface OutboxDao {
 
     @Query(
         """
+        SELECT * FROM sync_outbox AS outbox
+        WHERE outbox.wire_state = 'ready'
+          AND outbox.active_batch_id IS NULL
+          AND (
+            outbox.state = 'pending'
+            OR (
+              outbox.state = 'waiting_parent'
+              AND outbox.base_revision_id IS NOT NULL
+              AND outbox.last_result_batch_id IS NOT NULL
+              AND outbox.last_result_code = 'missing_parent'
+              AND outbox.last_result_retryable = 1
+              AND outbox.last_result_current_revision_id IS NULL
+              AND outbox.server_sequence IS NULL
+              AND outbox.acked_at_utc IS NULL
+              AND outbox.last_error_code = 'missing_parent'
+              AND EXISTS (
+                SELECT 1
+                FROM sync_server_change AS parent
+                WHERE parent.event_id = outbox.event_id
+                  AND parent.revision_id = outbox.base_revision_id
+              )
+            )
+          )
+        ORDER BY outbox.local_sequence
+        LIMIT :limit
+        """,
+    )
+    suspend fun actionableForBatch(limit: Int): List<SyncOutboxEntity>
+
+    @Query(
+        """
         SELECT COUNT(*) FROM sync_outbox
         WHERE state IN ('pending', 'batched', 'waiting_parent')
         """,

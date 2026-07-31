@@ -18,6 +18,18 @@ interface SyncAuthDao {
     @Query("SELECT * FROM sync_auth_attempt WHERE request_id = :requestId")
     suspend fun findAttempt(requestId: String): SyncAuthAttemptEntity?
 
+    @Query(
+        """
+        SELECT * FROM sync_auth_attempt
+        WHERE endpoint_id = :endpointId AND state = :state
+        ORDER BY created_at_utc, request_id
+        """,
+    )
+    suspend fun findAttempts(
+        endpointId: String,
+        state: String,
+    ): List<SyncAuthAttemptEntity>
+
     @Insert(onConflict = OnConflictStrategy.ABORT)
     suspend fun insertStateRow(entity: SyncAuthStateEntity)
 
@@ -77,15 +89,56 @@ interface SyncAuthDao {
           AND credential_epoch_id = :credentialEpochId
           AND device_id = :deviceId
           AND generation = :generation
+          AND installation_id = :installationId
+          AND local_owner_id = :localOwnerId
           AND state = 'active'
           AND refresh_expires_at_epoch_ms > :nowEpochMs
           AND family_expires_at_epoch_ms > :nowEpochMs
+          AND EXISTS (
+            SELECT 1
+            FROM local_identity_state AS identity
+            JOIN local_installation AS installation
+              ON installation.installation_id = identity.installation_id
+             AND installation.server_device_id = sync_auth_state.device_id
+            JOIN local_owner AS owner
+              ON owner.installation_id = identity.installation_id
+             AND owner.local_owner_id = identity.local_owner_id
+             AND owner.server_person_id = sync_auth_state.person_id
+            WHERE identity.singleton_id = 1
+              AND identity.installation_id =
+                  sync_auth_state.installation_id
+              AND identity.local_owner_id =
+                  sync_auth_state.local_owner_id
+          )
+          AND NOT EXISTS (
+            SELECT 1
+            FROM sync_auth_attempt AS enrollment
+            WHERE enrollment.endpoint_id = 'auth_enroll'
+              AND enrollment.state = 'dispatching'
+              AND enrollment.installation_id =
+                  sync_auth_state.installation_id
+              AND enrollment.local_owner_id =
+                  sync_auth_state.local_owner_id
+              AND (
+                enrollment.credential_epoch_id IS NULL
+                OR (
+                  enrollment.credential_epoch_id =
+                      sync_auth_state.credential_epoch_id
+                  AND enrollment.expected_device_id =
+                      sync_auth_state.device_id
+                  AND enrollment.expected_generation =
+                      sync_auth_state.generation
+                )
+              )
+          )
         """,
     )
     suspend fun claimRefreshFamily(
         credentialEpochId: String,
         deviceId: String,
         generation: Long,
+        installationId: String,
+        localOwnerId: String,
         nowEpochMs: Long,
         updatedAtUtc: String,
     ): Int
@@ -105,6 +158,8 @@ interface SyncAuthDao {
                 credentialEpochId = credentialEpochId,
                 deviceId = deviceId,
                 generation = generation,
+                installationId = entity.installationId,
+                localOwnerId = entity.localOwnerId,
                 nowEpochMs = nowEpochMs,
                 updatedAtUtc = entity.updatedAtUtc,
             ) == 1,
@@ -362,6 +417,124 @@ interface SyncAuthDao {
             "Refresh envelope quarantine lost its credential-family CAS"
         }
     }
+
+    @Query(
+        """
+        UPDATE sync_auth_state
+        SET state = 'revoke_pending',
+            updated_at_utc = :updatedAtUtc,
+            failure_code = NULL
+        WHERE singleton_id = 1
+          AND credential_epoch_id = :credentialEpochId
+          AND device_id = :deviceId
+          AND generation = :generation
+          AND state = 'active'
+          AND refresh_expires_at_epoch_ms > :nowEpochMs
+          AND family_expires_at_epoch_ms > :nowEpochMs
+          AND EXISTS (
+            SELECT 1
+            FROM local_identity_state AS identity
+            JOIN local_installation AS installation
+              ON installation.installation_id = identity.installation_id
+             AND installation.server_device_id = sync_auth_state.device_id
+            JOIN local_owner AS owner
+              ON owner.installation_id = identity.installation_id
+             AND owner.local_owner_id = identity.local_owner_id
+             AND owner.server_person_id = sync_auth_state.person_id
+            WHERE identity.singleton_id = 1
+              AND identity.installation_id =
+                  sync_auth_state.installation_id
+              AND identity.local_owner_id =
+                  sync_auth_state.local_owner_id
+          )
+          AND NOT EXISTS (
+            SELECT 1
+            FROM sync_auth_attempt AS enrollment
+            WHERE enrollment.endpoint_id = 'auth_enroll'
+              AND enrollment.state = 'dispatching'
+              AND enrollment.installation_id =
+                  sync_auth_state.installation_id
+              AND enrollment.local_owner_id =
+                  sync_auth_state.local_owner_id
+              AND (
+                enrollment.credential_epoch_id IS NULL
+                OR (
+                  enrollment.credential_epoch_id =
+                      sync_auth_state.credential_epoch_id
+                  AND enrollment.expected_device_id =
+                      sync_auth_state.device_id
+                  AND enrollment.expected_generation =
+                      sync_auth_state.generation
+                )
+              )
+          )
+        """,
+    )
+    suspend fun claimRevokeFamily(
+        credentialEpochId: String,
+        deviceId: String,
+        generation: Long,
+        nowEpochMs: Long,
+        updatedAtUtc: String,
+    ): Int
+
+    @Query(
+        """
+        UPDATE sync_auth_state
+        SET bootstrap_required = :bootstrapRequired,
+            updated_at_utc = :updatedAtUtc
+        WHERE singleton_id = 1
+          AND credential_epoch_id = :credentialEpochId
+          AND device_id = :deviceId
+          AND state IN ('active', 'refresh_in_flight')
+        """,
+    )
+    suspend fun setBootstrapRequired(
+        credentialEpochId: String,
+        deviceId: String,
+        bootstrapRequired: Boolean,
+        updatedAtUtc: String,
+    ): Int
+
+    @Query(
+        """
+        UPDATE sync_auth_state
+        SET state = 'revoked',
+            refresh_token_ciphertext = NULL,
+            refresh_token_nonce = NULL,
+            refresh_token_key_alias = NULL,
+            refresh_token_key_generation = NULL,
+            refresh_token_aad_version = NULL,
+            updated_at_utc = :updatedAtUtc,
+            failure_code = NULL
+        WHERE singleton_id = 1
+          AND credential_epoch_id = :credentialEpochId
+          AND device_id = :deviceId
+          AND generation = :generation
+          AND state = 'revoke_pending'
+        """,
+    )
+    suspend fun markExactFamilyRevoked(
+        credentialEpochId: String,
+        deviceId: String,
+        generation: Long,
+        updatedAtUtc: String,
+    ): Int
+
+    @Query(
+        """
+        DELETE FROM sync_auth_state
+        WHERE singleton_id = 1
+          AND credential_epoch_id = :credentialEpochId
+          AND device_id = :deviceId
+          AND generation = :generation
+        """,
+    )
+    suspend fun deleteExactFamily(
+        credentialEpochId: String,
+        deviceId: String,
+        generation: Long,
+    ): Int
 
     @Query(
         """

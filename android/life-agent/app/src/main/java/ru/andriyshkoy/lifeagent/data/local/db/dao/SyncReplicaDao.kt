@@ -207,8 +207,41 @@ interface SyncReplicaDao {
     @Insert(onConflict = OnConflictStrategy.ABORT)
     suspend fun insertStreamState(entity: SyncStreamStateEntity)
 
+    @Query(
+        """
+        DELETE FROM sync_stream_state
+        WHERE singleton_id = 1
+          AND credential_epoch_id = :credentialEpochId
+          AND device_id = :deviceId
+        """,
+    )
+    suspend fun deleteExactStream(
+        credentialEpochId: String,
+        deviceId: String,
+    ): Int
+
     @Insert(onConflict = OnConflictStrategy.ABORT)
     suspend fun insertBootstrapSession(entity: SyncBootstrapSessionEntity)
+
+    @Query(
+        """
+        UPDATE sync_bootstrap_session
+        SET state = 'superseded',
+            active_slot = NULL,
+            updated_at_utc = :updatedAtUtc
+        WHERE active_slot = 1
+          AND state = 'staging'
+          AND bootstrap_id = :bootstrapId
+          AND credential_epoch_id = :credentialEpochId
+          AND device_id = :deviceId
+        """,
+    )
+    suspend fun supersedeActiveBootstrapSession(
+        bootstrapId: String,
+        credentialEpochId: String,
+        deviceId: String,
+        updatedAtUtc: String,
+    ): Int
 
     @Insert(onConflict = OnConflictStrategy.ABORT)
     suspend fun insertPageReceipt(entity: SyncPageReceiptEntity)

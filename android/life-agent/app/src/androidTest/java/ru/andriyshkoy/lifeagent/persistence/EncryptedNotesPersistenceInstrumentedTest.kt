@@ -34,8 +34,12 @@ import ru.andriyshkoy.lifeagent.data.local.db.LifeAgentDatabase
 import ru.andriyshkoy.lifeagent.data.local.db.LifeAgentDatabaseFactory
 import ru.andriyshkoy.lifeagent.data.local.db.PushAckPersistence
 import ru.andriyshkoy.lifeagent.data.local.db.PushErrorPersistence
+import ru.andriyshkoy.lifeagent.data.local.db.ReplicaIntegrityException
 import ru.andriyshkoy.lifeagent.data.local.db.SyncPersistenceStore
 import ru.andriyshkoy.lifeagent.data.local.db.TerminalHttpResponsePersistence
+import ru.andriyshkoy.lifeagent.data.local.db.entity.LocalIdentityStateEntity
+import ru.andriyshkoy.lifeagent.data.local.db.entity.LocalInstallationEntity
+import ru.andriyshkoy.lifeagent.data.local.db.entity.LocalOwnerEntity
 import ru.andriyshkoy.lifeagent.data.local.db.entity.SyncHttpRequestEntity
 import ru.andriyshkoy.lifeagent.data.local.db.entity.SyncAuthAttemptEntity
 import ru.andriyshkoy.lifeagent.data.local.db.entity.SyncAuthStateEntity
@@ -573,16 +577,33 @@ class EncryptedNotesPersistenceInstrumentedTest {
 
     @Test
     fun deadlineBoundaryExhaustsWithoutConsumingAnotherAttempt() = runBlocking {
+        persisted(
+            repository.create(
+                CreateNoteCommand(
+                    ids = mutationIds(171, 172, UUID(0, 173), 174),
+                    text = "Synthetic deadline identity",
+                    effectiveTime = effectiveTime(55),
+                    recordedAt = recordedAt(55),
+                ),
+            ),
+        )
         val transportDao = requireDatabase().syncTransportDao()
         val requestIdentity = UUID(0, 60).toString()
+        val credentialEpochId = UUID(0, 61).toString()
+        val deviceId = UUID(0, 62).toString()
         val deadline = 10_000L
+        seedSyncStream(
+            credentialEpochId = credentialEpochId,
+            deviceId = deviceId,
+            updatedAtUtc = Instant.EPOCH.toString(),
+        )
         transportDao.insertRequest(
             SyncHttpRequestEntity(
                 endpointId = "sync_pull",
                 requestIdentity = requestIdentity,
                 protocolVersion = "1.0.0",
-                credentialEpochId = UUID(0, 61).toString(),
-                deviceId = UUID(0, 62).toString(),
+                credentialEpochId = credentialEpochId,
+                deviceId = deviceId,
                 idempotencyKey = null,
                 rawRequestBody = "{}".toByteArray(StandardCharsets.UTF_8),
                 rawBodyHmac = ByteArray(32) { 1 },
@@ -609,7 +630,7 @@ class EncryptedNotesPersistenceInstrumentedTest {
             transportDao.claimAttempt(
                 endpointId = "sync_pull",
                 requestIdentity = requestIdentity,
-                credentialEpochId = UUID(0, 61).toString(),
+                credentialEpochId = credentialEpochId,
                 accessGenerationUsed = 1,
                 attemptId = UUID(0, 63).toString(),
                 attemptedAtEpochMs = deadline,
@@ -768,7 +789,7 @@ class EncryptedNotesPersistenceInstrumentedTest {
     }
 
     @Test
-    fun exactOldBatchReplayCannotStealOperationFromNewBatch() = runBlocking {
+    fun rootMissingParentHaltsTheExactStreamWithoutReducingOutbox() = runBlocking {
         val ids = mutationIds(71, 72, RETRY_BATCH_EVENT_ID, 74)
         val recordedAt = recordedAt(50)
         persisted(
@@ -797,7 +818,6 @@ class EncryptedNotesPersistenceInstrumentedTest {
 
         val transportDao = requireDatabase().syncTransportDao()
         val batchA = UUID(0, 75).toString()
-        val batchB = UUID(0, 76).toString()
         val credentialEpochId = UUID(0, 77).toString()
         val deviceId = UUID(0, 78).toString()
         val batchAAttemptId = UUID(0, 79).toString()
@@ -893,30 +913,22 @@ class EncryptedNotesPersistenceInstrumentedTest {
             detailsJcs = "[]".toByteArray(StandardCharsets.UTF_8),
         )
         val persistenceStore = SyncPersistenceStore(requireDatabase())
-        persistenceStore.commitPushResponse(responseA, listOf(resultA))
-        val waiting = requireNotNull(
+        assertTrue(
+            runCatching {
+                persistenceStore.commitPushResponse(responseA, listOf(resultA))
+            }.exceptionOrNull() is ReplicaIntegrityException,
+        )
+        val retained = requireNotNull(
             requireDatabase().noteMutationDao().findOutbox(outbox.operationId),
         )
-        assertEquals("waiting_parent", waiting.state)
-        assertNull(waiting.activeBatchId)
-        assertEquals(batchA, waiting.lastResultBatchId)
-
-        insertBatch(batchB)
-        val claimedByB = requireNotNull(
-            requireDatabase().noteMutationDao().findOutbox(outbox.operationId),
+        assertEquals("batched", retained.state)
+        assertEquals(batchA, retained.activeBatchId)
+        assertNull(retained.lastResultBatchId)
+        val halted = requireNotNull(
+            requireDatabase().syncReplicaDao().findStreamState(),
         )
-        assertEquals("batched", claimedByB.state)
-        assertEquals(batchB, claimedByB.activeBatchId)
-
-        // The exact terminal A response is already atomically reduced, so it
-        // must be a no-op even after B has claimed the operation.
-        persistenceStore.commitPushResponse(responseA, listOf(resultA))
-        val afterOldReplay = requireNotNull(
-            requireDatabase().noteMutationDao().findOutbox(outbox.operationId),
-        )
-        assertEquals("batched", afterOldReplay.state)
-        assertEquals(batchB, afterOldReplay.activeBatchId)
-        assertEquals(batchA, afterOldReplay.lastResultBatchId)
+        assertEquals("integrity_halted", halted.phase)
+        assertEquals("missing_parent_root_invalid", halted.integrityErrorCode)
     }
 
     @Test
@@ -924,6 +936,31 @@ class EncryptedNotesPersistenceInstrumentedTest {
         val requestIdentity = UUID(0, 81).toString()
         val credentialEpochId = UUID(0, 82).toString()
         val deviceId = UUID(0, 83).toString()
+        persisted(
+            repository.create(
+                CreateNoteCommand(
+                    ids = mutationIds(161, 162, UUID(0, 163), 164),
+                    text = "Synthetic revoke identity",
+                    effectiveTime = effectiveTime(50),
+                    recordedAt = recordedAt(50),
+                ),
+            ),
+        )
+        seedSyncStream(
+            credentialEpochId = credentialEpochId,
+            deviceId = deviceId,
+            updatedAtUtc = "2026-01-15T03:00:00Z",
+        )
+        assertEquals(
+            1,
+            requireDatabase().syncAuthDao().claimRevokeFamily(
+                credentialEpochId = credentialEpochId,
+                deviceId = deviceId,
+                generation = 1,
+                nowEpochMs = 1_000,
+                updatedAtUtc = "2026-01-15T03:00:00Z",
+            ),
+        )
         val exactBody =
             """{"refresh_token":"$REVOKE_REFRESH_TOKEN_SENTINEL","request_id":"$requestIdentity"}"""
                 .toByteArray(StandardCharsets.UTF_8)
@@ -966,7 +1003,7 @@ class EncryptedNotesPersistenceInstrumentedTest {
                 nextAttemptAtEpochMs = null,
                 lastAttemptAtEpochMs = null,
                 leaseExpiresAtEpochMs = null,
-                accessGenerationUsed = null,
+                accessGenerationUsed = 1,
                 terminalHttpStatus = null,
                 exactResponseBody = null,
                 responseSha256 = null,
@@ -1121,6 +1158,12 @@ class EncryptedNotesPersistenceInstrumentedTest {
         val refreshExpiry = 10_000L
         val familyExpiry = 20_000L
         val authDao = requireDatabase().syncAuthDao()
+        requireDatabase().identityDao().bindCurrentServerIdentity(
+            installationId = identity.installationId,
+            localOwnerId = identity.localOwnerId,
+            deviceId = deviceId,
+            personId = UUID(0, 97).toString(),
+        )
         authDao.installEnrollment(
             state = SyncAuthStateEntity(
                 credentialEpochId = credentialEpochId,
@@ -1641,7 +1684,87 @@ class EncryptedNotesPersistenceInstrumentedTest {
         deviceId: String,
         updatedAtUtc: String,
     ) {
-        requireDatabase().syncReplicaDao().insertStreamState(
+        val database = requireDatabase()
+        if (database.identityDao().findIdentity() == null) {
+            database.identityDao().insertInstallation(
+                LocalInstallationEntity(
+                    installationId = SYNTHETIC_INSTALLATION_ID.toString(),
+                    createdAtUtc = updatedAtUtc,
+                    serverDeviceId = null,
+                ),
+            )
+            database.identityDao().insertOwner(
+                LocalOwnerEntity(
+                    localOwnerId = SYNTHETIC_LOCAL_OWNER_ID.toString(),
+                    installationId = SYNTHETIC_INSTALLATION_ID.toString(),
+                    createdAtUtc = updatedAtUtc,
+                    serverPersonId = null,
+                ),
+            )
+            database.identityDao().insertIdentityState(
+                LocalIdentityStateEntity(
+                    installationId = SYNTHETIC_INSTALLATION_ID.toString(),
+                    localOwnerId = SYNTHETIC_LOCAL_OWNER_ID.toString(),
+                    selectedAtUtc = updatedAtUtc,
+                ),
+            )
+        }
+        val identity = requireNotNull(database.identityDao().findIdentity())
+        database.identityDao().bindCurrentServerIdentity(
+            installationId = identity.installationId,
+            localOwnerId = identity.localOwnerId,
+            deviceId = deviceId,
+            personId = SYNTHETIC_PERSON_ID.toString(),
+        )
+        if (database.syncAuthDao().findState() == null) {
+            database.syncAuthDao().installEnrollment(
+                state = SyncAuthStateEntity(
+                    credentialEpochId = credentialEpochId,
+                    installationId = identity.installationId,
+                    localOwnerId = identity.localOwnerId,
+                    deviceId = deviceId,
+                    personId = SYNTHETIC_PERSON_ID.toString(),
+                    tokenType = "Bearer",
+                    refreshTokenCiphertext = byteArrayOf(1, 2, 3),
+                    refreshTokenNonce = ByteArray(12) { 4 },
+                    refreshTokenKeyAlias = "synthetic-sync-refresh-key",
+                    refreshTokenKeyGeneration = 1,
+                    refreshTokenAadVersion = 1,
+                    accessExpiresAtUtc = "2098-01-01T00:00:00Z",
+                    accessExpiresAtEpochMs =
+                        Instant.parse("2098-01-01T00:00:00Z").toEpochMilli(),
+                    refreshExpiresAtUtc = "2099-01-01T00:00:00Z",
+                    refreshExpiresAtEpochMs =
+                        Instant.parse("2099-01-01T00:00:00Z").toEpochMilli(),
+                    familyExpiresAtUtc = "2100-01-01T00:00:00Z",
+                    familyExpiresAtEpochMs =
+                        Instant.parse("2100-01-01T00:00:00Z").toEpochMilli(),
+                    generation = 1,
+                    state = "active",
+                    bootstrapRequired = false,
+                    installedAtUtc = updatedAtUtc,
+                    updatedAtUtc = updatedAtUtc,
+                    failureCode = null,
+                ),
+                accessFingerprint = SyncAuthTokenFingerprintEntity(
+                    credentialEpochId = credentialEpochId,
+                    generation = 1,
+                    tokenKind = "access",
+                    tokenHmac = ByteArray(32) { 5 },
+                    hmacKeyGeneration = 1,
+                    createdAtUtc = updatedAtUtc,
+                ),
+                refreshFingerprint = SyncAuthTokenFingerprintEntity(
+                    credentialEpochId = credentialEpochId,
+                    generation = 1,
+                    tokenKind = "refresh",
+                    tokenHmac = ByteArray(32) { 6 },
+                    hmacKeyGeneration = 1,
+                    createdAtUtc = updatedAtUtc,
+                ),
+            )
+        }
+        database.syncReplicaDao().insertStreamState(
             SyncStreamStateEntity(
                 credentialEpochId = credentialEpochId,
                 deviceId = deviceId,
@@ -2212,6 +2335,28 @@ class EncryptedNotesPersistenceInstrumentedTest {
             }.isFailure,
         )
         db.execSQL(authInsertSql.format("X'0102030405060708090A0B0C'"), authArgs)
+        db.execSQL(
+            "UPDATE sync_auth_state SET state = 'revoke_pending' WHERE singleton_id = 1",
+        )
+        db.execSQL(
+            "UPDATE sync_auth_state SET state = 'active' WHERE singleton_id = 1",
+        )
+        assertTrue(
+            "Revoked auth must not retain a refresh envelope",
+            runCatching {
+                db.execSQL(
+                    "UPDATE sync_auth_state SET state = 'revoked' WHERE singleton_id = 1",
+                )
+            }.isFailure,
+        )
+        assertTrue(
+            "Unknown auth states must fail the runtime guard",
+            runCatching {
+                db.execSQL(
+                    "UPDATE sync_auth_state SET state = 'synthetic_unknown' WHERE singleton_id = 1",
+                )
+            }.isFailure,
+        )
         assertTrue(
             "Partial refresh envelope UPDATE must fail",
             runCatching {
@@ -2333,6 +2478,9 @@ class EncryptedNotesPersistenceInstrumentedTest {
         val AUTH_EXPIRY_EVENT_ID: UUID = UUID(0, 93)
         val RUNTIME_GUARD_EVENT_ID: UUID = UUID(0, 123)
         val EMPTY_MIGRATION_EVENT_ID: UUID = UUID(0, 143)
+        val SYNTHETIC_INSTALLATION_ID: UUID = UUID(0, 9_999)
+        val SYNTHETIC_LOCAL_OWNER_ID: UUID = UUID(0, 10_000)
+        val SYNTHETIC_PERSON_ID: UUID = UUID(0, 10_001)
         val PRODUCTION_OUTBOX_SENTINEL_ID: UUID =
             UUID.fromString("9f24a8c1-91d5-4aeb-bc27-75f9e3390bd1")
         val PRODUCTION_CAPTURE_ID: UUID =

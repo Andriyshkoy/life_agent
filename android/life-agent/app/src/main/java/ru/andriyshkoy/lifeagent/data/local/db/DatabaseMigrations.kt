@@ -167,10 +167,21 @@ object DatabaseMigrations {
               AND NEW.`refresh_token_key_alias` IS NULL
               AND NEW.`refresh_token_key_generation` IS NULL
               AND NEW.`refresh_token_aad_version` IS NULL
-              AND NEW.`state` NOT IN ('active', 'refresh_in_flight')
+              AND NEW.`state` IN (
+                'quarantined',
+                'expired',
+                'revoked',
+                'integrity_failure'
+              )
             )
             OR
             (
+              NEW.`state` IN (
+                'active',
+                'refresh_in_flight',
+                'revoke_pending'
+              )
+              AND
               NEW.`refresh_token_ciphertext` IS NOT NULL
               AND length(NEW.`refresh_token_ciphertext`) > 0
               AND NEW.`refresh_token_nonce` IS NOT NULL
