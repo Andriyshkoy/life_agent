@@ -175,11 +175,12 @@ internal class SyncM2PersistenceFixture(
         nextAttemptAtEpochMs: Long? = null,
         leaseExpiresAtEpochMs: Long? = null,
         originalRetryCount: Int = 0,
+        pageSize: Int = 100,
     ): SyncHttpRequestEntity {
         val rawBody = if (endpointId == "sync_bootstrap") {
             requireNotNull(bootstrapId)
             """
-            {"protocol_version":"1.0.0","message_type":"bootstrap_request","request_id":"$requestIdentity","bootstrap_id":"$bootstrapId","device_id":"$deviceId","page_size":100,"page_cursor":null}
+            {"protocol_version":"1.0.0","message_type":"bootstrap_request","request_id":"$requestIdentity","bootstrap_id":"$bootstrapId","device_id":"$deviceId","page_size":$pageSize,"page_cursor":null}
             """.trimIndent().toByteArray(StandardCharsets.UTF_8)
         } else {
             """{"request_id":"$requestIdentity"}"""
@@ -314,6 +315,7 @@ internal class SyncM2PersistenceFixture(
         generation: Long = 1,
         bootstrapId: String = UUID.randomUUID().toString(),
         requestId: String = UUID.randomUUID().toString(),
+        pageSize: Int = 100,
     ) = BootstrapIntentPersistence(
         session = SyncBootstrapSessionEntity(
             bootstrapId = bootstrapId,
@@ -338,6 +340,7 @@ internal class SyncM2PersistenceFixture(
             deviceId = deviceId,
             accessGenerationUsed = generation,
             bootstrapId = bootstrapId,
+            pageSize = pageSize,
         ),
     )
 

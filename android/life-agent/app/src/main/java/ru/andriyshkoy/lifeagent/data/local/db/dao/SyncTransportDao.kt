@@ -1644,7 +1644,7 @@ private fun bootstrapRequestBindsActiveSession(
         root.strictStringOrNull("device_id") ==
         session.deviceId &&
         pageSize != null &&
-        pageSize in 1..1_000 &&
+        pageSize in 1..500 &&
         pageCursor == session.nextPageCursor
 }.getOrDefault(false)
 
