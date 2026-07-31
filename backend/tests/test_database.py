@@ -141,6 +141,12 @@ async def test_readiness_probe_audits_only_configured_key_generations(
         "replay_encryption": [1],
         "replay_fingerprint": [1],
     }
+    assert ("'replay_fingerprint', fingerprint_key_generation FROM http_replay UNION") in " ".join(
+        key_query.split()
+    )
+    assert (
+        "'replay_encryption', response_encryption_key_generation FROM http_replay UNION"
+    ) in " ".join(key_query.split())
 
 
 @pytest.mark.asyncio

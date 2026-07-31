@@ -38,6 +38,8 @@ from life_agent_backend.http_ingress import StrictJsonIngressMiddleware
 from life_agent_backend.ids import IdGenerator, Uuid4Generator
 from life_agent_backend.observability import LogEvent, SafeEventLogger, configure_logging
 from life_agent_backend.settings import Settings
+from life_agent_backend.sync_routes import router as sync_router
+from life_agent_backend.sync_service import SyncService
 
 _SAFE_HTTP_METHODS = {
     "DELETE",
@@ -100,6 +102,7 @@ def create_app(
     clock: Clock | None = None,
     id_generator: IdGenerator | None = None,
     auth_service: AuthService | None = None,
+    sync_service: SyncService | None = None,
     enrollment_rate_limiter: EnrollmentRateLimiter | None = None,
     random_source: RandomSource | None = None,
 ) -> FastAPI:
@@ -156,6 +159,17 @@ def create_app(
             random_source=random_source,
         )
     )
+    application.state.sync_service = (
+        sync_service
+        if sync_service is not None
+        else SyncService(
+            settings=settings,
+            session_factory=session_factory,
+            clock=resolved_clock,
+            id_generator=resolved_id_generator,
+            random_source=random_source,
+        )
+    )
     application.state.enrollment_rate_limiter = (
         enrollment_rate_limiter
         if enrollment_rate_limiter is not None
@@ -163,6 +177,7 @@ def create_app(
     )
     application.include_router(health_router)
     application.include_router(auth_router)
+    application.include_router(sync_router)
     application.include_router(api_stub_router)
     application.add_middleware(StrictJsonIngressMiddleware, clock=resolved_clock)
 

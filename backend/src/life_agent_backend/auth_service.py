@@ -87,6 +87,10 @@ class ExistingEnrollmentGrantError(RuntimeError):
     """A live one-time enrollment grant already exists for this person."""
 
 
+class _ReplayQuotaRejectedError(RuntimeError):
+    """Abort only the replay-preparation savepoint when durable quota is full."""
+
+
 @dataclass(frozen=True, slots=True)
 class ReplayQuotaReconciliation:
     completed: bool
@@ -130,6 +134,7 @@ class _ReplayQuotaCursor:
 class _CredentialRecord:
     credential_family_id: UUID
     person_id: UUID
+    purge_generation: int
     device_id: UUID
     family_status: str
     active_generation: int
@@ -716,7 +721,6 @@ class AuthService:
                 credential_family_id=credential.credential_family_id,
                 device_id=credential.device_id,
                 request_id=request_id,
-                now=now,
             )
             if replay is not None:
                 fingerprint = self._keys.request_fingerprint(
@@ -783,10 +787,10 @@ class AuthService:
                     server_time=canonical_server_time(now),
                 )
                 result = AuthHttpResult(200, _wire_body(response))
-                if not await self._replay_quota_allows_insert(
+                if not await self._prepare_replay_retention_and_quota(
                     session,
-                    person_id=credential.person_id,
-                    device_id=credential.device_id,
+                    credential=credential,
+                    retention_until=retention_until,
                     additional_plaintext_bytes=len(result.body),
                 ):
                     return AuthHttpResult(
@@ -838,10 +842,10 @@ class AuthService:
                     now=now,
                 ),
             )
-            if not await self._replay_quota_allows_insert(
+            if not await self._prepare_replay_retention_and_quota(
                 session,
-                person_id=credential.person_id,
-                device_id=credential.device_id,
+                credential=credential,
+                retention_until=retention_until,
                 additional_plaintext_bytes=len(result.body),
             ):
                 return AuthHttpResult(
@@ -1318,50 +1322,31 @@ class AuthService:
         refresh_token: str,
     ) -> _CredentialRecord | None:
         refresh_candidates = self._keys.refresh_token_hmac_candidates(refresh_token)
+        person_ids = (
+            await session.scalars(
+                _refresh_candidate_person_query(refresh_candidates),
+            )
+        ).all()
+        if len(person_ids) != 1 or not isinstance(person_ids[0], UUID):
+            return None
+        person_id = person_ids[0]
+        person_row = (
+            (
+                await session.execute(
+                    _locked_person_purge_query(person_id),
+                )
+            )
+            .mappings()
+            .one_or_none()
+        )
+        if person_row is None:
+            return None
         rows = (
             (
                 await session.execute(
-                    sa.select(
-                        models.credential_generation.c.credential_family_id,
-                        models.credential_generation.c.generation,
-                        models.credential_generation.c.is_current,
-                        models.credential_generation.c.issued_at,
-                        models.credential_generation.c.access_expires_at,
-                        models.credential_generation.c.refresh_expires_at,
-                        models.credential_generation.c.refresh_spent_at,
-                        models.credential_generation.c.reuse_detected_at,
-                        models.credential_family.c.person_id,
-                        models.credential_family.c.device_id,
-                        models.credential_family.c.status.label("family_status"),
-                        models.credential_family.c.active_generation,
-                        models.credential_family.c.family_expires_at,
-                        models.credential_family.c.tombstone_until,
-                        models.credential_family.c.revoked_at.label("family_revoked_at"),
-                        models.credential_family.c.revoke_reason.label("family_revoke_reason"),
-                        models.device.c.status.label("device_status"),
-                    )
-                    .join(
-                        models.credential_family,
-                        models.credential_family.c.credential_family_id
-                        == models.credential_generation.c.credential_family_id,
-                    )
-                    .join(
-                        models.device,
-                        models.device.c.device_id == models.credential_family.c.device_id,
-                    )
-                    .where(
-                        _keyed_hmac_matches(
-                            models.credential_generation.c.refresh_key_generation,
-                            models.credential_generation.c.refresh_token_hmac,
-                            refresh_candidates,
-                        )
-                    )
-                    .with_for_update(
-                        of=(
-                            models.credential_generation,
-                            models.credential_family,
-                            models.device,
-                        )
+                    _locked_refresh_namespace_query(
+                        refresh_candidates,
+                        person_id=person_id,
                     )
                 )
             )
@@ -1374,6 +1359,7 @@ class AuthService:
         return _CredentialRecord(
             credential_family_id=cast(UUID, row["credential_family_id"]),
             person_id=cast(UUID, row["person_id"]),
+            purge_generation=cast(int, person_row["purge_generation"]),
             device_id=cast(UUID, row["device_id"]),
             family_status=cast(str, row["family_status"]),
             active_generation=cast(int, row["active_generation"]),
@@ -1442,7 +1428,6 @@ class AuthService:
         credential_family_id: UUID,
         device_id: UUID,
         request_id: UUID,
-        now: datetime,
     ) -> _ReplayRecord | None:
         row = (
             (
@@ -1468,7 +1453,6 @@ class AuthService:
                         models.http_replay.c.credential_family_id == credential_family_id,
                         models.http_replay.c.device_id == device_id,
                         models.http_replay.c.request_identity == request_id,
-                        models.http_replay.c.retention_until >= now,
                     )
                     .with_for_update()
                 )
@@ -1578,7 +1562,6 @@ class AuthService:
             or retention_until < now + MINIMUM_REPLAY_RETENTION
         ):
             raise RuntimeError("replay retention invariant failed")
-        extends_namespace = retention_until > credential.family_tombstone_until
         replay_id = self._id_generator.new_id()
         nonce = await self._new_unique_replay_nonce(session)
         body_sha256 = response_sha256(result.body)
@@ -1608,12 +1591,6 @@ class AuthService:
             binding=binding,
             key_generation=response_encryption_key_generation,
         )
-        if extends_namespace:
-            await self._extend_replay_namespace_retention(
-                session,
-                credential=credential,
-                retention_until=retention_until,
-            )
         await session.execute(
             sa.insert(models.http_replay).values(
                 http_replay_id=replay_id,
@@ -1639,8 +1616,36 @@ class AuthService:
                 response_encryption_key_generation=(response_encryption_key_generation),
                 committed_at=now,
                 retention_until=retention_until,
+                purge_generation=credential.purge_generation,
             )
         )
+
+    async def _prepare_replay_retention_and_quota(
+        self,
+        session: AsyncSession,
+        *,
+        credential: _CredentialRecord,
+        retention_until: datetime,
+        additional_plaintext_bytes: int,
+    ) -> bool:
+        try:
+            async with session.begin_nested():
+                if retention_until > credential.family_tombstone_until:
+                    await self._extend_replay_namespace_retention(
+                        session,
+                        credential=credential,
+                        retention_until=retention_until,
+                    )
+                if not await self._replay_quota_allows_insert(
+                    session,
+                    person_id=credential.person_id,
+                    device_id=credential.device_id,
+                    additional_plaintext_bytes=additional_plaintext_bytes,
+                ):
+                    raise _ReplayQuotaRejectedError
+        except _ReplayQuotaRejectedError:
+            return False
+        return True
 
     async def _extend_replay_namespace_retention(
         self,
@@ -1776,6 +1781,93 @@ def _keyed_hmac_matches(
                 hmac_column == digest,
             )
             for generation, digest in candidates
+        )
+    )
+
+
+def _refresh_candidate_person_query(
+    candidates: tuple[tuple[int, bytes], ...],
+) -> sa.Select[tuple[UUID]]:
+    return (
+        sa.select(models.credential_family.c.person_id)
+        .select_from(
+            models.credential_generation.join(
+                models.credential_family,
+                models.credential_family.c.credential_family_id
+                == models.credential_generation.c.credential_family_id,
+            )
+        )
+        .where(
+            _keyed_hmac_matches(
+                models.credential_generation.c.refresh_key_generation,
+                models.credential_generation.c.refresh_token_hmac,
+                candidates,
+            )
+        )
+    )
+
+
+def _locked_person_purge_query(
+    person_id: UUID,
+) -> sa.Select[Any]:
+    return (
+        sa.select(
+            models.person.c.person_id,
+            models.person.c.purge_generation,
+        )
+        .where(models.person.c.person_id == person_id)
+        .with_for_update()
+    )
+
+
+def _locked_refresh_namespace_query(
+    candidates: tuple[tuple[int, bytes], ...],
+    *,
+    person_id: UUID,
+) -> sa.Select[Any]:
+    return (
+        sa.select(
+            models.credential_generation.c.credential_family_id,
+            models.credential_generation.c.generation,
+            models.credential_generation.c.is_current,
+            models.credential_generation.c.issued_at,
+            models.credential_generation.c.access_expires_at,
+            models.credential_generation.c.refresh_expires_at,
+            models.credential_generation.c.refresh_spent_at,
+            models.credential_generation.c.reuse_detected_at,
+            models.credential_family.c.person_id,
+            models.credential_family.c.device_id,
+            models.credential_family.c.status.label("family_status"),
+            models.credential_family.c.active_generation,
+            models.credential_family.c.family_expires_at,
+            models.credential_family.c.tombstone_until,
+            models.credential_family.c.revoked_at.label("family_revoked_at"),
+            models.credential_family.c.revoke_reason.label("family_revoke_reason"),
+            models.device.c.status.label("device_status"),
+        )
+        .join(
+            models.credential_family,
+            models.credential_family.c.credential_family_id
+            == models.credential_generation.c.credential_family_id,
+        )
+        .join(
+            models.device,
+            models.device.c.device_id == models.credential_family.c.device_id,
+        )
+        .where(
+            models.credential_family.c.person_id == person_id,
+            _keyed_hmac_matches(
+                models.credential_generation.c.refresh_key_generation,
+                models.credential_generation.c.refresh_token_hmac,
+                candidates,
+            ),
+        )
+        .with_for_update(
+            of=(
+                models.credential_generation,
+                models.credential_family,
+                models.device,
+            )
         )
     )
 

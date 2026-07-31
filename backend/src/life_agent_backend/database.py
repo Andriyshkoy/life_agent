@@ -24,7 +24,7 @@ NAMING_CONVENTION = {
 }
 
 metadata = MetaData(naming_convention=NAMING_CONVENTION)
-EXPECTED_DATABASE_REVISION = "20260730_0002"
+EXPECTED_DATABASE_REVISION = "20260730_0003"
 
 
 @dataclass(frozen=True, slots=True)
@@ -167,13 +167,11 @@ class DatabaseReadinessProbe:
                                     'replay_fingerprint',
                                     fingerprint_key_generation
                                 FROM http_replay
-                                WHERE retention_until >= CURRENT_TIMESTAMP
                                 UNION
                                 SELECT
                                     'replay_encryption',
                                     response_encryption_key_generation
                                 FROM http_replay
-                                WHERE retention_until >= CURRENT_TIMESTAMP
                                 UNION
                                 SELECT
                                     'cursor',

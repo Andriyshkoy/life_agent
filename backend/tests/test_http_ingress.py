@@ -292,6 +292,7 @@ def test_strict_request_repr_never_contains_body_or_document_content() -> None:
         document={"value": canary},
         correlation_id=REQUEST_ID,
         idempotency_key=None,
+        access_token=canary,
     )
 
     assert canary not in repr(ingress)
@@ -623,6 +624,87 @@ def test_simultaneous_critical_duplicates_have_deterministic_precedence() -> Non
         )
 
     assert captured.value.error_code is ApiErrorCode.CREDENTIAL_UNAVAILABLE
+
+
+@pytest.mark.parametrize(
+    ("headers", "expected"),
+    [
+        (
+            [
+                (b"content-type", b"invalid/type"),
+                (b"authorization", b"a" * (AUTHORIZATION_MAX_VALUE_BYTES + 1)),
+            ],
+            ApiErrorCode.REQUEST_TOO_LARGE,
+        ),
+        (
+            [
+                (b"content-type", b"invalid/type"),
+                (b"idempotency-key", b"a" * (IDEMPOTENCY_KEY_MAX_VALUE_BYTES + 1)),
+            ],
+            ApiErrorCode.REQUEST_TOO_LARGE,
+        ),
+        (
+            [
+                (b"content-type", b"application/json;charset=utf-8"),
+                (b"content-encoding", b"gzip"),
+                (b"authorization", f"Bearer {ACCESS_TOKEN}".encode()),
+                (b"Authorization", f"Bearer {ACCESS_TOKEN}".encode()),
+                (b"idempotency-key", REQUEST_ID.encode()),
+                (b"Idempotency-Key", REQUEST_ID.encode()),
+            ],
+            ApiErrorCode.UNSUPPORTED_MEDIA_TYPE,
+        ),
+        (
+            [
+                (b"content-type", b"application/json"),
+                (b"content-encoding", b"gzip"),
+                (b"authorization", f"Bearer {ACCESS_TOKEN}".encode()),
+                (b"Authorization", f"Bearer {ACCESS_TOKEN}".encode()),
+                (b"idempotency-key", REQUEST_ID.encode()),
+                (b"Idempotency-Key", REQUEST_ID.encode()),
+            ],
+            ApiErrorCode.UNSUPPORTED_MEDIA_TYPE,
+        ),
+        (
+            [
+                (b"content-type", b"application/json"),
+                (b"authorization", f"Bearer {ACCESS_TOKEN}".encode()),
+                (b"Authorization", f"Bearer {ACCESS_TOKEN}".encode()),
+                (b"idempotency-key", REQUEST_ID.encode()),
+                (b"Idempotency-Key", REQUEST_ID.encode()),
+            ],
+            ApiErrorCode.CREDENTIAL_UNAVAILABLE,
+        ),
+        (
+            [
+                (b"content-type", b"application/json"),
+                (b"authorization", b"Bearer malformed"),
+                (b"idempotency-key", REQUEST_ID.encode()),
+                (b"Idempotency-Key", REQUEST_ID.encode()),
+            ],
+            ApiErrorCode.IDEMPOTENCY_KEY_MISMATCH,
+        ),
+        (
+            [
+                (b"content-type", b"application/json"),
+                (b"authorization", b"Bearer malformed"),
+                (b"idempotency-key", b"malformed"),
+            ],
+            ApiErrorCode.CREDENTIAL_UNAVAILABLE,
+        ),
+    ],
+)
+def test_combined_header_failure_precedence_matches_frozen_contract(
+    headers: list[tuple[bytes, bytes]],
+    expected: ApiErrorCode,
+) -> None:
+    try:
+        view = validate_prebody_headers(ApiEndpoint.SYNC_PUSH, headers)
+        validate_postbody_headers(ApiEndpoint.SYNC_PUSH, view)
+    except IngressRejectionError as error:
+        assert error.error_code is expected
+    else:
+        pytest.fail("combined invalid header presentation was accepted")
 
 
 def test_push_idempotency_syntax_precedes_deferred_body_binding() -> None:

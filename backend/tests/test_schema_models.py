@@ -2,15 +2,25 @@ from __future__ import annotations
 
 import io
 import re
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 import sqlalchemy as sa
 from alembic import command
 from alembic.config import Config
+from fastapi import Request
 from sqlalchemy.dialects import postgresql
 
 from life_agent_backend import models
+from life_agent_backend.api_errors import (
+    ApiEndpoint,
+    ApiErrorCode,
+    ApiFieldError,
+    ApiFieldErrorCode,
+    api_error_response,
+    trust_request_id,
+)
 from life_agent_backend.database import metadata
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
@@ -64,7 +74,7 @@ def normalized_check_sql(value: object) -> str:
 
 
 def check_expression(sql: str, constraint_name: str) -> str:
-    constraint_start = sql.index(f"CONSTRAINT {constraint_name}")
+    constraint_start = sql.rindex(f"CONSTRAINT {constraint_name}")
     check_start = sql.index("CHECK", constraint_start)
     expression_start = sql.index("(", check_start)
     depth = 0
@@ -118,7 +128,7 @@ def test_migration_is_frozen_and_matches_metadata_names(
             assert f"CONSTRAINT {constraint.name}" in sql
             if isinstance(constraint, sa.CheckConstraint):
                 assert normalized_check_sql(constraint.sqltext) == normalized_check_sql(
-                    check_expression(statement, str(constraint.name))
+                    check_expression(sql, str(constraint.name))
                 )
         for index in table.indexes:
             assert index.name is not None
@@ -187,9 +197,47 @@ def test_http_replay_keeps_no_raw_request_and_encrypts_exact_response() -> None:
         if isinstance(constraint, sa.CheckConstraint)
     }
     assert any("retryable_429" not in check and "rate_limited" in check for check in checks)
-    assert any(
-        "terminal_sync_401_after_one_allowed_credential_recovery" in check for check in checks
+    assert all(
+        "terminal_sync_401_after_one_allowed_credential_recovery" not in check for check in checks
     )
+
+
+def test_http_replay_has_endpoint_specific_plaintext_bounds() -> None:
+    checks = {
+        constraint.name: normalized_check_sql(constraint.sqltext)
+        for constraint in models.http_replay.constraints
+        if isinstance(constraint, sa.CheckConstraint)
+    }
+    endpoint_bounds = checks["ck_http_replay_endpoint_response_plaintext_size"]
+
+    assert models.AUTH_REVOKE_MAX_REPLAY_BODY_BYTES == 16_384
+    assert models.SYNC_PUSH_MAX_REPLAY_BODY_BYTES == 524_288
+    assert models.MAX_REPLAY_BODY_BYTES == 4_194_304
+    assert ("endpoint_id='auth_revoke'andresponse_body_plaintext_bytes<=16384") in endpoint_bounds
+    assert ("endpoint_id='sync_push'andresponse_body_plaintext_bytes<=524288") in endpoint_bounds
+    assert (
+        "endpoint_idin('sync_bootstrap','sync_pull')andresponse_body_plaintext_bytes<=4194304"
+    ) in endpoint_bounds
+
+
+def test_smallest_replay_body_cap_fits_maximal_stored_api_error() -> None:
+    request = Request({"type": "http"})
+    trust_request_id(request, "10000000-0000-4000-8000-000000000001")
+    response = api_error_response(
+        request,
+        endpoint=ApiEndpoint.AUTH_REVOKE,
+        error_code=ApiErrorCode.REQUEST_SCHEMA_INVALID,
+        server_time=datetime(2030, 1, 1, tzinfo=UTC),
+        field_errors=tuple(
+            ApiFieldError(
+                path=f"/operations/{ordinal}",
+                code=ApiFieldErrorCode.UNEXPECTED_FIELD,
+            )
+            for ordinal in range(92, 100)
+        ),
+    )
+
+    assert 0 < len(response.body) <= models.AUTH_REVOKE_MAX_REPLAY_BODY_BYTES
 
 
 def test_server_instants_are_timezone_aware() -> None:
@@ -206,6 +254,59 @@ def test_server_instants_are_timezone_aware() -> None:
             ):
                 assert isinstance(column.type, sa.TIMESTAMP)
                 assert column.type.timezone is True
+
+
+def test_event_revision_start_time_variants_match_frozen_schema() -> None:
+    revision = models.event_revision
+    checks = {
+        constraint.name: normalized_check_sql(constraint.sqltext)
+        for constraint in revision.constraints
+        if isinstance(constraint, sa.CheckConstraint)
+    }
+
+    assert revision.c.effective_start_utc.nullable is True
+    assert revision.c.original_local_start.nullable is True
+    assert revision.c.start_offset_seconds.nullable is True
+    assert revision.c.local_date.nullable is True
+    start_time = checks["ck_event_revision_start_time_precision_coherent"]
+    assert (
+        "temporal_precisionin('exact','minute','hour')"
+        "andeffective_start_utcisnotnull"
+        "andoriginal_local_startisnotnull"
+        "andstart_offset_secondsisnotnull"
+        "andlocal_dateisnotnull"
+    ) in start_time
+    assert (
+        "temporal_precisionin('date','part_of_day')"
+        "andeffective_start_utcisnull"
+        "andoriginal_local_startisnotnull"
+        "andstart_offset_secondsisnull"
+        "andlocal_dateisnotnull"
+    ) in start_time
+    assert (
+        "temporal_precision='unknown'"
+        "andeffective_start_utcisnull"
+        "andoriginal_local_startisnull"
+        "andstart_offset_secondsisnull"
+        "andlocal_dateisnull"
+    ) in start_time
+    assert (
+        "temporal_precision='approximate'and"
+        "((effective_start_utcisnotnull"
+        "andoriginal_local_startisnotnull"
+        "andstart_offset_secondsisnotnull"
+        "andlocal_dateisnotnull)"
+        "or(effective_start_utcisnull"
+        "andstart_offset_secondsisnull))"
+    ) in start_time
+    interval = checks["ck_event_revision_interval_fields_coherent"]
+    assert (
+        "effective_end_utcisnotnull"
+        "andeffective_start_utcisnotnull"
+        "andoriginal_local_endisnotnull"
+        "andend_offset_secondsisnotnull"
+        "andeffective_end_utc>=effective_start_utc"
+    ) in interval
 
 
 def test_tombstone_and_replay_uniqueness_invariants_are_present() -> None:
@@ -226,6 +327,24 @@ def test_tombstone_and_replay_uniqueness_invariants_are_present() -> None:
     }
     assert ("installation_id", "client_sequence") in operation_unique_columns
     assert ("sync_stream_id", "server_sequence") in operation_unique_columns
+    assert (
+        "credential_family_id",
+        "submitting_device_id",
+        "first_batch_id",
+        "first_batch_ordinal",
+    ) not in operation_unique_columns
+    operation_membership_index = next(
+        index
+        for index in models.sync_operation.indexes
+        if index.name == "ix_sync_operation_first_batch_membership"
+    )
+    assert operation_membership_index.unique is False
+    assert tuple(column.name for column in operation_membership_index.columns) == (
+        "credential_family_id",
+        "submitting_device_id",
+        "first_batch_id",
+        "first_batch_ordinal",
+    )
 
 
 def test_partial_unique_indexes_limit_active_security_state() -> None:
@@ -260,7 +379,35 @@ def test_operation_registry_separates_retryable_pending_from_terminal_results() 
     assert ("installation_id", "client_sequence") in unique_columns
     assert ("capture_id",) in unique_columns
     assert ("revision_id",) in unique_columns
+    assert ("event_id",) not in unique_columns
+    assert (
+        "credential_family_id",
+        "submitting_device_id",
+        "first_batch_id",
+        "first_batch_ordinal",
+    ) not in unique_columns
+    membership_index = next(
+        index
+        for index in registry.indexes
+        if index.name == "ix_sync_operation_registry_first_batch_membership"
+    )
+    assert membership_index.unique is False
+    assert tuple(column.name for column in membership_index.columns) == (
+        "credential_family_id",
+        "submitting_device_id",
+        "first_batch_id",
+        "first_batch_ordinal",
+    )
+    assert registry.c.event_id.nullable is True
     assert any("pending_missing_parent" in check for check in checks)
+    assert any(
+        "registry_state = 'pending_missing_parent'" in check
+        and "event_id IS NULL" in check
+        and "expected_current_revision_id IS NOT NULL" in check
+        and "registry_state IN ('terminal_error', 'committed')" in check
+        and "event_id IS NOT NULL" in check
+        for check in checks
+    )
     assert any(
         "registry_state = 'terminal_error'" in check and "'missing_parent'" not in check
         for check in checks

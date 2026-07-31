@@ -1,0 +1,1432 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://life-agent.local/schemas/life-event.schema.json",
+  "title": "Life Agent canonical MVP event revision",
+  "description": "An immutable local or server-committed MVP event revision. This document deliberately has no person_id, subject_id or owner field: the backend derives ownership exclusively from the authenticated device session.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "persistence_state",
+    "identity",
+    "event_id",
+    "revision_id",
+    "revision_no",
+    "kind",
+    "assertion_status",
+    "lifecycle",
+    "record_status",
+    "verification_status",
+    "source",
+    "time",
+    "payload",
+    "evidence",
+    "quality_flags",
+    "revision",
+    "server"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "4.0.0"
+    },
+    "persistence_state": {
+      "type": "string",
+      "enum": [
+        "local_pending",
+        "server_committed"
+      ]
+    },
+    "identity": {
+      "$ref": "#/$defs/localIdentity"
+    },
+    "event_id": {
+      "$ref": "#/$defs/canonicalUuid"
+    },
+    "revision_id": {
+      "$ref": "#/$defs/canonicalUuid"
+    },
+    "revision_no": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "kind": {
+      "$ref": "mvp-event-payloads.schema.json#/$defs/kind"
+    },
+    "assertion_status": {
+      "type": "string",
+      "enum": [
+        "observed",
+        "uncertain"
+      ]
+    },
+    "lifecycle": {
+      "type": "null",
+      "description": "Reserved for a future planned-event schema and always null in this MVP contract."
+    },
+    "record_status": {
+      "type": "string",
+      "enum": [
+        "active",
+        "retracted"
+      ]
+    },
+    "verification_status": {
+      "type": "string",
+      "enum": [
+        "source_recorded",
+        "user_confirmed",
+        "machine_inferred",
+        "needs_review"
+      ]
+    },
+    "source": {
+      "$ref": "#/$defs/source"
+    },
+    "time": {
+      "$ref": "#/$defs/eventTime"
+    },
+    "payload": {
+      "$ref": "mvp-event-payloads.schema.json#/$defs/payload"
+    },
+    "evidence": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/evidence"
+      }
+    },
+    "quality_flags": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9_]*$"
+      }
+    },
+    "revision": {
+      "$ref": "#/$defs/revision"
+    },
+    "server": {
+      "$ref": "#/$defs/serverCommit"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "persistence_state": {
+            "const": "local_pending"
+          }
+        },
+        "required": [
+          "persistence_state"
+        ]
+      },
+      "then": {
+        "properties": {
+          "server": {
+            "properties": {
+              "received_at": {
+                "type": "null"
+              },
+              "server_sequence": {
+                "type": "null"
+              }
+            }
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "identity": {
+            "properties": {
+              "device_id": {
+                "$ref": "#/$defs/canonicalUuid"
+              }
+            }
+          },
+          "server": {
+            "properties": {
+              "received_at": {
+                "$ref": "#/$defs/canonicalDateTime"
+              },
+              "server_sequence": {
+                "type": "integer",
+                "minimum": 1
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "revision_no": {
+            "const": 1
+          }
+        },
+        "required": [
+          "revision_no"
+        ]
+      },
+      "then": {
+        "properties": {
+          "revision": {
+            "properties": {
+              "parents": {
+                "maxItems": 0
+              }
+            }
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "revision": {
+            "properties": {
+              "parents": {
+                "minItems": 1
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "record_status": {
+            "const": "retracted"
+          }
+        },
+        "required": [
+          "record_status"
+        ]
+      },
+      "then": {
+        "properties": {
+          "revision": {
+            "properties": {
+              "correction_reason": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "source": {
+            "properties": {
+              "channel": {
+                "const": "android_manual"
+              }
+            },
+            "required": [
+              "channel"
+            ]
+          }
+        },
+        "required": [
+          "source"
+        ]
+      },
+      "then": {
+        "properties": {
+          "verification_status": {
+            "const": "user_confirmed"
+          },
+          "source": {
+            "properties": {
+              "source_record_id": {
+                "type": "null"
+              },
+              "source_record_version": {
+                "type": "null"
+              },
+              "source_modified_at": {
+                "type": "null"
+              },
+              "origin": {
+                "properties": {
+                  "user_entered": {
+                    "const": true
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "source": {
+            "properties": {
+              "channel": {
+                "const": "health_connect"
+              }
+            },
+            "required": [
+              "channel"
+            ]
+          }
+        },
+        "required": [
+          "source"
+        ]
+      },
+      "then": {
+        "properties": {
+          "source": {
+            "properties": {
+              "source_record_id": {
+                "type": "string"
+              },
+              "source_record_version": {
+                "type": "string"
+              },
+              "source_modified_at": {
+                "$ref": "#/$defs/canonicalDateTime"
+              },
+              "origin": {
+                "properties": {
+                  "user_entered": {
+                    "const": false
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "source": {
+            "properties": {
+              "channel": {
+                "const": "connector"
+              }
+            },
+            "required": [
+              "channel"
+            ]
+          }
+        },
+        "required": [
+          "source"
+        ]
+      },
+      "then": {
+        "properties": {
+          "source": {
+            "properties": {
+              "source_record_id": {
+                "type": "string"
+              },
+              "source_modified_at": {
+                "$ref": "#/$defs/canonicalDateTime"
+              },
+              "origin": {
+                "properties": {
+                  "user_entered": {
+                    "const": false
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "verification_status": {
+            "const": "user_confirmed"
+          }
+        },
+        "required": [
+          "verification_status"
+        ]
+      },
+      "then": {
+        "properties": {
+          "evidence": {
+            "contains": {
+              "properties": {
+                "human_confirmed": {
+                  "const": true
+                }
+              },
+              "required": [
+                "human_confirmed"
+              ]
+            },
+            "minContains": 1
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "verification_status": {
+            "const": "source_recorded"
+          }
+        },
+        "required": [
+          "verification_status"
+        ]
+      },
+      "then": {
+        "properties": {
+          "source": {
+            "properties": {
+              "channel": {
+                "enum": [
+                  "health_connect",
+                  "connector"
+                ]
+              },
+              "source_record_id": {
+                "type": "string"
+              }
+            }
+          },
+          "evidence": {
+            "contains": {
+              "anyOf": [
+                {
+                  "properties": {
+                    "artifact_id": {
+                      "type": "string"
+                    }
+                  }
+                },
+                {
+                  "properties": {
+                    "locator": {
+                      "type": "string"
+                    }
+                  }
+                }
+              ]
+            },
+            "minContains": 1
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "verification_status": {
+            "enum": [
+              "machine_inferred",
+              "needs_review"
+            ]
+          }
+        },
+        "required": [
+          "verification_status"
+        ]
+      },
+      "then": {
+        "properties": {
+          "evidence": {
+            "contains": {
+              "properties": {
+                "human_confirmed": {
+                  "const": false
+                }
+              },
+              "required": [
+                "human_confirmed"
+              ]
+            },
+            "minContains": 1
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "verification_status": {
+            "const": "needs_review"
+          }
+        },
+        "required": [
+          "verification_status"
+        ]
+      },
+      "then": {
+        "properties": {
+          "quality_flags": {
+            "minItems": 1
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "meal"
+          }
+        },
+        "required": [
+          "kind"
+        ]
+      },
+      "then": {
+        "properties": {
+          "source": {
+            "properties": {
+              "channel": {
+                "const": "android_manual"
+              }
+            }
+          },
+          "time": {
+            "$ref": "#/$defs/pointEventTime"
+          },
+          "payload": {
+            "$ref": "mvp-event-payloads.schema.json#/$defs/meal"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "sleep"
+          }
+        },
+        "required": [
+          "kind"
+        ]
+      },
+      "then": {
+        "properties": {
+          "verification_status": {
+            "const": "source_recorded"
+          },
+          "source": {
+            "properties": {
+              "channel": {
+                "const": "health_connect"
+              }
+            }
+          },
+          "time": {
+            "$ref": "#/$defs/intervalEventTime"
+          },
+          "payload": {
+            "$ref": "mvp-event-payloads.schema.json#/$defs/sleep"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "wellbeing"
+          }
+        },
+        "required": [
+          "kind"
+        ]
+      },
+      "then": {
+        "properties": {
+          "source": {
+            "properties": {
+              "channel": {
+                "const": "android_manual"
+              }
+            }
+          },
+          "time": {
+            "$ref": "#/$defs/pointEventTime"
+          },
+          "payload": {
+            "$ref": "mvp-event-payloads.schema.json#/$defs/wellbeing"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "medication_intake"
+          }
+        },
+        "required": [
+          "kind"
+        ]
+      },
+      "then": {
+        "properties": {
+          "source": {
+            "properties": {
+              "channel": {
+                "const": "android_manual"
+              }
+            }
+          },
+          "time": {
+            "$ref": "#/$defs/pointEventTime"
+          },
+          "payload": {
+            "$ref": "mvp-event-payloads.schema.json#/$defs/medication_intake"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "supplement_intake"
+          }
+        },
+        "required": [
+          "kind"
+        ]
+      },
+      "then": {
+        "properties": {
+          "source": {
+            "properties": {
+              "channel": {
+                "const": "android_manual"
+              }
+            }
+          },
+          "time": {
+            "$ref": "#/$defs/pointEventTime"
+          },
+          "payload": {
+            "$ref": "mvp-event-payloads.schema.json#/$defs/supplement_intake"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "measurement"
+          }
+        },
+        "required": [
+          "kind"
+        ]
+      },
+      "then": {
+        "properties": {
+          "verification_status": {
+            "const": "source_recorded"
+          },
+          "source": {
+            "properties": {
+              "channel": {
+                "const": "health_connect"
+              }
+            }
+          },
+          "time": {
+            "$ref": "#/$defs/pointEventTime"
+          },
+          "payload": {
+            "$ref": "mvp-event-payloads.schema.json#/$defs/measurement"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "note"
+          }
+        },
+        "required": [
+          "kind"
+        ]
+      },
+      "then": {
+        "properties": {
+          "source": {
+            "properties": {
+              "channel": {
+                "const": "android_manual"
+              }
+            }
+          },
+          "time": {
+            "$ref": "#/$defs/pointEventTime"
+          },
+          "payload": {
+            "$ref": "mvp-event-payloads.schema.json#/$defs/note"
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "canonicalUuid": {
+      "type": "string",
+      "format": "uuid",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])",
+      "description": "Canonical lowercase RFC 9562 UUID text. Uppercase, braces, URNs and trailing characters are forbidden."
+    },
+    "canonicalDateTime": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^(?!0000)[0-9]{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12][0-9]|3[01])T(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](?:\\.[0-9]{3})?(?:Z|[+-](?!00:00)(?:(?:0[0-9]|1[0-3]):[0-5][0-9]|14:00))(?![\\s\\S])",
+      "description": "Canonical RFC 3339 instant: uppercase T and Z, seconds required, no leap second, optional fractional part of exactly three digits, and either Z or a non-zero offset within ±14:00."
+    },
+    "canonicalUtcDateTime": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^(?!0000)[0-9]{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12][0-9]|3[01])T(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](?:\\.[0-9]{3})?Z(?![\\s\\S])",
+      "description": "Canonical UTC instant: uppercase T and Z, seconds required, no leap second, and optional fractional part of exactly three digits."
+    },
+    "canonicalLocalDateTime": {
+      "type": "string",
+      "pattern": "^(?!0000)[0-9]{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12][0-9]|3[01])T(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](?:\\.[0-9]{3})?(?![\\s\\S])",
+      "description": "Canonical local wall-clock date-time without an offset: uppercase T, seconds required, no leap second, and optional fractional part of exactly three digits."
+    },
+    "canonicalDate": {
+      "type": "string",
+      "format": "date",
+      "pattern": "^(?!0000)[0-9]{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12][0-9]|3[01])(?![\\s\\S])"
+    },
+    "sha256Digest": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}(?![\\s\\S])",
+      "description": "Exactly 32 SHA-256 bytes encoded as 64 lowercase hexadecimal characters."
+    },
+    "nullableUuid": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/canonicalUuid"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "nullableText": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1
+    },
+    "localIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "installation_id",
+        "local_owner_id",
+        "device_id"
+      ],
+      "properties": {
+        "installation_id": {
+          "$ref": "#/$defs/canonicalUuid",
+          "description": "Opaque identifier for this APK installation; it is not a security principal."
+        },
+        "local_owner_id": {
+          "$ref": "#/$defs/canonicalUuid",
+          "description": "Opaque single-owner namespace used before enrollment; it is never accepted as server ownership."
+        },
+        "device_id": {
+          "$ref": "#/$defs/nullableUuid",
+          "description": "Nullable server-issued enrichment. The sync API verifies any non-null value against the authenticated device session."
+        }
+      }
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "capture_id",
+        "operation_id",
+        "channel",
+        "source_record_id",
+        "source_record_version",
+        "source_modified_at",
+        "recorded_at",
+        "origin",
+        "collector"
+      ],
+      "properties": {
+        "capture_id": {
+          "$ref": "#/$defs/canonicalUuid"
+        },
+        "operation_id": {
+          "$ref": "#/$defs/canonicalUuid"
+        },
+        "channel": {
+          "type": "string",
+          "enum": [
+            "android_manual",
+            "health_connect",
+            "connector",
+            "system"
+          ]
+        },
+        "source_record_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "source_record_version": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "source_modified_at": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/canonicalDateTime"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "recorded_at": {
+          "$ref": "#/$defs/canonicalDateTime"
+        },
+        "origin": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "provider",
+            "app",
+            "device",
+            "user_entered"
+          ],
+          "properties": {
+            "provider": {
+              "$ref": "#/$defs/nullableText"
+            },
+            "app": {
+              "$ref": "#/$defs/nullableText"
+            },
+            "device": {
+              "$ref": "#/$defs/nullableText"
+            },
+            "user_entered": {
+              "type": "boolean"
+            }
+          }
+        },
+        "collector": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "name",
+            "version"
+          ],
+          "properties": {
+            "name": {
+              "type": "string",
+              "minLength": 1
+            },
+            "version": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "source_record_version": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "source_record_version"
+            ]
+          },
+          "then": {
+            "properties": {
+              "source_record_id": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "source_record_id": {
+                "type": "null"
+              }
+            },
+            "required": [
+              "source_record_id"
+            ]
+          },
+          "then": {
+            "properties": {
+              "source_record_version": {
+                "type": "null"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "eventTime": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "effective_start_utc",
+        "effective_end_utc",
+        "original_local_start",
+        "original_local_end",
+        "timezone_id",
+        "start_offset_seconds",
+        "end_offset_seconds",
+        "temporal_precision",
+        "local_date",
+        "source_expression"
+      ],
+      "properties": {
+        "effective_start_utc": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/canonicalUtcDateTime"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "effective_end_utc": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/canonicalUtcDateTime"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "original_local_start": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/canonicalLocalDateTime"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "original_local_end": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/canonicalLocalDateTime"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "timezone_id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Must be an installed IANA timezone; checked by the semantic validator."
+        },
+        "start_offset_seconds": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": -50400,
+          "maximum": 50400
+        },
+        "end_offset_seconds": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": -50400,
+          "maximum": 50400
+        },
+        "temporal_precision": {
+          "type": "string",
+          "enum": [
+            "exact",
+            "minute",
+            "hour",
+            "part_of_day",
+            "date",
+            "approximate",
+            "unknown"
+          ]
+        },
+        "local_date": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/canonicalDate"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "source_expression": {
+          "$ref": "#/$defs/nullableText"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "effective_start_utc": {
+                "type": "null"
+              }
+            },
+            "required": [
+              "effective_start_utc"
+            ]
+          },
+          "then": {
+            "properties": {
+              "start_offset_seconds": {
+                "type": "null"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "original_local_start": {
+                "type": "string"
+              },
+              "start_offset_seconds": {
+                "type": "integer"
+              },
+              "local_date": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "effective_end_utc": {
+                "type": "null"
+              }
+            },
+            "required": [
+              "effective_end_utc"
+            ]
+          },
+          "then": {
+            "properties": {
+              "original_local_end": {
+                "type": "null"
+              },
+              "end_offset_seconds": {
+                "type": "null"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "effective_start_utc": {
+                "type": "string"
+              },
+              "original_local_start": {
+                "type": "string"
+              },
+              "original_local_end": {
+                "type": "string"
+              },
+              "start_offset_seconds": {
+                "type": "integer"
+              },
+              "end_offset_seconds": {
+                "type": "integer"
+              },
+              "local_date": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "temporal_precision": {
+                "enum": [
+                  "exact",
+                  "minute",
+                  "hour"
+                ]
+              }
+            },
+            "required": [
+              "temporal_precision"
+            ]
+          },
+          "then": {
+            "properties": {
+              "effective_start_utc": {
+                "type": "string"
+              },
+              "original_local_start": {
+                "type": "string"
+              },
+              "start_offset_seconds": {
+                "type": "integer"
+              },
+              "local_date": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "temporal_precision": {
+                "enum": [
+                  "date",
+                  "part_of_day"
+                ]
+              }
+            },
+            "required": [
+              "temporal_precision"
+            ]
+          },
+          "then": {
+            "properties": {
+              "effective_start_utc": {
+                "type": "null"
+              },
+              "effective_end_utc": {
+                "type": "null"
+              },
+              "original_local_start": {
+                "type": "string"
+              },
+              "original_local_end": {
+                "type": "null"
+              },
+              "start_offset_seconds": {
+                "type": "null"
+              },
+              "end_offset_seconds": {
+                "type": "null"
+              },
+              "local_date": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "temporal_precision": {
+                "const": "unknown"
+              }
+            },
+            "required": [
+              "temporal_precision"
+            ]
+          },
+          "then": {
+            "properties": {
+              "effective_start_utc": {
+                "type": "null"
+              },
+              "effective_end_utc": {
+                "type": "null"
+              },
+              "original_local_start": {
+                "type": "null"
+              },
+              "original_local_end": {
+                "type": "null"
+              },
+              "start_offset_seconds": {
+                "type": "null"
+              },
+              "end_offset_seconds": {
+                "type": "null"
+              },
+              "local_date": {
+                "type": "null"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "pointEventTime": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/eventTime"
+        },
+        {
+          "properties": {
+            "effective_end_utc": {
+              "type": "null"
+            },
+            "original_local_end": {
+              "type": "null"
+            },
+            "end_offset_seconds": {
+              "type": "null"
+            }
+          }
+        }
+      ]
+    },
+    "intervalEventTime": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/eventTime"
+        },
+        {
+          "properties": {
+            "effective_start_utc": {
+              "type": "string"
+            },
+            "effective_end_utc": {
+              "type": "string"
+            },
+            "original_local_start": {
+              "type": "string"
+            },
+            "original_local_end": {
+              "type": "string"
+            },
+            "start_offset_seconds": {
+              "type": "integer"
+            },
+            "end_offset_seconds": {
+              "type": "integer"
+            },
+            "temporal_precision": {
+              "enum": [
+                "exact",
+                "minute"
+              ]
+            },
+            "local_date": {
+              "type": "string"
+            }
+          }
+        }
+      ]
+    },
+    "revisionParent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "revision_id",
+        "relation"
+      ],
+      "properties": {
+        "revision_id": {
+          "$ref": "#/$defs/canonicalUuid"
+        },
+        "relation": {
+          "type": "string",
+          "enum": [
+            "supersedes",
+            "resolves"
+          ]
+        }
+      }
+    },
+    "revision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "created_at",
+        "content_sha256",
+        "actor",
+        "correction_reason",
+        "parents"
+      ],
+      "properties": {
+        "created_at": {
+          "$ref": "#/$defs/canonicalDateTime"
+        },
+        "content_sha256": {
+          "$ref": "#/$defs/sha256Digest"
+        },
+        "actor": {
+          "type": "string",
+          "enum": [
+            "user",
+            "system",
+            "connector"
+          ]
+        },
+        "correction_reason": {
+          "$ref": "#/$defs/nullableText"
+        },
+        "parents": {
+          "type": "array",
+          "maxItems": 2,
+          "uniqueItems": true,
+          "oneOf": [
+            {
+              "maxItems": 0
+            },
+            {
+              "minItems": 1,
+              "maxItems": 1,
+              "items": {
+                "properties": {
+                  "relation": {
+                    "const": "supersedes"
+                  }
+                }
+              }
+            },
+            {
+              "minItems": 2,
+              "maxItems": 2,
+              "items": {
+                "properties": {
+                  "relation": {
+                    "const": "resolves"
+                  }
+                }
+              }
+            }
+          ],
+          "items": {
+            "$ref": "#/$defs/revisionParent"
+          }
+        }
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "capture_ref",
+        "field_path",
+        "artifact_id",
+        "locator",
+        "excerpt",
+        "human_confirmed"
+      ],
+      "properties": {
+        "capture_ref": {
+          "const": "#/source/capture_id"
+        },
+        "field_path": {
+          "type": "string",
+          "pattern": "^/payload(?:/(?:[^~/]|~0|~1)*)*$"
+        },
+        "artifact_id": {
+          "$ref": "#/$defs/nullableText"
+        },
+        "locator": {
+          "$ref": "#/$defs/nullableText"
+        },
+        "excerpt": {
+          "$ref": "#/$defs/nullableText"
+        },
+        "human_confirmed": {
+          "type": "boolean"
+        }
+      },
+      "anyOf": [
+        {
+          "properties": {
+            "locator": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "locator"
+          ]
+        },
+        {
+          "properties": {
+            "excerpt": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "excerpt"
+          ]
+        },
+        {
+          "properties": {
+            "human_confirmed": {
+              "const": true
+            }
+          },
+          "required": [
+            "human_confirmed"
+          ]
+        }
+      ]
+    },
+    "serverCommit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "received_at",
+        "server_sequence"
+      ],
+      "properties": {
+        "received_at": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/canonicalDateTime",
+              "readOnly": true
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "server_sequence": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1,
+          "readOnly": true
+        }
+      }
+    }
+  }
+}

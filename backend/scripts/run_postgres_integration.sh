@@ -50,4 +50,6 @@ export LIFE_AGENT_RUN_POSTGRES_INTEGRATION=1
 export LIFE_AGENT_TEST_DATABASE_URL="postgresql+asyncpg://life_agent_test:life-agent-hermetic-test-password@127.0.0.1:${postgres_port}/life_agent_test"
 
 cd "$backend_root"
-uv run pytest -q tests/test_postgres_integration.py
+uv run pytest -q \
+  tests/test_postgres_integration.py \
+  tests/test_sync_push_postgres.py

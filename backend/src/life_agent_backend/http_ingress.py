@@ -133,6 +133,7 @@ class StrictJsonRequest:
     document: JsonValue
     correlation_id: str | None
     idempotency_key: str | None
+    access_token: str | None
 
     def __repr__(self) -> str:
         return f"StrictJsonRequest(endpoint={self.endpoint.value!r}, redacted=True)"
@@ -427,6 +428,22 @@ def validate_postbody_headers(
     return None
 
 
+def _validated_access_token(
+    endpoint: ApiEndpoint,
+    headers: _HeaderView,
+) -> str | None:
+    if endpoint not in _BEARER_ENDPOINTS:
+        return None
+    authorization = headers.values.get("authorization", ())
+    if (
+        len(authorization) != 1
+        or not authorization[0].startswith("Bearer ")
+        or _ACCESS_TOKEN.fullmatch(authorization[0][7:]) is None
+    ):
+        raise RuntimeError("validated bearer ingress invariant failed")
+    return authorization[0][7:]
+
+
 def validate_idempotency_key_binding(
     *,
     idempotency_key: str,
@@ -524,6 +541,7 @@ class StrictJsonIngressMiddleware:
                 spec.endpoint,
                 headers,
             )
+            access_token = _validated_access_token(spec.endpoint, headers)
         except IngressRejectionError as error:
             response = api_error_response(
                 request,
@@ -552,6 +570,7 @@ class StrictJsonIngressMiddleware:
                 document=document,
                 correlation_id=correlation_id,
                 idempotency_key=idempotency_key,
+                access_token=access_token,
             ),
         )
         await self._app(scope, _replay_receive(raw_body, receive), send)
