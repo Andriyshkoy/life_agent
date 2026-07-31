@@ -1,5 +1,6 @@
 package ru.andriyshkoy.lifeagent.persistence
 
+import androidx.room.withTransaction
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import java.nio.charset.StandardCharsets
@@ -91,7 +92,7 @@ class SyncWholeRequestRecoveryInstrumentedTest {
                 leaseExpiresAtEpochMs = SyncM2PersistenceFixture.DEADLINE_MS,
             )
             fixture.database.syncTransportDao().insertRequest(oldBootstrapRequest)
-            val proposed = fixture.bootstrapIntent()
+            val proposed = fixture.bootstrapIntent(pageSize = 500)
             val response = bootstrapRequiredResponse(push)
 
             assertTrue(store.commitPushBootstrapRequired(response, proposed))
@@ -319,6 +320,131 @@ class SyncWholeRequestRecoveryInstrumentedTest {
             assertNull(
                 fixture.database.syncReplicaDao()
                     .findBootstrapSession(proposed.session.bootstrapId),
+            )
+        }
+
+    @Test
+    fun bootstrapIntentRejectsPageSizeAboveContractMaximumBeforeMutation() =
+        runBlocking {
+            val outbox = createReadyOutbox()
+            val push = insertAndClaimPush(outbox)
+            val oversized = fixture.bootstrapIntent(pageSize = 501)
+
+            assertTrue(
+                runCatching {
+                    store.commitPushBootstrapRequired(
+                        response = bootstrapRequiredResponse(push),
+                        proposedIntent = oversized,
+                    )
+                }.isFailure,
+            )
+            val retainedRequest = fixture.database.syncTransportDao()
+                .findRequest("sync_push", push.batchId)
+            assertEquals("sending", retainedRequest?.state)
+            assertEquals(push.attemptId, retainedRequest?.activeAttemptId)
+            val retainedOutbox = fixture.database.noteMutationDao()
+                .findOutbox(outbox.operationId)
+            assertEquals("batched", retainedOutbox?.state)
+            assertEquals(push.batchId, retainedOutbox?.activeBatchId)
+            assertFalse(
+                requireNotNull(fixture.database.syncAuthDao().findState())
+                    .bootstrapRequired,
+            )
+            assertEquals(
+                "incremental",
+                fixture.database.syncReplicaDao().findStreamState()?.phase,
+            )
+            assertNull(
+                fixture.database.syncReplicaDao()
+                    .findBootstrapSession(oversized.session.bootstrapId),
+            )
+            assertNull(
+                fixture.database.syncTransportDao().findRequest(
+                    "sync_bootstrap",
+                    oversized.firstRequest.requestIdentity,
+                ),
+            )
+        }
+
+    @Test
+    fun retainedBootstrapIntentAcceptsMaximumContractPageSize() = runBlocking {
+        val retained = fixture.bootstrapIntent(pageSize = 500)
+        val retainedIdentity = fixture.database.withTransaction {
+            fixture.database.syncReplicaDao().insertBootstrapSession(retained.session)
+            fixture.database.syncTransportDao().insertRequest(retained.firstRequest)
+            store.installOrRetainBootstrapIntent(
+                expectedCredentialEpochId = retained.session.credentialEpochId,
+                expectedDeviceId = retained.session.deviceId,
+                proposedIntent = retained,
+                updatedAtUtc = SyncM2PersistenceFixture.BASE_UTC,
+            )
+        }
+
+        assertEquals(retained.firstRequest.requestIdentity, retainedIdentity)
+        assertEquals(
+            retained.session.bootstrapId,
+            fixture.database.syncReplicaDao()
+                .findBootstrapSessionWithActiveSlot()
+                ?.bootstrapId,
+        )
+        assertEquals(
+            listOf(retained.firstRequest.requestIdentity),
+            fixture.database.syncTransportDao()
+                .findOpenBootstrapRequests(
+                    retained.session.credentialEpochId,
+                    retained.session.deviceId,
+                )
+                .map { it.requestIdentity },
+        )
+    }
+
+    @Test
+    fun retainedBootstrapIntentRejectsPageSizeAboveContractMaximum() =
+        runBlocking {
+            val oversized = fixture.bootstrapIntent(pageSize = 501)
+            fixture.database.withTransaction {
+                fixture.database.syncReplicaDao()
+                    .insertBootstrapSession(oversized.session)
+                fixture.database.syncTransportDao()
+                    .insertRequest(oversized.firstRequest)
+            }
+            val replacement = fixture.bootstrapIntent(pageSize = 500)
+
+            val retainedIdentity = fixture.database.withTransaction {
+                store.installOrRetainBootstrapIntent(
+                    expectedCredentialEpochId =
+                        oversized.session.credentialEpochId,
+                    expectedDeviceId = oversized.session.deviceId,
+                    proposedIntent = replacement,
+                    updatedAtUtc = SyncM2PersistenceFixture.BASE_UTC,
+                )
+            }
+
+            assertEquals(replacement.firstRequest.requestIdentity, retainedIdentity)
+            assertEquals(
+                "superseded",
+                fixture.database.syncReplicaDao()
+                    .findBootstrapSession(oversized.session.bootstrapId)
+                    ?.state,
+            )
+            val rejected = fixture.database.syncTransportDao().findRequest(
+                "sync_bootstrap",
+                oversized.firstRequest.requestIdentity,
+            )
+            assertEquals("terminal_local", rejected?.state)
+            assertEquals("bootstrap_superseded", rejected?.terminalErrorCode)
+            assertEquals(
+                replacement.session.bootstrapId,
+                fixture.database.syncReplicaDao()
+                    .findBootstrapSessionWithActiveSlot()
+                    ?.bootstrapId,
+            )
+            assertEquals(
+                "ready",
+                fixture.database.syncTransportDao().findRequest(
+                    "sync_bootstrap",
+                    replacement.firstRequest.requestIdentity,
+                )?.state,
             )
         }
 

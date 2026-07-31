@@ -52,7 +52,7 @@ class SyncAuthRecoveryInstrumentedTest {
             fixture.seedIdentity()
             val attempt = fixture.enrollmentAttempt()
             store.beginEnrollment(attempt)
-            val intent = fixture.bootstrapIntent()
+            val intent = fixture.bootstrapIntent(pageSize = 500)
             val auth = fixture.authState(bootstrapRequired = true)
 
             store.commitEnrollmentSuccess(
@@ -100,6 +100,65 @@ class SyncAuthRecoveryInstrumentedTest {
             )
             assertEquals(
                 "completed",
+                fixture.database.syncAuthDao().findAttempt(attempt.requestId)?.state,
+            )
+        }
+
+    @Test
+    fun initialEnrollmentRejectsBootstrapPageSizeAboveContractMaximum() =
+        runBlocking {
+            fixture.seedIdentity()
+            val attempt = fixture.enrollmentAttempt()
+            store.beginEnrollment(attempt)
+            val intent = fixture.bootstrapIntent(pageSize = 501)
+            val auth = fixture.authState(bootstrapRequired = true)
+
+            assertTrue(
+                runCatching {
+                    store.commitEnrollmentSuccess(
+                        EnrollmentSuccessPersistence(
+                            attemptRequestId = attempt.requestId,
+                            authState = auth,
+                            accessFingerprint = fixture.fingerprint(
+                                credentialEpochId = auth.credentialEpochId,
+                                generation = 1,
+                                tokenKind = "access",
+                                seed = 3,
+                            ),
+                            refreshFingerprint = fixture.fingerprint(
+                                credentialEpochId = auth.credentialEpochId,
+                                generation = 1,
+                                tokenKind = "refresh",
+                                seed = 4,
+                            ),
+                            streamState =
+                                fixture.streamState(bootstrapRequired = true),
+                            bootstrapSession = intent.session,
+                            bootstrapRequest = intent.firstRequest,
+                        ),
+                    )
+                }.isFailure,
+            )
+
+            val identity = requireNotNull(
+                fixture.database.identityDao().findIdentity(),
+            )
+            assertNull(identity.serverDeviceId)
+            assertNull(identity.serverPersonId)
+            assertNull(fixture.database.syncAuthDao().findState())
+            assertNull(fixture.database.syncReplicaDao().findStreamState())
+            assertNull(
+                fixture.database.syncReplicaDao()
+                    .findBootstrapSession(intent.session.bootstrapId),
+            )
+            assertNull(
+                fixture.database.syncTransportDao().findRequest(
+                    "sync_bootstrap",
+                    intent.firstRequest.requestIdentity,
+                ),
+            )
+            assertEquals(
+                "dispatching",
                 fixture.database.syncAuthDao().findAttempt(attempt.requestId)?.state,
             )
         }

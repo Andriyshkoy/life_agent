@@ -394,7 +394,7 @@ internal fun validateBootstrapIntent(intent: BootstrapIntentPersistence) {
     val pageSizePrimitive = root["page_size"] as? JsonPrimitive
     require(pageSizePrimitive != null && !pageSizePrimitive.isString)
     val pageSize = pageSizePrimitive.content.toIntOrNull()
-    require(pageSize != null && pageSize in 1..1_000)
+    require(pageSize != null && pageSize in 1..500)
     require(root["page_cursor"] is JsonNull)
 }
 
@@ -456,6 +456,6 @@ private fun bootstrapRequestBindsSession(
         root.requiredString("bootstrap_id") == session.bootstrapId &&
         root.requiredString("device_id") == session.deviceId &&
         pageSize != null &&
-        pageSize in 1..1_000 &&
+        pageSize in 1..500 &&
         pageCursor == session.nextPageCursor
 }.getOrDefault(false)

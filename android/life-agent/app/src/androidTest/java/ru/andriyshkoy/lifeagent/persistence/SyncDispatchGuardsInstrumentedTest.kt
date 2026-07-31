@@ -261,7 +261,7 @@ class SyncDispatchGuardsInstrumentedTest {
     }
 
     @Test
-    fun bootstrapRequiredPhaseRunsOnlyItsCoherentBootstrapIntent() = runBlocking {
+    fun bootstrapRequiredPhaseEnforcesPageSizeBoundaryAndBinding() = runBlocking {
         fixture.seedIdentity(
             deviceId = SyncM2PersistenceFixture.DEVICE_ID,
             personId = SyncM2PersistenceFixture.PERSON_ID,
@@ -270,9 +270,16 @@ class SyncDispatchGuardsInstrumentedTest {
         fixture.database.syncReplicaDao().insertStreamState(
             fixture.streamState(bootstrapRequired = true),
         )
-        val intent = fixture.bootstrapIntent()
+        val intent = fixture.bootstrapIntent(pageSize = 500)
         fixture.database.syncReplicaDao().insertBootstrapSession(intent.session)
         fixture.database.syncTransportDao().insertRequest(intent.firstRequest)
+        val oversizedBootstrap = fixture.request(
+            endpointId = "sync_bootstrap",
+            requestIdentity = UUID.randomUUID().toString(),
+            bootstrapId = intent.session.bootstrapId,
+            pageSize = 501,
+        )
+        fixture.database.syncTransportDao().insertRequest(oversizedBootstrap)
         val staleBootstrap = fixture.request(
             endpointId = "sync_bootstrap",
             requestIdentity = UUID.randomUUID().toString(),
@@ -292,6 +299,15 @@ class SyncDispatchGuardsInstrumentedTest {
             fixture.database.syncTransportDao()
                 .findRunnableRequests(SyncM2PersistenceFixture.NOW_MS, 10)
                 .map { it.requestIdentity },
+        )
+        assertEquals(
+            0,
+            claim(
+                endpointId = "sync_bootstrap",
+                requestId = oversizedBootstrap.requestIdentity,
+                generation = 1,
+                attemptId = UUID.randomUUID().toString(),
+            ),
         )
         assertEquals(
             0,
