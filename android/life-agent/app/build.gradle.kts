@@ -110,6 +110,10 @@ android {
 
     sourceSets {
         getByName("androidTest").assets.srcDir("$projectDir/schemas")
+        getByName("test").resources.srcDirs(
+            "$rootDir/../../schemas",
+            "$rootDir/../../examples",
+        )
     }
 
     testOptions {
