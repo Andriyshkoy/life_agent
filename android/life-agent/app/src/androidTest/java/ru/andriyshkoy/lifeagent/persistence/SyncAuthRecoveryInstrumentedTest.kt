@@ -1,5 +1,6 @@
 package ru.andriyshkoy.lifeagent.persistence
 
+import androidx.room.withTransaction
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import java.nio.charset.StandardCharsets
@@ -26,6 +27,8 @@ import ru.andriyshkoy.lifeagent.data.local.db.RefreshSuccessPersistence
 import ru.andriyshkoy.lifeagent.data.local.db.SyncAuthPersistenceStore
 import ru.andriyshkoy.lifeagent.data.local.db.SyncRequestPersistenceStore
 import ru.andriyshkoy.lifeagent.data.local.db.TerminalHttpResponsePersistence
+import ru.andriyshkoy.lifeagent.data.local.db.entity.SyncHttpRequestEntity
+import ru.andriyshkoy.lifeagent.data.sync.wire.WireRequestCodec
 
 @RunWith(AndroidJUnit4::class)
 class SyncAuthRecoveryInstrumentedTest {
@@ -55,7 +58,7 @@ class SyncAuthRecoveryInstrumentedTest {
             val intent = fixture.bootstrapIntent(pageSize = 500)
             val auth = fixture.authState(bootstrapRequired = true)
 
-            store.commitEnrollmentSuccess(
+            commitEnrollmentSuccessForTest(
                 EnrollmentSuccessPersistence(
                     attemptRequestId = attempt.requestId,
                     authState = auth,
@@ -73,8 +76,8 @@ class SyncAuthRecoveryInstrumentedTest {
                     ),
                     streamState = fixture.streamState(bootstrapRequired = true),
                     bootstrapSession = intent.session,
-                    bootstrapRequest = intent.firstRequest,
                 ),
+                intent.firstRequest,
             )
 
             val identity = requireNotNull(fixture.database.identityDao().findIdentity())
@@ -115,7 +118,7 @@ class SyncAuthRecoveryInstrumentedTest {
 
             assertTrue(
                 runCatching {
-                    store.commitEnrollmentSuccess(
+                    commitEnrollmentSuccessForTest(
                         EnrollmentSuccessPersistence(
                             attemptRequestId = attempt.requestId,
                             authState = auth,
@@ -134,8 +137,8 @@ class SyncAuthRecoveryInstrumentedTest {
                             streamState =
                                 fixture.streamState(bootstrapRequired = true),
                             bootstrapSession = intent.session,
-                            bootstrapRequest = intent.firstRequest,
                         ),
+                        intent.firstRequest,
                     )
                 }.isFailure,
             )
@@ -174,7 +177,7 @@ class SyncAuthRecoveryInstrumentedTest {
 
         assertTrue(
             runCatching {
-                store.commitEnrollmentSuccess(
+                commitEnrollmentSuccessForTest(
                     EnrollmentSuccessPersistence(
                         attemptRequestId = attempt.requestId,
                         authState = auth,
@@ -192,8 +195,8 @@ class SyncAuthRecoveryInstrumentedTest {
                         ),
                         streamState = fixture.streamState(bootstrapRequired = true),
                         bootstrapSession = intent.session,
-                        bootstrapRequest = intent.firstRequest,
                     ),
+                    intent.firstRequest,
                 )
             }.isFailure,
         )
@@ -254,7 +257,7 @@ class SyncAuthRecoveryInstrumentedTest {
             )
             assertTrue(
                 runCatching {
-                    store.commitEnrollmentSuccess(
+                    commitEnrollmentSuccessForTest(
                         EnrollmentSuccessPersistence(
                             attemptRequestId = attempt.requestId,
                             authState = lateAuth,
@@ -275,8 +278,8 @@ class SyncAuthRecoveryInstrumentedTest {
                                 bootstrapRequired = true,
                             ),
                             bootstrapSession = lateIntent.session,
-                            bootstrapRequest = lateIntent.firstRequest,
                         ),
+                        lateIntent.firstRequest,
                     )
                 }.isFailure,
             )
@@ -464,7 +467,7 @@ class SyncAuthRecoveryInstrumentedTest {
             listOf(
                 async(Dispatchers.Default) {
                     runCatching {
-                        store.beginRevoke(
+                        beginRevokeForTest(
                             request = revoke,
                             nowEpochMs = SyncM2PersistenceFixture.NOW_MS,
                             updatedAtUtc = SyncM2PersistenceFixture.BASE_UTC,
@@ -745,7 +748,7 @@ class SyncAuthRecoveryInstrumentedTest {
         runBlocking {
             seedCurrentIncrementalFamily()
             val revoke = fixture.sealedRevokeRequest()
-            store.beginRevoke(
+            beginRevokeForTest(
                 request = revoke,
                 nowEpochMs = SyncM2PersistenceFixture.NOW_MS,
                 updatedAtUtc = SyncM2PersistenceFixture.BASE_UTC,
@@ -803,7 +806,7 @@ class SyncAuthRecoveryInstrumentedTest {
         runBlocking {
             seedCurrentIncrementalFamily()
             val revoke = fixture.sealedRevokeRequest()
-            store.beginRevoke(
+            beginRevokeForTest(
                 request = revoke,
                 nowEpochMs = SyncM2PersistenceFixture.NOW_MS,
                 updatedAtUtc = SyncM2PersistenceFixture.BASE_UTC,
@@ -883,7 +886,7 @@ class SyncAuthRecoveryInstrumentedTest {
         runBlocking {
             seedCurrentIncrementalFamily()
             val revoke = fixture.sealedRevokeRequest()
-            store.beginRevoke(
+            beginRevokeForTest(
                 request = revoke,
                 nowEpochMs = SyncM2PersistenceFixture.NOW_MS,
                 updatedAtUtc = SyncM2PersistenceFixture.BASE_UTC,
@@ -947,6 +950,55 @@ class SyncAuthRecoveryInstrumentedTest {
                     ?.state,
             )
         }
+
+    /** Explicit lower-store fixture; production creation goes through ProtectedSyncRequestStore. */
+    private suspend fun commitEnrollmentSuccessForTest(
+        bundle: EnrollmentSuccessPersistence,
+        bootstrapRequest: SyncHttpRequestEntity,
+    ) {
+        val body = checkNotNull(bootstrapRequest.rawRequestBody).copyOf()
+        val evidence = try {
+            WireRequestCodec.decodeDurableBootstrapEvidence(body)
+        } finally {
+            body.fill(0)
+        }
+        check(
+            bootstrapRequest.endpointId == "sync_bootstrap" &&
+                bootstrapRequest.credentialEpochId == bundle.authState.credentialEpochId &&
+                bootstrapRequest.deviceId == bundle.authState.deviceId &&
+                bootstrapRequest.accessGenerationUsed == bundle.authState.generation &&
+                evidence.requestId == bootstrapRequest.requestIdentity &&
+                evidence.bootstrapId == bundle.bootstrapSession.bootstrapId &&
+                evidence.deviceId == bundle.bootstrapSession.deviceId &&
+                evidence.pageCursor == null,
+        )
+        fixture.database.withTransaction {
+            store.commitEnrollmentSuccessState(bundle)
+            fixture.database.syncTransportDao().insertRequest(bootstrapRequest)
+        }
+    }
+
+    /** Explicit lower-store fixture; production creation goes through ProtectedSyncRequestStore. */
+    private suspend fun beginRevokeForTest(
+        request: SyncHttpRequestEntity,
+        nowEpochMs: Long,
+        updatedAtUtc: String,
+    ) {
+        check(request.endpointId == "auth_revoke")
+        val generation = checkNotNull(request.accessGenerationUsed)
+        fixture.database.withTransaction {
+            check(
+                fixture.database.syncAuthDao().claimRevokeFamily(
+                    credentialEpochId = request.credentialEpochId,
+                    deviceId = request.deviceId,
+                    generation = generation,
+                    nowEpochMs = nowEpochMs,
+                    updatedAtUtc = updatedAtUtc,
+                ) == 1,
+            )
+            fixture.database.syncTransportDao().insertRequest(request)
+        }
+    }
 
     private suspend fun seedCurrentIncrementalFamily() {
         fixture.seedIdentity(

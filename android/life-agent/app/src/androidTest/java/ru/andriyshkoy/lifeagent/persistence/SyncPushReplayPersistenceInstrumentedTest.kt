@@ -428,7 +428,7 @@ class SyncPushReplayPersistenceInstrumentedTest {
     }
 
     @Test
-    fun oldCredentialPushAckAndErrorCannotTouchReplacementStream() = runBlocking {
+    fun oldCredentialPushAckAndErrorAreIgnoredWithoutTouchingReplacementStream() = runBlocking {
         seedStream()
         val ackOutbox = createPendingOperation(seed = 110)
         val errorOutbox = createPendingOperation(seed = 120)
@@ -484,14 +484,7 @@ class SyncPushReplayPersistenceInstrumentedTest {
                     ),
                 )
             },
-        ).forEach { callback ->
-            val failure = runCatching { callback() }.exceptionOrNull()
-            assertTrue(failure is ReplicaIntegrityException)
-            assertEquals(
-                "sync_request_binding_drift",
-                (failure as ReplicaIntegrityException).errorCode,
-            )
-        }
+        ).forEach { callback -> callback() }
 
         listOf(ackBatch, errorBatch).forEach { batch ->
             val request = requireNotNull(
@@ -618,8 +611,7 @@ class SyncPushReplayPersistenceInstrumentedTest {
                         next_attempt_at_epoch_ms = NULL,
                         last_attempt_at_epoch_ms = NULL,
                         lease_expires_at_epoch_ms = NULL,
-                        active_attempt_id = NULL,
-                        access_generation_used = NULL
+                        active_attempt_id = NULL
                     WHERE endpoint_id = 'sync_push'
                       AND request_identity = ?
                     """.trimIndent(),
@@ -663,7 +655,7 @@ class SyncPushReplayPersistenceInstrumentedTest {
                     endpointId = "sync_push",
                     requestIdentity = batch.batchId,
                     credentialEpochId = CREDENTIAL_EPOCH_ID,
-                    accessGenerationUsed = 2,
+                    accessGenerationUsed = 1,
                     attemptId = uuid(1_300 + index.toLong()),
                     attemptedAtEpochMs = 3,
                     leaseExpiresAtEpochMs = 4,

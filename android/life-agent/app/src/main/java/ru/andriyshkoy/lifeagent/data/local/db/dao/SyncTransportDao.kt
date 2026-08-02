@@ -1,18 +1,91 @@
 package ru.andriyshkoy.lifeagent.data.local.db.dao
 
+import androidx.room.ColumnInfo
 import androidx.room.Dao
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import androidx.room.Transaction
-import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonNull
-import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.JsonPrimitive
 import ru.andriyshkoy.lifeagent.data.local.db.entity.SyncBootstrapSessionEntity
 import ru.andriyshkoy.lifeagent.data.local.db.entity.SyncHttpRequestEntity
 import ru.andriyshkoy.lifeagent.data.local.db.entity.SyncPushBatchEntity
 import ru.andriyshkoy.lifeagent.data.local.db.entity.SyncPushBatchItemEntity
+
+data class SyncRequestIntegrityRecoverySnapshot(
+    @ColumnInfo(name = "endpoint_id")
+    val endpointId: String,
+    @ColumnInfo(name = "request_identity")
+    val requestIdentity: String,
+    @ColumnInfo(name = "credential_epoch_id")
+    val credentialEpochId: String,
+    @ColumnInfo(name = "device_id")
+    val deviceId: String,
+    @ColumnInfo(name = "access_generation_used_integer_value")
+    val accessGenerationUsed: Long?,
+    @ColumnInfo(name = "access_generation_used_storage_class")
+    val accessGenerationUsedStorageClass: String,
+    @ColumnInfo(name = "hmac_key_generation_integer_value")
+    val hmacKeyGeneration: Long?,
+    @ColumnInfo(name = "hmac_key_generation_storage_class")
+    val hmacKeyGenerationStorageClass: String,
+    @ColumnInfo(name = "hmac_key_generation_quoted")
+    val hmacKeyGenerationQuoted: String,
+    @ColumnInfo(name = "raw_body_hmac_storage_class")
+    val rawBodyHmacStorageClass: String,
+    @ColumnInfo(name = "raw_body_hmac_hex")
+    val rawBodyHmacHex: String,
+    @ColumnInfo(name = "raw_body_hmac_octet_count")
+    val rawBodyHmacOctetCount: Int,
+    @ColumnInfo(name = "state")
+    val state: String,
+    @ColumnInfo(name = "attempt_count_integer_value")
+    val attemptCount: Long?,
+    @ColumnInfo(name = "attempt_count_storage_class")
+    val attemptCountStorageClass: String,
+    @ColumnInfo(name = "attempt_count_quoted")
+    val attemptCountQuoted: String,
+    @ColumnInfo(name = "active_attempt_id")
+    val activeAttemptId: String?,
+    @ColumnInfo(name = "lease_expires_at_epoch_ms")
+    val leaseExpiresAtEpochMs: Long?,
+    @ColumnInfo(name = "updated_at_utc")
+    val updatedAtUtc: String,
+) {
+    val hasCanonicalHmacStorage: Boolean
+        get() = rawBodyHmacStorageClass == "blob" &&
+            rawBodyHmacOctetCount == REQUEST_BODY_HMAC_OCTETS
+
+    val hasCanonicalHmacKeyGeneration: Boolean
+        get() = hmacKeyGenerationStorageClass == "integer" &&
+            hmacKeyGeneration == CURRENT_REQUEST_BODY_HMAC_GENERATION
+
+    val hasCanonicalAccessGeneration: Boolean
+        get() = accessGenerationUsedStorageClass == "integer" &&
+            accessGenerationUsed != null &&
+            accessGenerationUsed > 0
+
+    val hasCanonicalAttemptCount: Boolean
+        get() = attemptCountStorageClass == "integer" &&
+            attemptCount != null &&
+            attemptCount in 0..Int.MAX_VALUE.toLong()
+
+    override fun toString(): String =
+        "SyncRequestIntegrityRecoverySnapshot(endpoint=$endpointId,redacted=true)"
+
+    private companion object {
+        const val REQUEST_BODY_HMAC_OCTETS = 32
+        const val CURRENT_REQUEST_BODY_HMAC_GENERATION = 1L
+    }
+}
+
+data class SyncRequestKey(
+    @ColumnInfo(name = "endpoint_id")
+    val endpointId: String,
+    @ColumnInfo(name = "request_identity")
+    val requestIdentity: String,
+) {
+    override fun toString(): String = "SyncRequestKey(endpoint=$endpointId,redacted=true)"
+}
 
 @Dao
 interface SyncTransportDao {
@@ -81,6 +154,41 @@ interface SyncTransportDao {
         credentialEpochId: String,
         deviceId: String,
     ): List<SyncHttpRequestEntity>
+
+    @Query(
+        """
+        SELECT endpoint_id, request_identity
+        FROM sync_http_request
+        WHERE endpoint_id = 'sync_bootstrap'
+          AND credential_epoch_id = :credentialEpochId
+          AND device_id = :deviceId
+          AND state IN (
+            'ready',
+            'retry_wait',
+            'sending',
+            'waiting_refresh'
+          )
+        ORDER BY created_at_utc, request_identity
+        """,
+    )
+    suspend fun findOpenBootstrapRequestKeys(
+        credentialEpochId: String,
+        deviceId: String,
+    ): List<SyncRequestKey>
+
+    @Query(
+        """
+        SELECT COUNT(*) FROM sync_http_request
+        WHERE endpoint_id = 'sync_pull'
+          AND credential_epoch_id = :credentialEpochId
+          AND device_id = :deviceId
+          AND state IN ('ready', 'retry_wait', 'sending', 'waiting_refresh')
+        """,
+    )
+    suspend fun countOpenPullRequests(
+        credentialEpochId: String,
+        deviceId: String,
+    ): Long
 
     @Query(
         """
@@ -177,8 +285,6 @@ interface SyncTransportDao {
                   AND stream.integrity_error_code IS NULL
                   AND stream.phase != 'integrity_halted'
                   AND auth.state = 'active'
-                  AND auth.bootstrap_required =
-                      stream.bootstrap_required
                   AND auth.access_expires_at_epoch_ms > :nowEpochMs
                   AND auth.family_expires_at_epoch_ms > :nowEpochMs
                   AND NOT EXISTS (
@@ -252,26 +358,10 @@ interface SyncTransportDao {
         limit: Int,
     ): List<SyncHttpRequestEntity> {
         require(limit > 0)
-        val runnable = mutableListOf<SyncHttpRequestEntity>()
-        for (request in findRunnableRequestRows(nowEpochMs)) {
-            val bound = if (request.endpointId != "sync_bootstrap") {
-                true
-            } else {
-                val session = findActiveBootstrapSessions(
-                    credentialEpochId = request.credentialEpochId,
-                    deviceId = request.deviceId,
-                ).singleOrNull()
-                session != null &&
-                    bootstrapRequestBindsActiveSession(request, session)
-            }
-            if (bound) {
-                runnable += request
-                if (runnable.size == limit) {
-                    break
-                }
-            }
-        }
-        return runnable
+        // Discovery must never parse or trust durable body bytes. The protected
+        // dispatch boundary authenticates and binds them immediately before its
+        // attempt-claim CAS, and quarantines malformed rows there.
+        return findRunnableRequestRows(nowEpochMs).take(limit)
     }
 
     @Query(
@@ -353,8 +443,6 @@ interface SyncTransportDao {
                   AND stream.integrity_error_code IS NULL
                   AND stream.phase != 'integrity_halted'
                   AND auth.state = 'active'
-                  AND auth.bootstrap_required =
-                      stream.bootstrap_required
                   AND auth.access_expires_at_epoch_ms > :nowEpochMs
                   AND auth.family_expires_at_epoch_ms > :nowEpochMs
                   AND NOT EXISTS (
@@ -426,26 +514,12 @@ interface SyncTransportDao {
     suspend fun findEarliestRunnableAtEpochMs(nowEpochMs: Long): Long? {
         val terminalizationAt =
             findEarliestTerminalizationAtEpochMs(nowEpochMs)
-        var scheduledAt: Long? = null
-        for (request in findPotentiallyRunnableRequestRows(nowEpochMs)) {
-            val bound = if (request.endpointId != "sync_bootstrap") {
-                true
-            } else {
-                val session = findActiveBootstrapSessions(
-                    credentialEpochId = request.credentialEpochId,
-                    deviceId = request.deviceId,
-                ).singleOrNull()
-                session != null &&
-                    bootstrapRequestBindsActiveSession(request, session)
-            }
-            if (bound) {
-                scheduledAt = when (request.state) {
-                    "sending" -> request.leaseExpiresAtEpochMs
-                    "retry_wait" -> request.nextAttemptAtEpochMs
-                    else -> nowEpochMs
-                }
-                break
-            }
+        val request = findPotentiallyRunnableRequestRows(nowEpochMs).firstOrNull()
+        val scheduledAt = when (request?.state) {
+            "sending" -> request.leaseExpiresAtEpochMs
+            "retry_wait" -> request.nextAttemptAtEpochMs
+            null -> null
+            else -> nowEpochMs
         }
         return listOfNotNull(scheduledAt, terminalizationAt).minOrNull()
     }
@@ -471,6 +545,112 @@ interface SyncTransportDao {
         nowEpochMs: Long,
         limit: Int,
     ): List<SyncHttpRequestEntity>
+
+    @Query(
+        """
+        SELECT endpoint_id,
+               request_identity,
+               credential_epoch_id,
+               device_id,
+               CASE WHEN typeof(access_generation_used) = 'integer'
+                 THEN access_generation_used
+                 ELSE NULL
+               END AS access_generation_used_integer_value,
+               typeof(access_generation_used) AS access_generation_used_storage_class,
+               CASE WHEN typeof(hmac_key_generation) = 'integer'
+                 THEN hmac_key_generation
+                 ELSE NULL
+               END AS hmac_key_generation_integer_value,
+               typeof(hmac_key_generation) AS hmac_key_generation_storage_class,
+               quote(hmac_key_generation) AS hmac_key_generation_quoted,
+               typeof(raw_body_hmac) AS raw_body_hmac_storage_class,
+               hex(CAST(raw_body_hmac AS BLOB)) AS raw_body_hmac_hex,
+               length(CAST(raw_body_hmac AS BLOB)) AS raw_body_hmac_octet_count,
+               state,
+               CASE WHEN typeof(attempt_count) = 'integer'
+                 THEN attempt_count
+                 ELSE NULL
+               END AS attempt_count_integer_value,
+               typeof(attempt_count) AS attempt_count_storage_class,
+               quote(attempt_count) AS attempt_count_quoted,
+               active_attempt_id,
+               lease_expires_at_epoch_ms,
+               updated_at_utc
+        FROM sync_http_request
+        WHERE state IN ('ready', 'retry_wait', 'sending', 'waiting_refresh')
+          AND (
+            typeof(raw_body_hmac) != 'blob'
+            OR length(CAST(raw_body_hmac AS BLOB)) != 32
+            OR typeof(hmac_key_generation) != 'integer'
+            OR hmac_key_generation != 1
+            OR typeof(access_generation_used) != 'integer'
+            OR access_generation_used IS NULL
+            OR access_generation_used <= 0
+            OR typeof(attempt_count) != 'integer'
+            OR attempt_count < 0
+            OR attempt_count > 2147483647
+            OR (
+              endpoint_id = 'auth_revoke'
+              AND EXISTS (
+                SELECT 1
+                FROM sync_auth_state AS current_auth
+                WHERE current_auth.singleton_id = 1
+                  AND current_auth.credential_epoch_id =
+                      sync_http_request.credential_epoch_id
+                  AND current_auth.device_id = sync_http_request.device_id
+                  AND current_auth.state = 'revoke_pending'
+                  AND sync_http_request.access_generation_used !=
+                      current_auth.generation
+              )
+            )
+          )
+        ORDER BY created_at_utc, endpoint_id, request_identity
+        LIMIT :limit
+        """,
+    )
+    suspend fun findOpenRequestsNeedingIntegrityRecovery(
+        limit: Int,
+    ): List<SyncRequestIntegrityRecoverySnapshot>
+
+    @Query(
+        """
+        SELECT endpoint_id,
+               request_identity,
+               credential_epoch_id,
+               device_id,
+               CASE WHEN typeof(access_generation_used) = 'integer'
+                 THEN access_generation_used
+                 ELSE NULL
+               END AS access_generation_used_integer_value,
+               typeof(access_generation_used) AS access_generation_used_storage_class,
+               CASE WHEN typeof(hmac_key_generation) = 'integer'
+                 THEN hmac_key_generation
+                 ELSE NULL
+               END AS hmac_key_generation_integer_value,
+               typeof(hmac_key_generation) AS hmac_key_generation_storage_class,
+               quote(hmac_key_generation) AS hmac_key_generation_quoted,
+               typeof(raw_body_hmac) AS raw_body_hmac_storage_class,
+               hex(CAST(raw_body_hmac AS BLOB)) AS raw_body_hmac_hex,
+               length(CAST(raw_body_hmac AS BLOB)) AS raw_body_hmac_octet_count,
+               state,
+               CASE WHEN typeof(attempt_count) = 'integer'
+                 THEN attempt_count
+                 ELSE NULL
+               END AS attempt_count_integer_value,
+               typeof(attempt_count) AS attempt_count_storage_class,
+               quote(attempt_count) AS attempt_count_quoted,
+               active_attempt_id,
+               lease_expires_at_epoch_ms,
+               updated_at_utc
+        FROM sync_http_request
+        WHERE endpoint_id = :endpointId
+          AND request_identity = :requestIdentity
+        """,
+    )
+    suspend fun findRequestIntegrityRecoverySnapshot(
+        endpointId: String,
+        requestIdentity: String,
+    ): SyncRequestIntegrityRecoverySnapshot?
 
     @Query(
         """
@@ -502,6 +682,122 @@ interface SyncTransportDao {
 
     @Insert(onConflict = OnConflictStrategy.ABORT)
     suspend fun insertRequest(entity: SyncHttpRequestEntity)
+
+    @Query(
+        """
+        SELECT COUNT(*) FROM sync_http_request
+        WHERE hmac_key_generation = :keyGeneration
+        """,
+    )
+    suspend fun countRequestsReferencingHmacGeneration(keyGeneration: Int): Long
+
+    @Query(
+        """
+        UPDATE sync_http_request
+        SET state = 'integrity_failure',
+            hmac_key_generation = 1,
+            raw_body_hmac = CASE
+              WHEN typeof(hmac_key_generation) = 'integer'
+                   AND hmac_key_generation = 1
+                   AND typeof(raw_body_hmac) = 'blob'
+                   AND length(raw_body_hmac) = 32
+                THEN raw_body_hmac
+              WHEN :failureCode = 'request_body_metadata_invalid' THEN zeroblob(32)
+              ELSE raw_body_hmac
+            END,
+            next_attempt_at_epoch_ms = NULL,
+            lease_expires_at_epoch_ms = NULL,
+            active_attempt_id = NULL,
+            terminal_at_utc = :failedAtUtc,
+            terminal_error_code = :failureCode,
+            updated_at_utc = :failedAtUtc
+        WHERE endpoint_id = :endpointId
+          AND request_identity = :requestIdentity
+          AND hmac_key_generation = :expectedHmacKeyGeneration
+          AND raw_body_hmac = :expectedHmac
+          AND state = :expectedState
+          AND attempt_count = :expectedAttemptCount
+          AND active_attempt_id IS :expectedActiveAttemptId
+          AND lease_expires_at_epoch_ms IS :expectedLeaseExpiresAtEpochMs
+          AND updated_at_utc = :expectedUpdatedAtUtc
+        """,
+    )
+    suspend fun quarantineRequestBodyBeforeClaim(
+        endpointId: String,
+        requestIdentity: String,
+        expectedHmacKeyGeneration: Int,
+        expectedHmac: ByteArray,
+        expectedState: String,
+        expectedAttemptCount: Int,
+        expectedActiveAttemptId: String?,
+        expectedLeaseExpiresAtEpochMs: Long?,
+        expectedUpdatedAtUtc: String,
+        failedAtUtc: String,
+        failureCode: String,
+    ): Int
+
+    @Query(
+        """
+        UPDATE sync_http_request
+        SET state = 'integrity_failure',
+            access_generation_used = CASE
+              WHEN typeof(access_generation_used) = 'integer'
+                   AND access_generation_used > 0
+                THEN access_generation_used
+              ELSE NULL
+            END,
+            attempt_count = CASE
+              WHEN typeof(attempt_count) = 'integer'
+                   AND attempt_count BETWEEN 0 AND 2147483647
+                THEN attempt_count
+              ELSE 0
+            END,
+            hmac_key_generation = 1,
+            raw_body_hmac = CASE
+              WHEN typeof(hmac_key_generation) = 'integer'
+                   AND hmac_key_generation = 1
+                   AND typeof(raw_body_hmac) = 'blob'
+                   AND length(raw_body_hmac) = 32
+                THEN raw_body_hmac
+              ELSE zeroblob(32)
+            END,
+            next_attempt_at_epoch_ms = NULL,
+            lease_expires_at_epoch_ms = NULL,
+            active_attempt_id = NULL,
+            terminal_at_utc = :failedAtUtc,
+            terminal_error_code = :failureCode,
+            updated_at_utc = :failedAtUtc
+        WHERE endpoint_id = :endpointId
+          AND request_identity = :requestIdentity
+          AND typeof(hmac_key_generation) = :expectedHmacKeyGenerationStorageClass
+          AND quote(hmac_key_generation) = :expectedHmacKeyGenerationQuoted
+          AND typeof(raw_body_hmac) = :expectedHmacStorageClass
+          AND hex(CAST(raw_body_hmac AS BLOB)) = :expectedHmacHex
+          AND state = :expectedState
+          AND typeof(attempt_count) = :expectedAttemptCountStorageClass
+          AND quote(attempt_count) = :expectedAttemptCountQuoted
+          AND active_attempt_id IS :expectedActiveAttemptId
+          AND lease_expires_at_epoch_ms IS :expectedLeaseExpiresAtEpochMs
+          AND updated_at_utc = :expectedUpdatedAtUtc
+          AND :failureCode = 'request_body_metadata_invalid'
+        """,
+    )
+    suspend fun quarantineRequestIntegrityMetadata(
+        endpointId: String,
+        requestIdentity: String,
+        expectedHmacKeyGenerationStorageClass: String,
+        expectedHmacKeyGenerationQuoted: String,
+        expectedHmacStorageClass: String,
+        expectedHmacHex: String,
+        expectedState: String,
+        expectedAttemptCountStorageClass: String,
+        expectedAttemptCountQuoted: String,
+        expectedActiveAttemptId: String?,
+        expectedLeaseExpiresAtEpochMs: Long?,
+        expectedUpdatedAtUtc: String,
+        failedAtUtc: String,
+        failureCode: String,
+    ): Int
 
     @Insert(onConflict = OnConflictStrategy.ABORT)
     suspend fun insertBatch(entity: SyncPushBatchEntity)
@@ -774,28 +1070,16 @@ interface SyncTransportDao {
         attemptedAtEpochMs: Long,
         leaseExpiresAtEpochMs: Long,
         updatedAtUtc: String,
-    ): Int {
-        if (endpointId == "sync_bootstrap") {
-            val request = findRequest(endpointId, requestIdentity) ?: return 0
-            val session = findActiveBootstrapSessions(
-                credentialEpochId = request.credentialEpochId,
-                deviceId = request.deviceId,
-            ).singleOrNull() ?: return 0
-            if (!bootstrapRequestBindsActiveSession(request, session)) {
-                return 0
-            }
-        }
-        return claimAttemptRow(
-            endpointId = endpointId,
-            requestIdentity = requestIdentity,
-            credentialEpochId = credentialEpochId,
-            accessGenerationUsed = accessGenerationUsed,
-            attemptId = attemptId,
-            attemptedAtEpochMs = attemptedAtEpochMs,
-            leaseExpiresAtEpochMs = leaseExpiresAtEpochMs,
-            updatedAtUtc = updatedAtUtc,
-        )
-    }
+    ): Int = claimAttemptRow(
+        endpointId = endpointId,
+        requestIdentity = requestIdentity,
+        credentialEpochId = credentialEpochId,
+        accessGenerationUsed = accessGenerationUsed,
+        attemptId = attemptId,
+        attemptedAtEpochMs = attemptedAtEpochMs,
+        leaseExpiresAtEpochMs = leaseExpiresAtEpochMs,
+        updatedAtUtc = updatedAtUtc,
+    )
 
     @Query(
         """
@@ -1592,63 +1876,3 @@ interface SyncTransportDao {
         }
     }
 }
-
-private fun bootstrapRequestBindsActiveSession(
-    request: SyncHttpRequestEntity,
-    session: SyncBootstrapSessionEntity,
-): Boolean = runCatching {
-    if (
-        request.endpointId != "sync_bootstrap" ||
-        request.bodyStorageKind != SyncHttpRequestEntity.BODY_STORAGE_RAW ||
-        request.credentialEpochId != session.credentialEpochId ||
-        request.deviceId != session.deviceId
-    ) {
-        return@runCatching false
-    }
-    val root = Json.parseToJsonElement(
-        checkNotNull(request.rawRequestBody).decodeToString(),
-    ) as? JsonObject ?: return@runCatching false
-    if (
-        root.keys != setOf(
-            "protocol_version",
-            "message_type",
-            "request_id",
-            "bootstrap_id",
-            "device_id",
-            "page_size",
-            "page_cursor",
-        )
-    ) {
-        return@runCatching false
-    }
-    val pageCursor = when (val value = root["page_cursor"]) {
-        JsonNull -> null
-        is JsonPrimitive ->
-            value.takeIf { it.isString }?.content ?: return@runCatching false
-        else -> return@runCatching false
-    }
-    val pageSizePrimitive =
-        root["page_size"] as? JsonPrimitive ?: return@runCatching false
-    if (pageSizePrimitive.isString) {
-        return@runCatching false
-    }
-    val pageSize = pageSizePrimitive.content.toIntOrNull()
-    root.strictStringOrNull("protocol_version") ==
-        request.protocolVersion &&
-        root.strictStringOrNull("message_type") ==
-        "bootstrap_request" &&
-        root.strictStringOrNull("request_id") ==
-        request.requestIdentity &&
-        root.strictStringOrNull("bootstrap_id") ==
-        session.bootstrapId &&
-        root.strictStringOrNull("device_id") ==
-        session.deviceId &&
-        pageSize != null &&
-        pageSize in 1..500 &&
-        pageCursor == session.nextPageCursor
-}.getOrDefault(false)
-
-private fun JsonObject.strictStringOrNull(field: String): String? =
-    (this[field] as? JsonPrimitive)
-        ?.takeIf { it.isString }
-        ?.content

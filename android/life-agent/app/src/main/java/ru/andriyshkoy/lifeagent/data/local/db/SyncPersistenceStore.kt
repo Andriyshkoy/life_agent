@@ -62,6 +62,7 @@ class SyncPersistenceStore(
     private val outboxDao = database.outboxDao()
     private val replicaDao = database.syncReplicaDao()
     private val transportDao = database.syncTransportDao()
+    private val requestStore = SyncRequestPersistenceStore(database)
     private val replicaCodec = ReplicaChangeCodec()
 
     suspend fun commitPushResponse(
@@ -79,8 +80,24 @@ class SyncPersistenceStore(
                     "push_request_missing",
                     "Push response has no durable request",
                 )
+                if (isStaleAttemptCallback(request, response)) {
+                    // A newer worker owns the request. The late response may
+                    // neither install its bytes nor reduce its parsed results.
+                    return@withTransaction
+                }
+                val currentStream = replicaDao.findStreamState()
+                if (
+                    request.state != "terminal" &&
+                    (
+                        currentStream == null ||
+                            request.credentialEpochId != currentStream.credentialEpochId ||
+                            request.deviceId != currentStream.deviceId
+                        )
+                ) {
+                    return@withTransaction
+                }
                 val stream = requireReplicaValue(
-                    replicaDao.findStreamState(),
+                    currentStream,
                     "sync_stream_missing",
                     "Push response has no active sync stream",
                 )
@@ -90,9 +107,13 @@ class SyncPersistenceStore(
                     "sync_request_binding_drift",
                     "Push request no longer belongs to the active sync stream",
                 )
-                if (isStaleAttemptCallback(request, response)) {
-                    // A newer worker owns the request. The late response may
-                    // neither install its bytes nor reduce its parsed results.
+                if (
+                    request.state != "terminal" &&
+                    !requestStore.preflightFreshResponseRequestMetadata(
+                        request,
+                        response.terminalAtUtc,
+                    )
+                ) {
                     return@withTransaction
                 }
                 val batch = requireReplicaValue(
@@ -234,13 +255,14 @@ class SyncPersistenceStore(
         }
     }
 
-    suspend fun commitBootstrapPage(
+    internal suspend fun commitBootstrapPage(
         response: TerminalHttpResponsePersistence,
         receipt: SyncPageReceiptEntity,
         changes: List<ReplicaChangePersistence>,
+        continuationFactory: (suspend (SyncBootstrapSessionEntity) -> SyncHttpRequestEntity)? = null,
     ) {
-        require(receipt.completeOrHasMore) {
-            "A non-final bootstrap page requires a durable next-request intent"
+        require(receipt.completeOrHasMore == (continuationFactory == null)) {
+            "Exactly one durable continuation is required for a non-final bootstrap page"
         }
         val bootstrapId = receipt.bootstrapId
         var streamBinding: SyncStreamStateEntity? = null
@@ -259,6 +281,17 @@ class SyncPersistenceStore(
                     "bootstrap_receipt_drift",
                     "Bootstrap receipt has no bootstrap identity",
                 )
+                val request = requireReplicaValue(
+                    transportDao.findRequest(
+                        response.endpointId,
+                        response.requestIdentity,
+                    ),
+                    "sync_request_missing",
+                    "Durable sync request is missing",
+                )
+                if (isStaleAttemptCallback(request, response)) {
+                    return@withTransaction
+                }
                 val session = requireReplicaValue(
                     replicaDao.findBootstrapSession(durableBootstrapId),
                     "bootstrap_session_missing",
@@ -269,21 +302,43 @@ class SyncPersistenceStore(
                     "sync_stream_missing",
                     "Sync stream state is missing",
                 )
-                val request = verifyRequestAndStreamBinding(response, stream)
-                requireReplica(
-                    session.credentialEpochId == stream.credentialEpochId &&
-                        session.deviceId == stream.deviceId,
-                    "bootstrap_session_binding_drift",
-                    "Bootstrap session no longer belongs to the active stream",
-                )
-                if (isStaleAttemptCallback(request, response)) {
-                    return@withTransaction
-                }
-                if (
-                    request.state == "terminal" &&
-                    session.state in setOf("staging", "complete")
-                ) {
-                    streamBinding = stream
+                if (request.state == "terminal") {
+                    requireReplica(
+                        request.credentialEpochId == stream.credentialEpochId &&
+                            request.deviceId == stream.deviceId,
+                        "sync_request_binding_drift",
+                        "Durable request no longer belongs to the active sync stream",
+                    )
+                    requireReplica(
+                        session.credentialEpochId == stream.credentialEpochId &&
+                            session.deviceId == stream.deviceId,
+                        "bootstrap_session_binding_drift",
+                        "Bootstrap session no longer belongs to the active stream",
+                    )
+                    if (session.state in setOf("staging", "complete")) {
+                        streamBinding = stream
+                    }
+                } else {
+                    val activeSession = replicaDao.findBootstrapSessionWithActiveSlot()
+                    if (
+                        session.state != "staging" ||
+                        session.activeSlot != 1 ||
+                        activeSession?.bootstrapId != durableBootstrapId ||
+                        request.credentialEpochId != stream.credentialEpochId ||
+                        request.deviceId != stream.deviceId ||
+                        session.credentialEpochId != stream.credentialEpochId ||
+                        session.deviceId != stream.deviceId
+                    ) {
+                        return@withTransaction
+                    }
+                    if (
+                        !requestStore.preflightFreshResponseRequestMetadata(
+                            request,
+                            response.terminalAtUtc,
+                        )
+                    ) {
+                        return@withTransaction
+                    }
                 }
                 verifyBootstrapRequestBinding(
                     request = request,
@@ -408,6 +463,44 @@ class SyncPersistenceStore(
                         response = response,
                         stream = stream,
                     )
+                } else {
+                    val advancedSession = requireReplicaValue(
+                        replicaDao.findBootstrapSession(durableBootstrapId),
+                        "bootstrap_session_missing",
+                        "Advanced bootstrap staging session is missing",
+                    )
+                    val continuation = checkNotNull(continuationFactory)(advancedSession)
+                    verifyBootstrapRequestBinding(
+                        request = continuation,
+                        session = advancedSession,
+                        expectedPageCursor = receipt.nextCursor,
+                    )
+                    val currentAuth = requireReplicaValue(
+                        authDao.findState(),
+                        "auth_state_missing",
+                        "Protected bootstrap continuation has no credential family",
+                    )
+                    requireReplica(
+                        advancedSession.state == "staging" &&
+                            advancedSession.activeSlot == 1 &&
+                            advancedSession.nextPageCursor == receipt.nextCursor &&
+                            currentAuth.credentialEpochId ==
+                            advancedSession.credentialEpochId &&
+                            currentAuth.deviceId == advancedSession.deviceId &&
+                            currentAuth.state in setOf("active", "refresh_in_flight") &&
+                            currentAuth.bootstrapRequired &&
+                            continuation.state == "ready" &&
+                            continuation.attemptCount == 0 &&
+                            checkNotNull(continuation.accessGenerationUsed) <=
+                            currentAuth.generation &&
+                            transportDao.findOpenBootstrapRequestKeys(
+                                credentialEpochId = advancedSession.credentialEpochId,
+                                deviceId = advancedSession.deviceId,
+                            ).isEmpty(),
+                        "bootstrap_continuation_binding_drift",
+                        "Protected bootstrap continuation does not bind the advanced shadow",
+                    )
+                    transportDao.insertRequest(continuation)
                 }
             }
         } catch (error: ReplicaIntegrityException) {
@@ -441,13 +534,46 @@ class SyncPersistenceStore(
                     "pull_receipt_drift",
                     "Pull receipt does not bind to its terminal response",
                 )
+                val request = requireReplicaValue(
+                    transportDao.findRequest(
+                        response.endpointId,
+                        response.requestIdentity,
+                    ),
+                    "sync_request_missing",
+                    "Durable sync request is missing",
+                )
+                if (isStaleAttemptCallback(request, response)) {
+                    return@withTransaction
+                }
+                val currentStream = replicaDao.findStreamState()
+                if (
+                    request.state != "terminal" &&
+                    (
+                        currentStream == null ||
+                            request.credentialEpochId != currentStream.credentialEpochId ||
+                            request.deviceId != currentStream.deviceId
+                        )
+                ) {
+                    return@withTransaction
+                }
                 val stream = requireReplicaValue(
-                    replicaDao.findStreamState(),
+                    currentStream,
                     "sync_stream_missing",
                     "Sync stream state is missing",
                 )
-                val request = verifyRequestAndStreamBinding(response, stream)
-                if (isStaleAttemptCallback(request, response)) {
+                requireReplica(
+                    request.credentialEpochId == stream.credentialEpochId &&
+                        request.deviceId == stream.deviceId,
+                    "sync_request_binding_drift",
+                    "Durable request no longer belongs to the active sync stream",
+                )
+                if (
+                    request.state != "terminal" &&
+                    !requestStore.preflightFreshResponseRequestMetadata(
+                        request,
+                        response.terminalAtUtc,
+                    )
+                ) {
                     return@withTransaction
                 }
                 streamBinding = stream
@@ -562,14 +688,36 @@ class SyncPersistenceStore(
      * A valid cursor_expired response abandons only the uncommitted bootstrap
      * shadow. The previously committed replica and cursor remain visible.
      */
-    suspend fun commitBootstrapCursorExpired(
+    internal suspend fun commitBootstrapCursorExpired(
         response: TerminalHttpResponsePersistence,
         bootstrapId: String,
         replacementIntent: BootstrapIntentPersistence,
+    ) = commitBootstrapCursorExpiredInternal(
+        response = response,
+        bootstrapId = bootstrapId,
+        replacementFactory = { replacementIntent },
+    )
+
+    internal suspend fun commitBootstrapCursorExpiredWithProtectedReplacement(
+        response: TerminalHttpResponsePersistence,
+        bootstrapId: String,
+        replacementFactory: suspend () -> BootstrapIntentPersistence,
+        existingCandidateVerifier: suspend (SyncBootstrapSessionEntity) -> Boolean,
+    ) = commitBootstrapCursorExpiredInternal(
+        response,
+        bootstrapId,
+        replacementFactory,
+        existingCandidateVerifier,
+    )
+
+    private suspend fun commitBootstrapCursorExpiredInternal(
+        response: TerminalHttpResponsePersistence,
+        bootstrapId: String,
+        replacementFactory: suspend () -> BootstrapIntentPersistence,
+        existingCandidateVerifier: suspend (SyncBootstrapSessionEntity) -> Boolean = { true },
     ) {
         require(response.endpointId == BOOTSTRAP_ENDPOINT)
         require(response.terminalErrorCode == CURSOR_EXPIRED)
-        validateBootstrapIntent(replacementIntent)
         var streamBinding: SyncStreamStateEntity? = null
         try {
             database.withTransaction {
@@ -586,13 +734,12 @@ class SyncPersistenceStore(
                     "bootstrap_session_missing",
                     "Expired bootstrap session is missing",
                 )
-                verifyBootstrapRequestBinding(
-                    request = request,
-                    session = session,
-                    expectedPageCursor = session.nextPageCursor,
-                )
-                val installed = installOrVerifyTerminalResponse(response)
-                if (!installed) {
+                if (request.state == "terminal") {
+                    requireReplica(
+                        !installOrVerifyTerminalResponse(response),
+                        "bootstrap_expiry_replay_drift",
+                        "Expired bootstrap replay unexpectedly reinstalled its response",
+                    )
                     val retainedTerminalAtUtc = requireReplicaValue(
                         request.terminalAtUtc,
                         "bootstrap_expiry_replay_drift",
@@ -605,26 +752,52 @@ class SyncPersistenceStore(
                     )
                     return@withTransaction
                 }
-                requireReplica(
-                    session.state == "staging" &&
-                        session.activeSlot == 1 &&
-                        replicaDao.findBootstrapSessionWithActiveSlot()?.bootstrapId ==
-                        bootstrapId,
-                    "bootstrap_expiry_binding_drift",
-                    "Expired response does not belong to the active bootstrap shadow",
-                )
-                val stream = requireReplicaValue(
-                    replicaDao.findStreamState(),
-                    "sync_stream_missing",
-                    "Sync stream state is missing",
-                )
-                requireReplica(
-                    stream.credentialEpochId == session.credentialEpochId &&
-                        stream.deviceId == session.deviceId,
-                    "sync_request_binding_drift",
-                    "Expired bootstrap no longer belongs to the active sync stream",
+                val activeSession = replicaDao.findBootstrapSessionWithActiveSlot()
+                if (
+                    session.state != "staging" ||
+                    session.activeSlot != 1 ||
+                    activeSession?.bootstrapId != bootstrapId
+                ) {
+                    // A callback for a superseded shadow is a legitimate late
+                    // arrival. It must not authenticate its old candidate
+                    // against the replacement session or halt the new stream.
+                    return@withTransaction
+                }
+                val stream = replicaDao.findStreamState() ?: return@withTransaction
+                val currentAuth = authDao.findState() ?: return@withTransaction
+                if (
+                    request.credentialEpochId != session.credentialEpochId ||
+                    request.deviceId != session.deviceId ||
+                    stream.credentialEpochId != session.credentialEpochId ||
+                    stream.deviceId != session.deviceId ||
+                    currentAuth.credentialEpochId != session.credentialEpochId ||
+                    currentAuth.deviceId != session.deviceId ||
+                    currentAuth.state !in setOf("active", "refresh_in_flight")
+                ) {
+                    return@withTransaction
+                }
+                if (
+                    !requestStore.preflightFreshResponseRequestMetadata(
+                        request,
+                        response.terminalAtUtc,
+                    )
+                ) {
+                    return@withTransaction
+                }
+                if (!existingCandidateVerifier(session)) {
+                    return@withTransaction
+                }
+                verifyBootstrapRequestBinding(
+                    request = request,
+                    session = session,
+                    expectedPageCursor = session.nextPageCursor,
                 )
                 streamBinding = stream
+                requireReplica(
+                    installOrVerifyTerminalResponse(response),
+                    "bootstrap_expiry_replay_drift",
+                    "Fresh expired bootstrap response was not installed",
+                )
                 val stagedChangeCount =
                     replicaDao.countStagedBootstrapChanges(bootstrapId)
                 requireReplica(
@@ -684,10 +857,23 @@ class SyncPersistenceStore(
                     "auth_stream_binding_drift",
                     "Expired bootstrap could not gate its credential family",
                 )
+                val replacementIntent = replacementFactory()
+                validateBootstrapIntent(replacementIntent)
+                val replacementAuth = requireReplicaValue(
+                    authDao.findState(),
+                    "auth_state_missing",
+                    "Replacement bootstrap has no credential family",
+                )
                 requireReplica(
                     replacementIntent.session.credentialEpochId ==
                         request.credentialEpochId &&
-                        replacementIntent.session.deviceId == request.deviceId,
+                        replacementIntent.session.deviceId == request.deviceId &&
+                        replacementAuth.credentialEpochId == request.credentialEpochId &&
+                        replacementAuth.deviceId == request.deviceId &&
+                        replacementAuth.state in setOf("active", "refresh_in_flight") &&
+                        replacementAuth.bootstrapRequired &&
+                        checkNotNull(replacementIntent.firstRequest.accessGenerationUsed) <=
+                        replacementAuth.generation,
                     "bootstrap_replacement_binding_drift",
                     "Replacement bootstrap intent belongs to another stream",
                 )
@@ -743,7 +929,6 @@ class SyncPersistenceStore(
                         request.credentialEpochId == it.credentialEpochId &&
                             request.deviceId == it.deviceId
                     }
-                    streamBinding = activeStream
                     val activeBinding =
                         if (
                             response.endpointId == BOOTSTRAP_ENDPOINT &&
@@ -775,6 +960,7 @@ class SyncPersistenceStore(
                                 null
                             }
                         } else {
+                            streamBinding = activeStream
                             activeStream
                         }
                     requireReplica(
@@ -845,11 +1031,26 @@ class SyncPersistenceStore(
                         )
                         return@withTransaction
                     }
+                    if (
+                        !requestStore.preflightFreshResponseRequestMetadata(
+                            request,
+                            response.terminalAtUtc,
+                        )
+                    ) {
+                        return@withTransaction
+                    }
                     verifyBootstrapRequestBinding(
                         request = request,
                         session = session,
                         expectedPageCursor = session.nextPageCursor,
                     )
+                } else if (
+                    !requestStore.preflightFreshResponseRequestMetadata(
+                        request,
+                        response.terminalAtUtc,
+                    )
+                ) {
+                    return@withTransaction
                 }
                 val activeStream = requireReplicaValue(
                     stream,
@@ -891,24 +1092,6 @@ class SyncPersistenceStore(
             )
             throw error
         }
-    }
-
-    private suspend fun verifyRequestAndStreamBinding(
-        response: TerminalHttpResponsePersistence,
-        stream: SyncStreamStateEntity,
-    ): SyncHttpRequestEntity {
-        val request = requireReplicaValue(
-            transportDao.findRequest(response.endpointId, response.requestIdentity),
-            "sync_request_missing",
-            "Durable sync request is missing",
-        )
-        requireReplica(
-            request.credentialEpochId == stream.credentialEpochId &&
-                request.deviceId == stream.deviceId,
-            "sync_request_binding_drift",
-            "Durable request no longer belongs to the active sync stream",
-        )
-        return request
     }
 
     private fun isStaleAttemptCallback(

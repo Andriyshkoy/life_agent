@@ -1296,16 +1296,11 @@ class SyncReplicaPersistenceInstrumentedTest {
         )
         supersedeWithReplacementBootstrap()
 
-        val failure = assertThrows(ReplicaIntegrityException::class.java) {
-            runBlocking {
-                SyncPersistenceStore(requireDatabase()).commitBootstrapPage(
-                    response,
-                    receipt,
-                    listOf(root),
-                )
-            }
-        }
-        assertEquals("bootstrap_session_binding_drift", failure.errorCode)
+        SyncPersistenceStore(requireDatabase()).commitBootstrapPage(
+            response,
+            receipt,
+            listOf(root),
+        )
         val replacement = requireNotNull(
             requireDatabase()
                 .syncReplicaDao()
@@ -1347,19 +1342,14 @@ class SyncReplicaPersistenceInstrumentedTest {
         seedSendingRequest(expired, expiredAttemptId)
         supersedeWithReplacementBootstrap()
 
-        val failure = assertThrows(ReplicaIntegrityException::class.java) {
-            runBlocking {
-                SyncPersistenceStore(requireDatabase()).commitBootstrapCursorExpired(
-                    expired,
-                    BOOTSTRAP_ID,
-                    bootstrapIntent(
-                        bootstrapId = uuid(353),
-                        requestId = uuid(354),
-                    ),
-                )
-            }
-        }
-        assertEquals("bootstrap_expiry_binding_drift", failure.errorCode)
+        SyncPersistenceStore(requireDatabase()).commitBootstrapCursorExpired(
+            expired,
+            BOOTSTRAP_ID,
+            bootstrapIntent(
+                bootstrapId = uuid(353),
+                requestId = uuid(354),
+            ),
+        )
         val replacement = requireNotNull(
             requireDatabase()
                 .syncReplicaDao()
@@ -1647,16 +1637,11 @@ class SyncReplicaPersistenceInstrumentedTest {
             receivedAt = staleResponse.terminalAtUtc,
         )
 
-        val failure = assertThrows(ReplicaIntegrityException::class.java) {
-            runBlocking {
-                SyncPersistenceStore(requireDatabase()).commitPullPage(
-                    staleResponse,
-                    receipt,
-                    emptyList(),
-                )
-            }
-        }
-        assertEquals("sync_request_binding_drift", failure.errorCode)
+        SyncPersistenceStore(requireDatabase()).commitPullPage(
+            staleResponse,
+            receipt,
+            emptyList(),
+        )
         val replacement = requireNotNull(
             requireDatabase().syncReplicaDao().findStreamState(),
         )

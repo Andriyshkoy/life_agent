@@ -1079,12 +1079,10 @@ class EncryptedNotesPersistenceInstrumentedTest {
             plaintextOctetCount = persisted.requestBodyOctetCount,
         )
         assertTrue(
-            payloadCipher.withVerifiedPlaintext(
+            payloadCipher.withAuthenticatedPlaintext(
                 envelope = persistedEnvelope,
                 purpose = "auth_revoke_request",
                 recordIdentity = requestIdentity,
-                expectedHmac = persisted.rawBodyHmac,
-                hmacKey = hmacKey,
             ) { plaintext ->
                 plaintext.contentEquals(exactBody)
             },
@@ -1106,12 +1104,10 @@ class EncryptedNotesPersistenceInstrumentedTest {
         }
         assertTrue(
             runCatching {
-                payloadCipher.withVerifiedPlaintext(
+                payloadCipher.withAuthenticatedPlaintext(
                     envelope = persistedEnvelope,
                     purpose = "auth_revoke_request",
                     recordIdentity = requestIdentity,
-                    expectedHmac = persisted.rawBodyHmac,
-                    hmacKey = hmacKey,
                 ) { Unit }
             }.isFailure,
         )
@@ -2240,12 +2236,13 @@ class EncryptedNotesPersistenceInstrumentedTest {
                     raw_request_body, sealed_body_ciphertext, sealed_body_nonce,
                     sealed_body_key_alias, sealed_body_key_generation,
                     sealed_body_aad_version, request_body_octet_count,
-                    raw_body_hmac, hmac_key_generation, state, attempt_budget,
+                    raw_body_hmac, hmac_key_generation, access_generation_used,
+                    state, attempt_budget,
                     deadline_at_epoch_ms, created_at_utc, updated_at_utc
                 ) VALUES(
                     'auth_revoke', ?, '1.0.0', ?, ?, 'keystore_aead',
                     NULL, X'01', NULL, 'synthetic_key', 1, 1, 2,
-                    X'01', 1, 'ready', 8, 10000, ?, ?
+                    zeroblob(32), 1, 1, 'ready', 8, 10000, ?, ?
                 )
                 """.trimIndent(),
                 arrayOf(
@@ -2265,11 +2262,11 @@ class EncryptedNotesPersistenceInstrumentedTest {
                 endpoint_id, request_identity, protocol_version,
                 credential_epoch_id, device_id, body_storage_kind,
                 raw_request_body, request_body_octet_count, raw_body_hmac,
-                hmac_key_generation, state, attempt_budget,
+                hmac_key_generation, access_generation_used, state, attempt_budget,
                 deadline_at_epoch_ms, created_at_utc, updated_at_utc
             ) VALUES(
                 'sync_pull', ?, '1.0.0', ?, ?, 'raw', X'7B7D', 2,
-                X'01', 1, 'ready', 8, 10000, ?, ?
+                zeroblob(32), 1, 1, 'ready', 8, 10000, ?, ?
             )
             """.trimIndent(),
             arrayOf(

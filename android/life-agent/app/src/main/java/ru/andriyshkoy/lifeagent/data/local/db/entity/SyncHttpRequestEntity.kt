@@ -135,9 +135,14 @@ data class SyncHttpRequestEntity(
 
             else -> error("Unknown request body storage kind")
         }
-        require(rawBodyHmac.isNotEmpty())
-        require(hmacKeyGeneration > 0)
+        // Historical or externally corrupted rows must remain materializable
+        // so body-blind discovery and integrity recovery can quarantine invalid
+        // tag storage and key generations. Fresh writes are constrained by the
+        // SQLite runtime guards and the protected-request creator.
     }
+
+    override fun toString(): String =
+        "SyncHttpRequestEntity(endpoint=$endpointId,state=$state,redacted=true)"
 
     companion object {
         const val BODY_STORAGE_RAW = "raw"
