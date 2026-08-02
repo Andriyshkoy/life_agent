@@ -332,12 +332,17 @@ class AuthService:
                     """
                     DELETE FROM http_replay AS replay
                     USING (
-                        SELECT http_replay_id
-                        FROM http_replay
-                        WHERE retention_until < :now
-                        ORDER BY retention_until, http_replay_id
+                        SELECT candidate.http_replay_id
+                        FROM http_replay AS candidate
+                        WHERE candidate.retention_until < :now
+                          AND NOT EXISTS (
+                              SELECT 1
+                              FROM sync_read_page AS page
+                              WHERE page.http_replay_id = candidate.http_replay_id
+                          )
+                        ORDER BY candidate.retention_until, candidate.http_replay_id
                         LIMIT :batch_size
-                        FOR UPDATE SKIP LOCKED
+                        FOR UPDATE OF candidate SKIP LOCKED
                     ) AS expired
                     WHERE replay.http_replay_id = expired.http_replay_id
                     RETURNING replay.http_replay_id
