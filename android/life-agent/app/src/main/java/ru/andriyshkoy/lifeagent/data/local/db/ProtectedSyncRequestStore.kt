@@ -131,62 +131,6 @@ internal class ProtectedSyncRequestStore(
         transportDao.insertRequest(protected)
     }
 
-    suspend fun commitPushResponse(
-        response: TerminalHttpResponsePersistence,
-        results: List<PushResultPersistence>,
-    ) = SyncPersistenceStore(database).commitPushResponse(response, results)
-
-    suspend fun commitPullPage(
-        response: TerminalHttpResponsePersistence,
-        receipt: SyncPageReceiptEntity,
-        changes: List<ReplicaChangePersistence>,
-    ) = SyncPersistenceStore(database).commitPullPage(response, receipt, changes)
-
-    suspend fun commitCursorInvalid(
-        response: TerminalHttpResponsePersistence,
-    ) = SyncPersistenceStore(database).commitCursorInvalid(response)
-
-    suspend fun handleTrustedSyncUnauthorized(
-        endpointId: String,
-        requestIdentity: String,
-        expectedAttemptId: String,
-        failedAccessGeneration: Long,
-        nowEpochMs: Long,
-        nextAttemptAtEpochMs: Long,
-        updatedAtUtc: String,
-    ): CredentialRecoveryAction = SyncAuthPersistenceStore(database)
-        .handleTrustedSyncUnauthorized(
-            endpointId = endpointId,
-            requestIdentity = requestIdentity,
-            expectedAttemptId = expectedAttemptId,
-            failedAccessGeneration = failedAccessGeneration,
-            nowEpochMs = nowEpochMs,
-            nextAttemptAtEpochMs = nextAttemptAtEpochMs,
-            updatedAtUtc = updatedAtUtc,
-        )
-
-    suspend fun commitRevokeTerminal(
-        response: TerminalHttpResponsePersistence,
-    ): Boolean = SyncAuthPersistenceStore(database).commitRevokeTerminal(response)
-
-    suspend fun quarantineRevokeIntegrity(
-        requestIdentity: String,
-        expectedKeyAlias: String,
-        expectedKeyGeneration: Int,
-        expectedAadVersion: Int,
-        expectedAttemptId: String,
-        updatedAtUtc: String,
-        failureCode: String,
-    ): Boolean = SyncAuthPersistenceStore(database).quarantineRevokeIntegrity(
-        requestIdentity = requestIdentity,
-        expectedKeyAlias = expectedKeyAlias,
-        expectedKeyGeneration = expectedKeyGeneration,
-        expectedAadVersion = expectedAadVersion,
-        expectedAttemptId = expectedAttemptId,
-        updatedAtUtc = updatedAtUtc,
-        failureCode = failureCode,
-    )
-
     suspend fun commitPushBootstrapRequired(
         response: TerminalHttpResponsePersistence,
         session: SyncBootstrapSessionEntity,
@@ -337,6 +281,7 @@ internal class ProtectedSyncRequestStore(
                 }
 
                 try {
+                    var claimedAccessGeneration: Long? = null
                     val claimed = if (
                         request.endpointId == M2Endpoint.AUTH_REVOKE.endpointId
                     ) {
@@ -361,6 +306,7 @@ internal class ProtectedSyncRequestStore(
                                 RequestBodyFailure.METADATA_INVALID,
                             )
                         }
+                        claimedAccessGeneration = currentAuth.generation
                         transportDao.claimRevokeAttempt(
                             requestIdentity = request.requestIdentity,
                             attemptId = attemptId,
@@ -408,6 +354,7 @@ internal class ProtectedSyncRequestStore(
                             verified.close()
                             return@withTransaction ProtectedRequestClaim.NotClaimed
                         }
+                        claimedAccessGeneration = currentAuth.generation
                         try {
                             requireDurableSyncMembership(request, verified)
                         } catch (error: DurableMembershipInvalidException) {
@@ -437,7 +384,12 @@ internal class ProtectedSyncRequestStore(
                         ProtectedRequestClaim.NotClaimed
                     } else {
                         pendingOwnership = verified
-                        ProtectedRequestClaim.Claimed(verified)
+                        ProtectedRequestClaim.Claimed(
+                            request = verified,
+                            attemptId = attemptId,
+                            credentialEpochId = request.credentialEpochId,
+                            accessGenerationUsed = checkNotNull(claimedAccessGeneration),
+                        )
                     }
                 } catch (error: Throwable) {
                     verified.close()
@@ -887,6 +839,9 @@ private suspend inline fun <T> consumeRequest(
 internal sealed interface ProtectedRequestClaim {
     class Claimed(
         val request: VerifiedDurableRequest,
+        val attemptId: String,
+        val credentialEpochId: String,
+        val accessGenerationUsed: Long,
     ) : ProtectedRequestClaim {
         override fun toString(): String = "ProtectedRequestClaim.Claimed(redacted=true)"
     }

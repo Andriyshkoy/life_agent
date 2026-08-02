@@ -190,6 +190,7 @@ internal class DurableSyncRequestVerifier(
                         endpoint = endpoint,
                         requestIdentity = request.requestIdentity,
                         idempotencyKey = request.idempotencyKey,
+                        routeBinding = verifiedRouteBinding(request, endpoint, body),
                         body = body,
                     )
                 } catch (error: Throwable) {
@@ -224,12 +225,19 @@ internal class DurableSyncRequestVerifier(
                     verifyBody(request, endpoint, binding, plaintext)
                     retained = plaintext.copyOf()
                 }
-                VerifiedDurableRequest(
-                    endpoint = endpoint,
-                    requestIdentity = request.requestIdentity,
-                    idempotencyKey = request.idempotencyKey,
-                    body = checkNotNull(retained),
-                )
+                val owned = checkNotNull(retained)
+                try {
+                    VerifiedDurableRequest(
+                        endpoint = endpoint,
+                        requestIdentity = request.requestIdentity,
+                        idempotencyKey = request.idempotencyKey,
+                        routeBinding = verifiedRouteBinding(request, endpoint, owned),
+                        body = owned,
+                    )
+                } catch (error: Throwable) {
+                    owned.fill(0)
+                    throw error
+                }
             }
 
             else -> error("Unknown durable request storage kind")
@@ -267,12 +275,53 @@ internal class DurableSyncRequestVerifier(
             throw RequestBodyMetadataInvalidException()
         }
     }
+
+    private fun verifiedRouteBinding(
+        request: SyncHttpRequestEntity,
+        endpoint: M2Endpoint,
+        body: ByteArray,
+    ): VerifiedRequestRouteBinding {
+        val bootstrap = if (endpoint == M2Endpoint.SYNC_BOOTSTRAP) {
+            WireRequestCodec.decodeDurableBootstrapEvidence(body)
+        } else {
+            null
+        }
+        val pull = if (endpoint == M2Endpoint.SYNC_PULL) {
+            WireRequestCodec.decodeDurablePullEvidence(body)
+        } else {
+            null
+        }
+        return VerifiedRequestRouteBinding(
+            endpoint = endpoint,
+            requestIdentity = request.requestIdentity,
+            credentialEpochId = request.credentialEpochId,
+            deviceId = request.deviceId,
+            bootstrapId = bootstrap?.bootstrapId,
+            pageCursor = bootstrap?.pageCursor,
+            pullCursor = pull?.cursor,
+        )
+    }
+}
+
+/** Non-secret route evidence derived only after exact-body authentication. */
+internal class VerifiedRequestRouteBinding internal constructor(
+    val endpoint: M2Endpoint,
+    val requestIdentity: String,
+    val credentialEpochId: String,
+    val deviceId: String,
+    val bootstrapId: String?,
+    val pageCursor: String?,
+    val pullCursor: String?,
+) {
+    override fun toString(): String =
+        "VerifiedRequestRouteBinding(endpoint=${endpoint.endpointId},redacted=true)"
 }
 
 internal class VerifiedDurableRequest internal constructor(
     val endpoint: M2Endpoint,
     val requestIdentity: String,
     val idempotencyKey: String?,
+    internal val routeBinding: VerifiedRequestRouteBinding? = null,
     body: ByteArray,
 ) : AutoCloseable {
     private var bodyStorage: ByteArray? = body
