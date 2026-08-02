@@ -815,7 +815,7 @@ async def test_replay_safe_stub_returns_retryable_503(
 ) -> None:
     async with client_for(settings, engine) as client:
         response = await client.post(
-            "/api/v1/sync/bootstrap",
+            "/api/v1/sync/pull",
             json={"request_id": REQUEST_ID},
             headers={"Authorization": f"Bearer {ACCESS_TOKEN}"},
         )

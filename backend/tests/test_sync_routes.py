@@ -18,14 +18,16 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from life_agent_backend.api_stub import router as sync_stub_router
 from life_agent_backend.app import create_app
 from life_agent_backend.settings import Settings
-from life_agent_backend.sync_contract import PushBatchEnvelope
-from life_agent_backend.sync_routes import router as sync_push_router
+from life_agent_backend.sync_bootstrap_service import SyncBootstrapService
+from life_agent_backend.sync_contract import BootstrapRequest, PushBatchEnvelope
+from life_agent_backend.sync_routes import router as sync_router
 from life_agent_backend.sync_service import SyncService
 
 ACCESS_TOKEN = f"laa_{'A' * 43}"
 OTHER_BATCH_ID = "96000000-0000-4000-8000-000000000099"
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 PUSH_REQUEST_PATH = REPOSITORY_ROOT / "examples" / "sync-push-batch-request.json"
+BOOTSTRAP_REQUEST_PATH = REPOSITORY_ROOT / "examples" / "sync-bootstrap-request.json"
 
 
 class FixedClock:
@@ -70,6 +72,30 @@ class CapturingSyncService:
         return StubHttpResult(status_code=200, body=self.result_body)
 
 
+class CapturingBootstrapService:
+    def __init__(self, *, result_body: bytes) -> None:
+        self.result_body = result_body
+        self.calls: list[dict[str, Any]] = []
+
+    async def bootstrap(
+        self,
+        envelope: BootstrapRequest,
+        *,
+        access_token: str,
+        raw_body: bytes,
+        api_request: Request,
+    ) -> StubHttpResult:
+        self.calls.append(
+            {
+                "envelope": envelope,
+                "access_token": access_token,
+                "raw_body": raw_body,
+                "path": api_request.url.path,
+            }
+        )
+        return StubHttpResult(status_code=200, body=self.result_body)
+
+
 @pytest.fixture
 def engine() -> Iterator[AsyncEngine]:
     mocked = MagicMock(spec=AsyncEngine)
@@ -82,6 +108,7 @@ async def client_for(
     settings: Settings,
     engine: AsyncEngine,
     service: CapturingSyncService,
+    bootstrap_service: CapturingBootstrapService | None = None,
 ) -> AsyncIterator[AsyncClient]:
     application = create_app(
         settings,
@@ -89,6 +116,9 @@ async def client_for(
         readiness_probe=StubProbe(),
         clock=FixedClock(),
         sync_service=cast(SyncService, service),
+        sync_bootstrap_service=(
+            cast(SyncBootstrapService, bootstrap_service) if bootstrap_service is not None else None
+        ),
     )
     transport = ASGITransport(app=application, raise_app_exceptions=False)
     async with (
@@ -103,31 +133,102 @@ def push_request() -> tuple[bytes, dict[str, Any]]:
     return raw_body, json.loads(raw_body)
 
 
-def test_app_registers_one_real_push_route_and_keeps_other_sync_stubs(
+def bootstrap_request() -> tuple[bytes, dict[str, Any]]:
+    raw_body = BOOTSTRAP_REQUEST_PATH.read_bytes()
+    return raw_body, json.loads(raw_body)
+
+
+def test_app_registers_real_push_and_bootstrap_routes_and_keeps_pull_stub(
     settings: Settings,
     engine: AsyncEngine,
 ) -> None:
     service = CapturingSyncService(result_body=b"{}")
+    bootstrap_service = CapturingBootstrapService(result_body=b"{}")
     application = create_app(
         settings,
         database_engine=engine,
         readiness_probe=StubProbe(),
         clock=FixedClock(),
         sync_service=cast(SyncService, service),
+        sync_bootstrap_service=cast(SyncBootstrapService, bootstrap_service),
     )
     real_routes = [
-        (route.path, route.name) for route in sync_push_router.routes if isinstance(route, APIRoute)
+        (route.path, route.name) for route in sync_router.routes if isinstance(route, APIRoute)
     ]
     stub_routes = sorted(
         (route.path, route.name) for route in sync_stub_router.routes if isinstance(route, APIRoute)
     )
 
     assert application.state.sync_service is service
-    assert real_routes == [("/api/v1/sync/push", "push")]
-    assert stub_routes == [
-        ("/api/v1/sync/bootstrap", "sync_bootstrap_not_implemented"),
-        ("/api/v1/sync/pull", "sync_pull_not_implemented"),
+    assert application.state.sync_bootstrap_service is bootstrap_service
+    assert real_routes == [
+        ("/api/v1/sync/bootstrap", "bootstrap"),
+        ("/api/v1/sync/push", "push"),
     ]
+    assert stub_routes == [("/api/v1/sync/pull", "sync_pull_not_implemented")]
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_route_passes_exact_ingress_and_returns_exact_service_bytes(
+    settings: Settings,
+    engine: AsyncEngine,
+) -> None:
+    response_body = b'{"protocol_version":"1.0.0","message_type":"bootstrap_response"}'
+    push_service = CapturingSyncService(result_body=b"{}")
+    service = CapturingBootstrapService(result_body=response_body)
+    raw_body, document = bootstrap_request()
+
+    async with client_for(settings, engine, push_service, service) as client:
+        response = await client.post(
+            "/api/v1/sync/bootstrap",
+            content=raw_body,
+            headers={
+                "Content-Type": "application/json; charset=utf-8",
+                "Authorization": f"Bearer {ACCESS_TOKEN}",
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.content == response_body
+    assert response.headers["cache-control"] == "no-store"
+    assert response.headers["content-type"] == "application/json; charset=utf-8"
+    assert "content-encoding" not in response.headers
+    assert len(service.calls) == 1
+    call = service.calls[0]
+    envelope = cast(BootstrapRequest, call["envelope"])
+    assert str(envelope.request_id) == document["request_id"]
+    assert str(envelope.bootstrap_id) == document["bootstrap_id"]
+    assert str(envelope.device_id) == document["device_id"]
+    assert call["access_token"] == ACCESS_TOKEN
+    assert call["raw_body"] == raw_body
+    assert call["path"] == "/api/v1/sync/bootstrap"
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_schema_rejection_never_calls_service(
+    settings: Settings,
+    engine: AsyncEngine,
+) -> None:
+    push_service = CapturingSyncService(result_body=b"{}")
+    service = CapturingBootstrapService(result_body=b"{}")
+    _, document = bootstrap_request()
+    document["page_size"] = 501
+    raw_body = json.dumps(document, separators=(",", ":")).encode()
+
+    async with client_for(settings, engine, push_service, service) as client:
+        response = await client.post(
+            "/api/v1/sync/bootstrap",
+            content=raw_body,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {ACCESS_TOKEN}",
+            },
+        )
+
+    assert response.status_code == 422
+    assert response.json()["error_code"] == "request_schema_invalid"
+    assert response.json()["request_id"] == document["request_id"]
+    assert service.calls == []
 
 
 @pytest.mark.asyncio
