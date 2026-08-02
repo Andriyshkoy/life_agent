@@ -10,13 +10,20 @@ from life_agent_backend.sync_bootstrap_service import (
     SyncBootstrapHttpResult,
     SyncBootstrapService,
 )
-from life_agent_backend.sync_contract import parse_bootstrap_request, parse_push_envelope
+from life_agent_backend.sync_contract import (
+    parse_bootstrap_request,
+    parse_pull_request,
+    parse_push_envelope,
+)
+from life_agent_backend.sync_pull_service import SyncPullHttpResult, SyncPullService
 from life_agent_backend.sync_service import SyncPushHttpResult, SyncService
 
 router = APIRouter()
 
 
-def _response(result: SyncPushHttpResult | SyncBootstrapHttpResult) -> Response:
+def _response(
+    result: SyncPushHttpResult | SyncBootstrapHttpResult | SyncPullHttpResult,
+) -> Response:
     return Response(
         status_code=result.status_code,
         content=result.body,
@@ -61,6 +68,25 @@ async def push(request: Request) -> Response:
             envelope,
             access_token=access_token,
             idempotency_key=idempotency_key,
+            raw_body=ingress.raw_body,
+            api_request=request,
+        )
+    )
+
+
+@router.post("/api/v1/sync/pull", include_in_schema=False)
+async def pull(request: Request) -> Response:
+    ingress = strict_json_request(request)
+    access_token = ingress.access_token
+    if access_token is None:
+        raise RuntimeError("sync pull ingress invariant failed")
+
+    envelope = parse_pull_request(ingress.document)
+    service = cast(SyncPullService, request.app.state.sync_pull_service)
+    return _response(
+        await service.pull(
+            envelope,
+            access_token=access_token,
             raw_body=ingress.raw_body,
             api_request=request,
         )

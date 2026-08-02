@@ -39,6 +39,7 @@ from life_agent_backend.ids import IdGenerator, Uuid4Generator
 from life_agent_backend.observability import LogEvent, SafeEventLogger, configure_logging
 from life_agent_backend.settings import Settings
 from life_agent_backend.sync_bootstrap_service import SyncBootstrapService
+from life_agent_backend.sync_pull_service import SyncPullService
 from life_agent_backend.sync_routes import router as sync_router
 from life_agent_backend.sync_service import SyncService
 
@@ -105,6 +106,7 @@ def create_app(
     auth_service: AuthService | None = None,
     sync_service: SyncService | None = None,
     sync_bootstrap_service: SyncBootstrapService | None = None,
+    sync_pull_service: SyncPullService | None = None,
     enrollment_rate_limiter: EnrollmentRateLimiter | None = None,
     random_source: RandomSource | None = None,
 ) -> FastAPI:
@@ -176,6 +178,17 @@ def create_app(
         sync_bootstrap_service
         if sync_bootstrap_service is not None
         else SyncBootstrapService(
+            settings=settings,
+            session_factory=session_factory,
+            clock=resolved_clock,
+            id_generator=resolved_id_generator,
+            random_source=random_source,
+        )
+    )
+    application.state.sync_pull_service = (
+        sync_pull_service
+        if sync_pull_service is not None
+        else SyncPullService(
             settings=settings,
             session_factory=session_factory,
             clock=resolved_clock,
