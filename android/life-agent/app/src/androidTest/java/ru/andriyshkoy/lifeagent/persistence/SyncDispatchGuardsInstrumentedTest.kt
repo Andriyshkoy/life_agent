@@ -261,7 +261,7 @@ class SyncDispatchGuardsInstrumentedTest {
     }
 
     @Test
-    fun bootstrapRequiredPhaseEnforcesPageSizeBoundaryAndBinding() = runBlocking {
+    fun bootstrapDiscoveryAndStructuralClaimDoNotParseRequestBodies() = runBlocking {
         fixture.seedIdentity(
             deviceId = SyncM2PersistenceFixture.DEVICE_ID,
             personId = SyncM2PersistenceFixture.PERSON_ID,
@@ -295,13 +295,18 @@ class SyncDispatchGuardsInstrumentedTest {
         )
 
         assertEquals(
-            listOf(intent.firstRequest.requestIdentity),
+            setOf(
+                intent.firstRequest.requestIdentity,
+                oversizedBootstrap.requestIdentity,
+                staleBootstrap.requestIdentity,
+            ),
             fixture.database.syncTransportDao()
                 .findRunnableRequests(SyncM2PersistenceFixture.NOW_MS, 10)
-                .map { it.requestIdentity },
+                .map { it.requestIdentity }
+                .toSet(),
         )
         assertEquals(
-            0,
+            1,
             claim(
                 endpointId = "sync_bootstrap",
                 requestId = oversizedBootstrap.requestIdentity,
@@ -310,7 +315,7 @@ class SyncDispatchGuardsInstrumentedTest {
             ),
         )
         assertEquals(
-            0,
+            1,
             claim(
                 endpointId = "sync_bootstrap",
                 requestId = staleBootstrap.requestIdentity,
@@ -339,7 +344,7 @@ class SyncDispatchGuardsInstrumentedTest {
     }
 
     @Test
-    fun futureMisboundBootstrapDoesNotScheduleAFalseWake() = runBlocking {
+    fun futureBootstrapCandidateSchedulesWakeWithoutParsingBody() = runBlocking {
         fixture.seedIdentity(
             deviceId = SyncM2PersistenceFixture.DEVICE_ID,
             personId = SyncM2PersistenceFixture.PERSON_ID,
@@ -361,22 +366,23 @@ class SyncDispatchGuardsInstrumentedTest {
         fixture.database.syncTransportDao().insertRequest(stale)
 
         assertEquals(
-            emptyList<Any>(),
+            listOf(stale.requestIdentity),
             fixture.database.syncTransportDao()
                 .findRunnableRequests(
                     SyncM2PersistenceFixture.NOW_MS + 1_000,
                     10,
-                ),
+                )
+                .map { it.requestIdentity },
         )
         assertEquals(
-            SyncM2PersistenceFixture.DEADLINE_MS,
+            SyncM2PersistenceFixture.NOW_MS + 1_000,
             fixture.database.syncTransportDao()
                 .findEarliestRunnableAtEpochMs(SyncM2PersistenceFixture.NOW_MS),
         )
     }
 
     @Test
-    fun bootstrapBindingRejectsStringPageSize() = runBlocking {
+    fun bootstrapDiscoveryDoesNotInterpretStringPageSize() = runBlocking {
         fixture.seedIdentity(
             deviceId = SyncM2PersistenceFixture.DEVICE_ID,
             personId = SyncM2PersistenceFixture.PERSON_ID,
@@ -409,17 +415,18 @@ class SyncDispatchGuardsInstrumentedTest {
         fixture.database.syncTransportDao().insertRequest(malformed)
 
         assertEquals(
-            emptyList<Any>(),
+            listOf(requestId),
             fixture.database.syncTransportDao()
-                .findRunnableRequests(SyncM2PersistenceFixture.NOW_MS, 10),
+                .findRunnableRequests(SyncM2PersistenceFixture.NOW_MS, 10)
+                .map { it.requestIdentity },
         )
         assertEquals(
-            SyncM2PersistenceFixture.DEADLINE_MS,
+            SyncM2PersistenceFixture.NOW_MS,
             fixture.database.syncTransportDao()
                 .findEarliestRunnableAtEpochMs(SyncM2PersistenceFixture.NOW_MS),
         )
         assertEquals(
-            0,
+            1,
             claim(
                 endpointId = "sync_bootstrap",
                 requestId = requestId,
@@ -430,7 +437,7 @@ class SyncDispatchGuardsInstrumentedTest {
     }
 
     @Test
-    fun bootstrapBindingRejectsNumericPageCursorWhenSessionExpectsStringCursor() = runBlocking {
+    fun bootstrapDiscoveryDoesNotInterpretNumericPageCursor() = runBlocking {
         fixture.seedIdentity(
             deviceId = SyncM2PersistenceFixture.DEVICE_ID,
             personId = SyncM2PersistenceFixture.PERSON_ID,
@@ -463,17 +470,18 @@ class SyncDispatchGuardsInstrumentedTest {
         fixture.database.syncTransportDao().insertRequest(malformed)
 
         assertEquals(
-            emptyList<Any>(),
+            listOf(requestId),
             fixture.database.syncTransportDao()
-                .findRunnableRequests(SyncM2PersistenceFixture.NOW_MS, 10),
+                .findRunnableRequests(SyncM2PersistenceFixture.NOW_MS, 10)
+                .map { it.requestIdentity },
         )
         assertEquals(
-            SyncM2PersistenceFixture.DEADLINE_MS,
+            SyncM2PersistenceFixture.NOW_MS,
             fixture.database.syncTransportDao()
                 .findEarliestRunnableAtEpochMs(SyncM2PersistenceFixture.NOW_MS),
         )
         assertEquals(
-            0,
+            1,
             claim(
                 endpointId = "sync_bootstrap",
                 requestId = requestId,

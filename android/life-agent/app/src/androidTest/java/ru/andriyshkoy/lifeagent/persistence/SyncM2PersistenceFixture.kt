@@ -180,7 +180,7 @@ internal class SyncM2PersistenceFixture(
         val rawBody = if (endpointId == "sync_bootstrap") {
             requireNotNull(bootstrapId)
             """
-            {"protocol_version":"1.0.0","message_type":"bootstrap_request","request_id":"$requestIdentity","bootstrap_id":"$bootstrapId","device_id":"$deviceId","page_size":$pageSize,"page_cursor":null}
+            {"bootstrap_id":"$bootstrapId","device_id":"$deviceId","message_type":"bootstrap_request","page_cursor":null,"page_size":$pageSize,"protocol_version":"1.0.0","request_id":"$requestIdentity"}
             """.trimIndent().toByteArray(StandardCharsets.UTF_8)
         } else {
             """{"request_id":"$requestIdentity"}"""

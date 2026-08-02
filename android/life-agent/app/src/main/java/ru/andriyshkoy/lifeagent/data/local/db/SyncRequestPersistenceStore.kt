@@ -6,6 +6,8 @@ import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonPrimitive
+import ru.andriyshkoy.lifeagent.data.local.db.dao.SyncAuthDao
+import ru.andriyshkoy.lifeagent.data.local.db.dao.SyncRequestIntegrityRecoverySnapshot
 import ru.andriyshkoy.lifeagent.data.local.db.entity.SyncBootstrapSessionEntity
 import ru.andriyshkoy.lifeagent.data.local.db.entity.SyncHttpRequestEntity
 
@@ -13,6 +15,34 @@ data class BootstrapIntentPersistence(
     val session: SyncBootstrapSessionEntity,
     val firstRequest: SyncHttpRequestEntity,
 )
+
+internal suspend fun quarantineCurrentRevokeFamilyForIntegrity(
+    authDao: SyncAuthDao,
+    credentialEpochId: String,
+    deviceId: String,
+    failedAtUtc: String,
+    failureCode: String,
+) {
+    val current = authDao.findState()
+    if (
+        current?.credentialEpochId == credentialEpochId &&
+        current.deviceId == deviceId &&
+        current.state == "revoke_pending"
+    ) {
+        check(
+            authDao.quarantine(
+                credentialEpochId = current.credentialEpochId,
+                generation = current.generation,
+                expectedState = "revoke_pending",
+                newState = "integrity_failure",
+                updatedAtUtc = failedAtUtc,
+                failureCode = failureCode,
+            ) == 1,
+        ) {
+            "Revoke request integrity quarantine lost its exact current-family CAS"
+        }
+    }
+}
 
 /**
  * Persists whole-request recovery outcomes which span transport, batch,
@@ -34,11 +64,34 @@ class SyncRequestPersistenceStore(
     ): Int {
         require(limit in 1..1_000)
         return database.withTransaction {
-            var reconciled = 0
+            var reconciled = recoverInvalidRequestMetadataInCurrentTransaction(
+                terminalAtUtc = terminalAtUtc,
+                limit = limit,
+            )
+            if (reconciled == limit) {
+                return@withTransaction reconciled
+            }
             transportDao.findRequestsNeedingLocalTerminalization(
                 nowEpochMs = nowEpochMs,
-                limit = limit,
+                limit = limit - reconciled,
             ).forEach { request ->
+                if (
+                    request.rawBodyHmac.size != REQUEST_BODY_HMAC_BYTES ||
+                    request.accessGenerationUsed == null ||
+                    request.accessGenerationUsed <= 0
+                ) {
+                    val snapshot = checkNotNull(
+                        transportDao.findRequestIntegrityRecoverySnapshot(
+                            request.endpointId,
+                            request.requestIdentity,
+                        ),
+                    ) {
+                        "Invalid durable request metadata disappeared during recovery"
+                    }
+                    quarantineInvalidRequestMetadata(snapshot, terminalAtUtc)
+                    reconciled += 1
+                    return@forEach
+                }
                 check(
                     transportDao.markRetryBudgetExhausted(
                         endpointId = request.endpointId,
@@ -50,9 +103,7 @@ class SyncRequestPersistenceStore(
                     "Expired durable request lost its terminalization CAS"
                 }
                 if (request.endpointId == AUTH_REVOKE) {
-                    val generation = checkNotNull(request.accessGenerationUsed) {
-                        "Revoke request lost its credential generation"
-                    }
+                    val generation = checkNotNull(request.accessGenerationUsed)
                     val current = authDao.findState()
                     val exactFamily =
                         current?.credentialEpochId == request.credentialEpochId &&
@@ -82,19 +133,166 @@ class SyncRequestPersistenceStore(
         }
     }
 
+    internal suspend fun recoverInvalidRequestMetadata(
+        terminalAtUtc: String,
+        limit: Int = 1_000,
+    ): Int {
+        require(limit in 1..1_000)
+        return database.withTransaction {
+            recoverInvalidRequestMetadataInCurrentTransaction(terminalAtUtc, limit)
+        }
+    }
+
+    /**
+     * Guards only the authoritative fresh-response path. Callers must return
+     * stale callbacks and exact terminal replays before invoking this method.
+     * The type-aware snapshot quarantines malformed SQLite metadata before any
+     * fresh response mutation and without consuming another attempt.
+     */
+    internal suspend fun preflightFreshResponseRequestMetadata(
+        request: SyncHttpRequestEntity,
+        failedAtUtc: String,
+    ): Boolean {
+        check(request.state == SENDING && request.activeAttemptId != null) {
+            "Response metadata preflight requires the exact active attempt"
+        }
+        val snapshot = checkNotNull(
+            transportDao.findRequestIntegrityRecoverySnapshot(
+                request.endpointId,
+                request.requestIdentity,
+            ),
+        ) {
+            "Fresh response request disappeared during metadata preflight"
+        }
+        check(
+            snapshot.state == request.state &&
+                snapshot.activeAttemptId == request.activeAttemptId &&
+                snapshot.leaseExpiresAtEpochMs == request.leaseExpiresAtEpochMs &&
+                snapshot.updatedAtUtc == request.updatedAtUtc,
+        ) {
+            "Fresh response request changed during metadata preflight"
+        }
+        val revokeGenerationMismatch =
+            if (snapshot.endpointId == AUTH_REVOKE) {
+                val current = authDao.findState()
+                current?.credentialEpochId == snapshot.credentialEpochId &&
+                    current.deviceId == snapshot.deviceId &&
+                    current.state == REVOKE_PENDING &&
+                    snapshot.accessGenerationUsed != current.generation
+            } else {
+                false
+            }
+        val valid =
+            snapshot.hasCanonicalHmacStorage &&
+                snapshot.hasCanonicalHmacKeyGeneration &&
+                snapshot.hasCanonicalAccessGeneration &&
+                snapshot.hasCanonicalAttemptCount &&
+                snapshot.attemptCount == request.attemptCount.toLong() &&
+                !revokeGenerationMismatch
+        if (valid) {
+            return true
+        }
+        quarantineInvalidRequestMetadata(snapshot, failedAtUtc)
+        return false
+    }
+
+    private suspend fun recoverInvalidRequestMetadataInCurrentTransaction(
+        terminalAtUtc: String,
+        limit: Int,
+    ): Int {
+        var recovered = 0
+        transportDao.findOpenRequestsNeedingIntegrityRecovery(limit).forEach { snapshot ->
+            quarantineInvalidRequestMetadata(snapshot, terminalAtUtc)
+            recovered += 1
+        }
+        return recovered
+    }
+
+    private suspend fun quarantineInvalidRequestMetadata(
+        request: SyncRequestIntegrityRecoverySnapshot,
+        failedAtUtc: String,
+    ) {
+        check(
+            transportDao.quarantineRequestIntegrityMetadata(
+                endpointId = request.endpointId,
+                requestIdentity = request.requestIdentity,
+                expectedHmacKeyGenerationStorageClass =
+                    request.hmacKeyGenerationStorageClass,
+                expectedHmacKeyGenerationQuoted = request.hmacKeyGenerationQuoted,
+                expectedHmacStorageClass = request.rawBodyHmacStorageClass,
+                expectedHmacHex = request.rawBodyHmacHex,
+                expectedState = request.state,
+                expectedAttemptCountStorageClass = request.attemptCountStorageClass,
+                expectedAttemptCountQuoted = request.attemptCountQuoted,
+                expectedActiveAttemptId = request.activeAttemptId,
+                expectedLeaseExpiresAtEpochMs = request.leaseExpiresAtEpochMs,
+                expectedUpdatedAtUtc = request.updatedAtUtc,
+                failedAtUtc = failedAtUtc,
+                failureCode = REQUEST_BODY_METADATA_INVALID,
+            ) == 1,
+        ) {
+            "Invalid durable request metadata lost its exact recovery CAS"
+        }
+        if (request.endpointId == AUTH_REVOKE) {
+            quarantineCurrentRevokeFamilyForIntegrity(
+                authDao = authDao,
+                credentialEpochId = request.credentialEpochId,
+                deviceId = request.deviceId,
+                failedAtUtc = failedAtUtc,
+                failureCode = REQUEST_BODY_METADATA_INVALID,
+            )
+        } else {
+            val stream = replicaDao.findStreamState()
+            if (
+                stream?.credentialEpochId == request.credentialEpochId &&
+                stream.deviceId == request.deviceId &&
+                stream.integrityErrorCode == null
+            ) {
+                check(
+                    replicaDao.markIntegrityHalted(
+                        credentialEpochId = request.credentialEpochId,
+                        deviceId = request.deviceId,
+                        errorCode = REQUEST_BODY_METADATA_INVALID,
+                        updatedAtUtc = failedAtUtc,
+                    ) == 1,
+                ) {
+                    "Malformed request HMAC could not halt its exact stream"
+                }
+            }
+        }
+    }
+
     /**
      * Installs a trusted sync_push/bootstrap_required outcome atomically.
      *
      * Returns false for a stale attempt callback or an exact terminal replay.
      */
-    suspend fun commitPushBootstrapRequired(
+    internal suspend fun commitPushBootstrapRequired(
         response: TerminalHttpResponsePersistence,
         proposedIntent: BootstrapIntentPersistence,
+    ): Boolean = commitPushBootstrapRequiredInternal(
+        response = response,
+        proposedIntentFactory = { proposedIntent },
+    )
+
+    internal suspend fun commitPushBootstrapRequiredWithProtectedIntent(
+        response: TerminalHttpResponsePersistence,
+        proposedIntentFactory: suspend () -> BootstrapIntentPersistence,
+        existingCandidateVerifier: suspend () -> Boolean,
+    ): Boolean = commitPushBootstrapRequiredInternal(
+        response,
+        proposedIntentFactory,
+        existingCandidateVerifier,
+    )
+
+    private suspend fun commitPushBootstrapRequiredInternal(
+        response: TerminalHttpResponsePersistence,
+        proposedIntentFactory: suspend () -> BootstrapIntentPersistence,
+        existingCandidateVerifier: suspend () -> Boolean = { true },
     ): Boolean {
         require(response.endpointId == SYNC_PUSH)
         require(response.httpStatus == 409)
         require(response.terminalErrorCode == BOOTSTRAP_REQUIRED)
-        validateBootstrapIntent(proposedIntent)
         return database.withTransaction {
             val request = checkNotNull(
                 transportDao.findRequest(response.endpointId, response.requestIdentity),
@@ -111,27 +309,25 @@ class SyncRequestPersistenceStore(
             ) {
                 return@withTransaction false
             }
-
-            val stream = checkNotNull(replicaDao.findStreamState()) {
-                "Bootstrap-required push has no current stream"
+            val stream = replicaDao.findStreamState() ?: return@withTransaction false
+            val auth = authDao.findState() ?: return@withTransaction false
+            val identity = identityDao.findIdentity() ?: return@withTransaction false
+            if (
+                stream.credentialEpochId != request.credentialEpochId ||
+                stream.deviceId != request.deviceId ||
+                auth.credentialEpochId != request.credentialEpochId ||
+                auth.deviceId != request.deviceId ||
+                auth.installationId != identity.installationId ||
+                auth.localOwnerId != identity.localOwnerId
+            ) {
+                return@withTransaction false
             }
-            val auth = checkNotNull(authDao.findState()) {
-                "Bootstrap-required push has no credential family"
-            }
-            val identity = checkNotNull(identityDao.findIdentity()) {
-                "Bootstrap-required push has no current identity"
+            if (!preflightFreshResponseRequestMetadata(request, response.terminalAtUtc)) {
+                return@withTransaction false
             }
             check(
-                stream.credentialEpochId == request.credentialEpochId &&
-                    stream.deviceId == request.deviceId &&
-                    stream.integrityErrorCode == null &&
-                    auth.credentialEpochId == request.credentialEpochId &&
-                    auth.deviceId == request.deviceId &&
-                    auth.state == ACTIVE &&
-                    auth.installationId == identity.installationId &&
-                    auth.localOwnerId == identity.localOwnerId &&
-                    proposedIntent.firstRequest.accessGenerationUsed ==
-                    auth.generation,
+                stream.integrityErrorCode == null &&
+                    auth.state in setOf(ACTIVE, REFRESH_IN_FLIGHT),
             ) {
                 "Bootstrap-required push lost its current binding"
             }
@@ -162,6 +358,18 @@ class SyncRequestPersistenceStore(
                 ) {
                     "Bootstrap-required batch member drifted"
                 }
+            }
+
+            if (!existingCandidateVerifier()) {
+                return@withTransaction false
+            }
+            val proposedIntent = proposedIntentFactory()
+            validateBootstrapIntent(proposedIntent)
+            check(
+                checkNotNull(proposedIntent.firstRequest.accessGenerationUsed) <=
+                    auth.generation,
+            ) {
+                "Bootstrap-required intent uses a future credential generation"
             }
 
             check(
@@ -331,9 +539,13 @@ class SyncRequestPersistenceStore(
         const val AUTH_REVOKE = "auth_revoke"
         const val SYNC_PUSH = "sync_push"
         const val ACTIVE = "active"
+        const val REFRESH_IN_FLIGHT = "refresh_in_flight"
         const val REVOKE_PENDING = "revoke_pending"
         const val QUARANTINED = "quarantined"
+        const val INTEGRITY_FAILURE = "integrity_failure"
         const val REVOKE_RETRY_EXHAUSTED = "revoke_retry_exhausted"
+        const val REQUEST_BODY_METADATA_INVALID = "request_body_metadata_invalid"
+        const val REQUEST_BODY_HMAC_BYTES = 32
         const val SENDING = "sending"
         const val TERMINAL = "terminal"
         const val BOOTSTRAP_REQUIRED = "bootstrap_required"

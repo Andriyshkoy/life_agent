@@ -4,6 +4,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import ru.andriyshkoy.lifeagent.data.security.REQUEST_BODY_HMAC_DOMAIN
 
 class WireContractParityTest {
     @Test
@@ -107,6 +108,47 @@ class WireContractParityTest {
         assertTrue(M2Endpoint.entries.all { it.method == "POST" && it.path.startsWith("/api/v1/") })
         assertFalse(M2Endpoint.AUTH_ENROLL.usesBearerAccess)
         assertTrue(M2Endpoint.SYNC_PUSH.usesBearerAccess)
+    }
+
+    @Test
+    fun durableAndroidHmacFramingMatchesFrozenManifestAndSchema() {
+        val manifest = parseManifest()
+        val execution = manifest.requireObject("client_policy")
+            .requireObject("android_execution")
+        val contract = execution.requireObject("raw_body_fingerprint_contract")
+        assertEquals("HMAC-SHA-256", contract.requireString("algorithm"))
+        assertEquals(REQUEST_BODY_HMAC_DOMAIN, contract.requireString("domain"))
+        assertEquals(
+            listOf(
+                "domain",
+                "endpoint_id",
+                "protocol_version",
+                "local_credential_epoch_id",
+                "device_id",
+                "key_epoch_uint64_be",
+                "exact_raw_body_octets",
+            ),
+            contract.requireArray("input_order").elements.map {
+                (it as WireJsonString).value
+            },
+        )
+        assertEquals(
+            "unsigned_uint64_big_endian_octet_length_before_every_input_component",
+            contract.requireString("length_prefix_encoding"),
+        )
+        assertEquals(
+            "exactly_8_octets_unsigned_uint64_big_endian",
+            contract.requireString("key_epoch_encoding"),
+        )
+        assertEquals(
+            M2Endpoint.entries.filter { it.durableExactReplay }.map { it.endpointId }.toSet(),
+            execution.requireArray("durable_request_endpoint_ids").elements.map {
+                (it as WireJsonString).value
+            }.toSet(),
+        )
+        val schema = WireTestFixtures.bytes("http-api.schema.json").decodeToString()
+        assertTrue(schema.contains("\"const\": \"$REQUEST_BODY_HMAC_DOMAIN\""))
+        assertTrue(schema.contains("key_epoch_uint64_be"))
     }
 
     private fun parseManifest(): WireJsonObject =

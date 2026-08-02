@@ -210,8 +210,20 @@ object DatabaseMigrations {
                 BEFORE $operation ON `sync_http_request`
                 WHEN COALESCE(($requestBodyPredicate), 0) = 0
                      OR NEW.`raw_body_hmac` IS NULL
-                     OR length(NEW.`raw_body_hmac`) = 0
-                     OR NEW.`hmac_key_generation` <= 0
+                     OR typeof(NEW.`raw_body_hmac`) != 'blob'
+                     OR length(NEW.`raw_body_hmac`) != 32
+                     OR typeof(NEW.`hmac_key_generation`) != 'integer'
+                     OR NEW.`hmac_key_generation` != 1
+                     OR (
+                       NEW.`state` IN ('ready', 'retry_wait', 'sending', 'waiting_refresh')
+                       AND (
+                         typeof(NEW.`access_generation_used`) != 'integer'
+                         OR NEW.`access_generation_used` <= 0
+                         OR typeof(NEW.`attempt_count`) != 'integer'
+                         OR NEW.`attempt_count` < 0
+                         OR NEW.`attempt_count` > 2147483647
+                       )
+                     )
                 BEGIN
                     SELECT RAISE(ABORT, 'invalid durable request body storage');
                 END

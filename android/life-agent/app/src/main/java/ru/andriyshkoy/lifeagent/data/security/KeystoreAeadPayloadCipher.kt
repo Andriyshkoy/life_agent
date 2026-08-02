@@ -2,34 +2,42 @@ package ru.andriyshkoy.lifeagent.data.security
 
 import android.content.Context
 import android.security.keystore.KeyGenParameterSpec
+import android.security.keystore.KeyInfo
 import android.security.keystore.KeyProperties
 import java.io.ByteArrayOutputStream
 import java.io.DataOutputStream
 import java.nio.charset.StandardCharsets
+import java.security.InvalidKeyException
 import java.security.KeyStore
-import java.security.MessageDigest
+import java.security.ProviderException
+import java.security.UnrecoverableKeyException
 import javax.crypto.AEADBadTagException
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
-import javax.crypto.Mac
 import javax.crypto.SecretKey
+import javax.crypto.SecretKeyFactory
 import javax.crypto.spec.GCMParameterSpec
 
-data class KeystoreAeadEnvelope(
+internal data class KeystoreAeadEnvelope(
     val ciphertext: ByteArray,
     val nonce: ByteArray,
     val keyAlias: String,
     val keyGeneration: Int,
     val aadVersion: Int,
     val plaintextOctetCount: Long,
-)
+) {
+    override fun toString(): String = "KeystoreAeadEnvelope(redacted=true)"
+}
 
 /**
  * Seals credential-bearing durable payloads with a key that never leaves
- * Android Keystore. Decryption exposes one temporary in-memory buffer only
- * inside [withVerifiedPlaintext] and wipes it before returning.
+ * Android Keystore. The decrypted byte buffer is scoped to
+ * [withAuthenticatedPlaintext] and wiped before returning. Downstream parsing
+ * allocations are kept bounded and short-lived, but immutable JVM strings
+ * created by parsers cannot be wiped. The caller remains responsible for the
+ * separately domain-framed durable-body HMAC after AEAD authentication.
  */
-class KeystoreAeadPayloadCipher(
+internal class KeystoreAeadPayloadCipher(
     context: Context,
     private val keyAlias: String,
     private val keyGeneration: Int,
@@ -49,82 +57,106 @@ class KeystoreAeadPayloadCipher(
         recordIdentity: String,
     ): KeystoreAeadEnvelope {
         require(plaintext.isNotEmpty())
-        val cipher = Cipher.getInstance(TRANSFORMATION)
-        cipher.init(Cipher.ENCRYPT_MODE, getOrCreateKey())
-        cipher.updateAAD(aad(purpose, recordIdentity))
-        return KeystoreAeadEnvelope(
-            ciphertext = cipher.doFinal(plaintext),
-            nonce = cipher.iv.copyOf(),
-            keyAlias = keyAlias,
-            keyGeneration = keyGeneration,
-            aadVersion = aadVersion,
-            plaintextOctetCount = plaintext.size.toLong(),
-        )
-    }
-
-    fun <T> withVerifiedPlaintext(
-        envelope: KeystoreAeadEnvelope,
-        purpose: String,
-        recordIdentity: String,
-        expectedHmac: ByteArray,
-        hmacKey: SecretKey,
-        block: (ByteArray) -> T,
-    ): T {
-        validateEnvelope(envelope)
-        val key = loadKey()
-        val plaintext = try {
+        return try {
             val cipher = Cipher.getInstance(TRANSFORMATION)
-            cipher.init(
-                Cipher.DECRYPT_MODE,
-                key,
-                GCMParameterSpec(GCM_TAG_SIZE_BITS, envelope.nonce),
-            )
+            cipher.init(Cipher.ENCRYPT_MODE, getOrCreateKey())
             cipher.updateAAD(aad(purpose, recordIdentity))
-            cipher.doFinal(envelope.ciphertext)
-        } catch (error: AEADBadTagException) {
-            throw SensitivePayloadIntegrityException(
-                "Sealed payload authentication failed",
-                error,
+            KeystoreAeadEnvelope(
+                ciphertext = cipher.doFinal(plaintext),
+                nonce = cipher.iv.copyOf(),
+                keyAlias = keyAlias,
+                keyGeneration = keyGeneration,
+                aadVersion = aadVersion,
+                plaintextOctetCount = plaintext.size.toLong(),
             )
         } catch (error: SensitivePayloadIntegrityException) {
             throw error
         } catch (error: Exception) {
             throw SensitivePayloadIntegrityException(
-                "Sealed payload cannot be decrypted",
+                "Sealed payload key cannot encrypt",
                 error,
+                SensitivePayloadIntegrityFailure.KEY_UNAVAILABLE,
             )
         }
+    }
 
-        var computedHmac: ByteArray? = null
+    fun <T> withAuthenticatedPlaintext(
+        envelope: KeystoreAeadEnvelope,
+        purpose: String,
+        recordIdentity: String,
+        block: (ByteArray) -> T,
+    ): T {
+        validateEnvelope(envelope)
+        val cipher = try {
+            val cipher = Cipher.getInstance(TRANSFORMATION)
+            cipher.init(
+                Cipher.DECRYPT_MODE,
+                loadKey(),
+                GCMParameterSpec(GCM_TAG_SIZE_BITS, envelope.nonce),
+            )
+            cipher.updateAAD(aad(purpose, recordIdentity))
+            cipher
+        } catch (error: SensitivePayloadIntegrityException) {
+            throw error
+        } catch (error: Exception) {
+            if (error.isKeyInfrastructureFailure()) {
+                throw SensitivePayloadIntegrityException(
+                    "Sealed payload key cannot initialize decryption",
+                    error,
+                    SensitivePayloadIntegrityFailure.KEY_UNAVAILABLE,
+                )
+            }
+            throw error
+        }
+        val plaintext = try {
+            cipher.doFinal(envelope.ciphertext)
+        } catch (error: AEADBadTagException) {
+            throw SensitivePayloadIntegrityException(
+                "Sealed payload authentication failed",
+                error,
+                SensitivePayloadIntegrityFailure.AEAD_AUTH_FAILED,
+            )
+        } catch (error: Exception) {
+            if (error.isKeyInfrastructureFailure()) {
+                throw SensitivePayloadIntegrityException(
+                    "Sealed payload key failed during decryption",
+                    error,
+                    SensitivePayloadIntegrityFailure.KEY_UNAVAILABLE,
+                )
+            }
+            // Unknown provider failures are not proof of ciphertext tampering;
+            // leave them unclassified so callers do not persist a false
+            // integrity verdict.
+            throw error
+        }
+
         try {
             if (plaintext.size.toLong() != envelope.plaintextOctetCount) {
                 throw SensitivePayloadIntegrityException(
                     "Sealed payload length differs from durable metadata",
-                )
-            }
-            computedHmac = Mac.getInstance(HMAC_ALGORITHM).run {
-                init(hmacKey)
-                doFinal(plaintext)
-            }
-            if (!MessageDigest.isEqual(computedHmac, expectedHmac)) {
-                throw SensitivePayloadIntegrityException(
-                    "Sealed payload HMAC verification failed",
+                    failure = SensitivePayloadIntegrityFailure.METADATA_INVALID,
                 )
             }
             return block(plaintext)
         } finally {
-            computedHmac?.fill(0)
             plaintext.fill(0)
         }
     }
 
     private fun validateEnvelope(envelope: KeystoreAeadEnvelope) {
-        require(envelope.keyAlias == keyAlias)
-        require(envelope.keyGeneration == keyGeneration)
-        require(envelope.aadVersion == aadVersion)
-        require(envelope.ciphertext.isNotEmpty())
-        require(envelope.nonce.size in MIN_NONCE_SIZE_BYTES..MAX_NONCE_SIZE_BYTES)
-        require(envelope.plaintextOctetCount > 0)
+        if (
+            envelope.keyAlias != keyAlias ||
+            envelope.keyGeneration != keyGeneration ||
+            envelope.aadVersion != aadVersion ||
+            envelope.ciphertext.isEmpty() ||
+            envelope.nonce.size !in MIN_NONCE_SIZE_BYTES..MAX_NONCE_SIZE_BYTES ||
+            envelope.plaintextOctetCount <= 0
+        ) {
+            throw SensitivePayloadIntegrityException(
+                "Sealed payload metadata is invalid",
+                failure = SensitivePayloadIntegrityFailure.METADATA_INVALID,
+            )
+        }
     }
 
     private fun aad(
@@ -160,29 +192,37 @@ class KeystoreAeadPayloadCipher(
             throw SensitivePayloadIntegrityException(
                 "Android Keystore is unavailable",
                 error,
+                SensitivePayloadIntegrityFailure.KEY_UNAVAILABLE,
             )
         }
 
-    private fun loadKey(): SecretKey =
-        try {
-            loadKeyStore().getKey(keyAlias, null) as? SecretKey
-                ?: throw SensitivePayloadIntegrityException(
-                    "Sealed payload key is unavailable",
-                )
-        } catch (error: SensitivePayloadIntegrityException) {
-            throw error
-        } catch (error: Exception) {
-            throw SensitivePayloadIntegrityException(
-                "Sealed payload key cannot be loaded",
-                error,
+    private fun loadKey(): SecretKey = try {
+        loadKeyStore().let(::loadKeyOrNull)
+            ?: throw SensitivePayloadIntegrityException(
+                "Sealed payload key is unavailable",
+                failure = SensitivePayloadIntegrityFailure.KEY_UNAVAILABLE,
             )
-        }
+    } catch (error: SensitivePayloadIntegrityException) {
+        throw error
+    } catch (error: Exception) {
+        throw SensitivePayloadIntegrityException(
+            "Sealed payload key cannot be loaded",
+            error,
+            SensitivePayloadIntegrityFailure.KEY_UNAVAILABLE,
+        )
+    }
 
-    private fun getOrCreateKey(): SecretKey {
+    private fun getOrCreateKey(): SecretKey = synchronized(keyProvisioningLock) {
         val keyStore = loadKeyStore()
-        (keyStore.getKey(keyAlias, null) as? SecretKey)?.let { return it }
-        return try {
-            KeyGenerator.getInstance(
+        loadKeyOrNull(keyStore)?.let { return@synchronized it }
+        try {
+            // Reload inside the provisioning lock before generation so two
+            // concurrent first seals cannot race different keys under one alias.
+            val reloaded = loadKeyStore()
+            loadKeyOrNull(reloaded)?.let {
+                return@synchronized it
+            }
+            val generated = KeyGenerator.getInstance(
                 KeyProperties.KEY_ALGORITHM_AES,
                 ANDROID_KEYSTORE,
             ).run {
@@ -199,10 +239,59 @@ class KeystoreAeadPayloadCipher(
                 )
                 generateKey()
             }
+            requireExpectedKey(generated)
+            generated
         } catch (error: Exception) {
             throw SensitivePayloadIntegrityException(
                 "Sealed payload key cannot be created",
                 error,
+                SensitivePayloadIntegrityFailure.KEY_UNAVAILABLE,
+            )
+        }
+    }
+
+    private fun loadKeyOrNull(keyStore: KeyStore): SecretKey? {
+        if (!keyStore.containsAlias(keyAlias)) return null
+        val key = keyStore.getKey(keyAlias, null) as? SecretKey
+            ?: throw SensitivePayloadIntegrityException(
+                "Sealed payload alias has an unexpected entry type",
+                failure = SensitivePayloadIntegrityFailure.KEY_UNAVAILABLE,
+            )
+        if (!key.algorithm.equals(KeyProperties.KEY_ALGORITHM_AES, ignoreCase = true)) {
+            throw SensitivePayloadIntegrityException(
+                "Sealed payload alias has an unexpected key type",
+                failure = SensitivePayloadIntegrityFailure.KEY_UNAVAILABLE,
+            )
+        }
+        requireExpectedKey(key)
+        return key
+    }
+
+    private fun requireExpectedKey(key: SecretKey) {
+        try {
+            val info = SecretKeyFactory.getInstance(key.algorithm, ANDROID_KEYSTORE)
+                .getKeySpec(key, KeyInfo::class.java) as KeyInfo
+            if (
+                info.keySize != KEY_SIZE_BITS ||
+                info.purposes !=
+                (KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT) ||
+                info.blockModes.toSet() != setOf(KeyProperties.BLOCK_MODE_GCM) ||
+                info.encryptionPaddings.toSet() !=
+                setOf(KeyProperties.ENCRYPTION_PADDING_NONE) ||
+                info.isUserAuthenticationRequired
+            ) {
+                throw SensitivePayloadIntegrityException(
+                    "Sealed payload key policy is invalid",
+                    failure = SensitivePayloadIntegrityFailure.KEY_UNAVAILABLE,
+                )
+            }
+        } catch (error: SensitivePayloadIntegrityException) {
+            throw error
+        } catch (error: Exception) {
+            throw SensitivePayloadIntegrityException(
+                "Sealed payload key policy cannot be inspected",
+                error,
+                SensitivePayloadIntegrityFailure.KEY_UNAVAILABLE,
             )
         }
     }
@@ -212,16 +301,31 @@ class KeystoreAeadPayloadCipher(
 
         private const val ANDROID_KEYSTORE = "AndroidKeyStore"
         private const val TRANSFORMATION = "AES/GCM/NoPadding"
-        private const val HMAC_ALGORITHM = "HmacSHA256"
         private const val KEY_SIZE_BITS = 256
         private const val GCM_TAG_SIZE_BITS = 128
         private const val MIN_NONCE_SIZE_BYTES = 12
         private const val MAX_NONCE_SIZE_BYTES = 32
         private const val AAD_PREFIX = "life-agent-sensitive-payload"
+        private val keyProvisioningLock = Any()
     }
 }
 
-class SensitivePayloadIntegrityException(
+internal enum class SensitivePayloadIntegrityFailure {
+    KEY_UNAVAILABLE,
+    METADATA_INVALID,
+    AEAD_AUTH_FAILED,
+}
+
+internal class SensitivePayloadIntegrityException(
     message: String,
     cause: Throwable? = null,
+    val failure: SensitivePayloadIntegrityFailure,
 ) : IllegalStateException(message, cause)
+
+private fun Throwable.isKeyInfrastructureFailure(): Boolean =
+    generateSequence(this) { it.cause }
+        .any { cause ->
+            cause is InvalidKeyException ||
+                cause is UnrecoverableKeyException ||
+                cause is ProviderException
+        }

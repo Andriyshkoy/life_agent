@@ -107,6 +107,127 @@ internal object WireRequestCodec {
         return PushBatchRequest(batchId, deviceId, validated)
     }
 
+    /**
+     * Strictly revalidates a durable exact body before it can leave storage.
+     * HMAC intentionally omits request identity, so correlation is a separate
+     * mandatory trust boundary.
+     */
+    fun decodeDurableCorrelation(
+        endpoint: M2Endpoint,
+        bytes: ByteArray,
+    ): DurableRequestCorrelation {
+        if (!endpoint.durableExactReplay) schemaFailure()
+        if (endpoint == M2Endpoint.SYNC_PUSH) {
+            val evidence = decodeDurablePushEvidence(bytes)
+            return DurableRequestCorrelation(
+                correlationId = evidence.batchId,
+                deviceId = evidence.deviceId,
+                credentialGeneration = null,
+            )
+        }
+
+        val evidence = when (endpoint) {
+            M2Endpoint.AUTH_REVOKE -> {
+                val root = parseCanonicalDurableRequest(endpoint, bytes)
+                root.requireConstant("protocol_version", M2_PROTOCOL_VERSION)
+                root.requireConstant("message_type", endpoint.requestMessageType)
+                root.requireExactFields(REVOKE_REQUEST_FIELDS)
+                val requestId = requireCanonicalUuid(root.requireString("request_id"))
+                val deviceId = requireCanonicalUuid(root.requireString("device_id"))
+                val generation = root.requireInteger("generation", 1L..JSON_SAFE_INTEGER_MAX)
+                requireRefreshToken(root.requireString("refresh_token"))
+                DurableRequestCorrelation(requestId, deviceId, generation)
+            }
+
+            M2Endpoint.SYNC_BOOTSTRAP -> {
+                val bootstrap = decodeDurableBootstrapEvidence(bytes)
+                DurableRequestCorrelation(bootstrap.requestId, bootstrap.deviceId, null)
+            }
+
+            M2Endpoint.SYNC_PULL -> {
+                val pull = decodeDurablePullEvidence(bytes)
+                DurableRequestCorrelation(pull.requestId, pull.deviceId, null)
+            }
+
+            else -> schemaFailure()
+        }
+        return evidence
+    }
+
+    fun decodeDurablePushEvidence(bytes: ByteArray): DurablePushEvidence {
+        val root = parseCanonicalDurableRequest(M2Endpoint.SYNC_PUSH, bytes)
+        val request = decodePushBatch(bytes)
+        return DurablePushEvidence(
+            batchId = request.batchId,
+            deviceId = request.deviceId,
+            batchContentSha256 = root.requireString("batch_content_sha256"),
+            items = request.operations.map { operation ->
+                DurablePushItemEvidence(
+                    ordinal = operation.ordinal,
+                    clientSequence = operation.clientSequence,
+                    operationId = operation.operationId,
+                    operationContentSha256 = operation.operationContentSha256,
+                )
+            },
+        )
+    }
+
+    fun decodeDurableBootstrapEvidence(bytes: ByteArray): DurableBootstrapEvidence {
+        val endpoint = M2Endpoint.SYNC_BOOTSTRAP
+        val root = parseCanonicalDurableRequest(endpoint, bytes)
+        root.requireExactFields(BOOTSTRAP_REQUEST_FIELDS)
+        root.requireConstant("protocol_version", M2_PROTOCOL_VERSION)
+        root.requireConstant("message_type", endpoint.requestMessageType)
+        return DurableBootstrapEvidence(
+            requestId = requireCanonicalUuid(root.requireString("request_id")),
+            bootstrapId = requireCanonicalUuid(root.requireString("bootstrap_id")),
+            deviceId = requireCanonicalUuid(root.requireString("device_id")),
+            pageSize = root.requireInteger(
+                "page_size",
+                1L..M2_MAX_PAGE_SIZE.toLong(),
+            ).toInt(),
+            pageCursor = root.requireNullableString("page_cursor")?.also(::requireCursor),
+        )
+    }
+
+    fun decodeDurablePullEvidence(bytes: ByteArray): DurablePullEvidence {
+        val endpoint = M2Endpoint.SYNC_PULL
+        val root = parseCanonicalDurableRequest(endpoint, bytes)
+        root.requireExactFields(PULL_REQUEST_FIELDS)
+        root.requireConstant("protocol_version", M2_PROTOCOL_VERSION)
+        root.requireConstant("message_type", endpoint.requestMessageType)
+        return DurablePullEvidence(
+            requestId = requireCanonicalUuid(root.requireString("request_id")),
+            deviceId = requireCanonicalUuid(root.requireString("device_id")),
+            cursor = requireCursor(root.requireString("cursor")),
+            pageSize = root.requireInteger(
+                "page_size",
+                1L..M2_MAX_PAGE_SIZE.toLong(),
+            ).toInt(),
+        )
+    }
+
+    private fun parseCanonicalDurableRequest(
+        endpoint: M2Endpoint,
+        bytes: ByteArray,
+    ): WireJsonObject {
+        val root = try {
+            StrictJson.parse(
+                bytes,
+                StrictJsonLimits.request(endpoint.requestMaxBytes),
+            ) as? WireJsonObject ?: schemaFailure()
+        } catch (error: StrictJsonException) {
+            throw WireProtocolException(WireProtocolFailure.JSON_TRUST_BOUNDARY, error)
+        }
+        val canonical = StrictJson.canonicalBytes(root)
+        try {
+            if (!canonical.contentEquals(bytes)) schemaFailure()
+        } finally {
+            canonical.fill(0)
+        }
+        return root
+    }
+
     private fun enrollmentDocument(request: EnrollmentClaimRequest): WireJsonObject {
         requireCanonicalUuid(request.requestId)
         requireEnrollmentCode(request.enrollmentCode)
@@ -302,6 +423,62 @@ internal val PUSH_BATCH_FIELDS = setOf(
     "protocol_version", "message_type", "batch_id", "device_id",
     "batch_content_sha256", "operations",
 )
+internal val REVOKE_REQUEST_FIELDS = setOf(
+    "protocol_version", "message_type", "request_id", "device_id", "generation",
+    "refresh_token",
+)
+internal val BOOTSTRAP_REQUEST_FIELDS = setOf(
+    "protocol_version", "message_type", "request_id", "bootstrap_id", "device_id",
+    "page_size", "page_cursor",
+)
+internal val PULL_REQUEST_FIELDS = setOf(
+    "protocol_version", "message_type", "request_id", "device_id", "cursor", "page_size",
+)
+
+internal data class DurableRequestCorrelation(
+    val correlationId: String,
+    val deviceId: String,
+    val credentialGeneration: Long?,
+) {
+    override fun toString(): String = "DurableRequestCorrelation(redacted=true)"
+}
+
+internal data class DurablePushEvidence(
+    val batchId: String,
+    val deviceId: String,
+    val batchContentSha256: String,
+    val items: List<DurablePushItemEvidence>,
+) {
+    override fun toString(): String = "DurablePushEvidence(itemCount=${items.size},redacted=true)"
+}
+
+internal data class DurablePushItemEvidence(
+    val ordinal: Int,
+    val clientSequence: Long,
+    val operationId: String,
+    val operationContentSha256: String,
+) {
+    override fun toString(): String = "DurablePushItemEvidence(ordinal=$ordinal,redacted=true)"
+}
+
+internal data class DurableBootstrapEvidence(
+    val requestId: String,
+    val bootstrapId: String,
+    val deviceId: String,
+    val pageSize: Int,
+    val pageCursor: String?,
+) {
+    override fun toString(): String = "DurableBootstrapEvidence(redacted=true)"
+}
+
+internal data class DurablePullEvidence(
+    val requestId: String,
+    val deviceId: String,
+    val cursor: String,
+    val pageSize: Int,
+) {
+    override fun toString(): String = "DurablePullEvidence(redacted=true)"
+}
 internal val PUSH_OPERATION_FIELDS = setOf(
     "ordinal", "client_sequence", "operation_id", "operation_kind", "capture_id",
     "event_id", "revision_id", "event_schema_version", "event_kind",

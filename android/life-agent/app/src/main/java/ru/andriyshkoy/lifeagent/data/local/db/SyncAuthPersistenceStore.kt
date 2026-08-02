@@ -2,11 +2,6 @@ package ru.andriyshkoy.lifeagent.data.local.db
 
 import androidx.room.withTransaction
 import java.time.Instant
-import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonNull
-import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.jsonPrimitive
 import ru.andriyshkoy.lifeagent.data.local.db.entity.SyncAuthAttemptEntity
 import ru.andriyshkoy.lifeagent.data.local.db.entity.SyncAuthStateEntity
 import ru.andriyshkoy.lifeagent.data.local.db.entity.SyncAuthTokenFingerprintEntity
@@ -21,7 +16,6 @@ data class EnrollmentSuccessPersistence(
     val refreshFingerprint: SyncAuthTokenFingerprintEntity,
     val streamState: SyncStreamStateEntity,
     val bootstrapSession: SyncBootstrapSessionEntity,
-    val bootstrapRequest: SyncHttpRequestEntity,
 )
 
 data class RefreshSuccessPersistence(
@@ -66,6 +60,7 @@ class SyncAuthPersistenceStore(
     private val identityDao = database.identityDao()
     private val replicaDao = database.syncReplicaDao()
     private val transportDao = database.syncTransportDao()
+    private val requestStore = SyncRequestPersistenceStore(database)
 
     suspend fun beginEnrollment(attempt: SyncAuthAttemptEntity) {
         require(attempt.endpointId == AUTH_ENROLL)
@@ -92,7 +87,17 @@ class SyncAuthPersistenceStore(
         }
     }
 
-    suspend fun commitEnrollmentSuccess(bundle: EnrollmentSuccessPersistence) {
+    /**
+     * Commits only the non-request enrollment projections. The caller must
+     * already own the outer protected-request transaction and insert its
+     * authenticated bootstrap row before that transaction can commit.
+     */
+    internal suspend fun commitEnrollmentSuccessState(
+        bundle: EnrollmentSuccessPersistence,
+    ) {
+        check(database.inTransaction()) {
+            "Enrollment success state requires the protected request transaction"
+        }
         validateEnrollmentSuccessBundle(bundle)
         database.withTransaction {
             val attempt = checkNotNull(authDao.findAttempt(bundle.attemptRequestId)) {
@@ -129,9 +134,11 @@ class SyncAuthPersistenceStore(
                     predecessor.installationId == attempt.installationId &&
                         predecessor.localOwnerId == attempt.localOwnerId &&
                         predecessor.deviceId == bundle.authState.deviceId &&
-                        predecessor.personId == bundle.authState.personId,
+                        predecessor.personId == bundle.authState.personId &&
+                        predecessor.credentialEpochId !=
+                        bundle.authState.credentialEpochId,
                 ) {
-                    "Replacement enrollment changed the bound server identity"
+                    "Replacement enrollment must preserve identity and install a new epoch"
                 }
                 val oldStream = checkNotNull(predecessorStream) {
                     "Replacement enrollment has no predecessor sync stream"
@@ -220,7 +227,6 @@ class SyncAuthPersistenceStore(
             )
             replicaDao.insertStreamState(bundle.streamState)
             replicaDao.insertBootstrapSession(bundle.bootstrapSession)
-            transportDao.insertRequest(bundle.bootstrapRequest)
             check(
                 authDao.compareAndSetAttemptState(
                     requestId = attempt.requestId,
@@ -412,37 +418,48 @@ class SyncAuthPersistenceStore(
             ) {
                 "Unauthorized sync request is missing"
             }
+            val storedGeneration = request.accessGenerationUsed
             if (
                 request.state != SENDING ||
                 request.activeAttemptId != expectedAttemptId ||
-                request.accessGenerationUsed != failedAccessGeneration
+                (
+                    storedGeneration != null &&
+                        storedGeneration > 0 &&
+                        storedGeneration != failedAccessGeneration
+                    )
             ) {
                 return@withTransaction CredentialRecoveryAction.STALE_CALLBACK
             }
             val current = authDao.findState()
-                ?: run {
-                    check(
-                        transportDao.markCredentialFailureTerminal(
-                            endpointId = endpointId,
-                            requestIdentity = requestIdentity,
-                            credentialEpochId = request.credentialEpochId,
-                            failedAccessGeneration = failedAccessGeneration,
-                            expectedAttemptId = expectedAttemptId,
-                            terminalAtUtc = updatedAtUtc,
-                            failureCode = "credential_family_missing",
-                        ) == 1,
-                    )
-                    return@withTransaction CredentialRecoveryAction.QUARANTINED
-                }
             val identity = identityDao.findIdentity()
             if (
-                identity == null ||
-                current.credentialEpochId != request.credentialEpochId ||
-                current.deviceId != request.deviceId ||
-                identity.installationId != current.installationId ||
-                identity.localOwnerId != current.localOwnerId
+                current != null &&
+                (
+                    identity == null ||
+                        current.credentialEpochId != request.credentialEpochId ||
+                        current.deviceId != request.deviceId ||
+                        identity.installationId != current.installationId ||
+                        identity.localOwnerId != current.localOwnerId
+                    )
             ) {
                 return@withTransaction CredentialRecoveryAction.STALE_CALLBACK
+            }
+            if (!requestStore.preflightFreshResponseRequestMetadata(request, updatedAtUtc)) {
+                return@withTransaction CredentialRecoveryAction.QUARANTINED
+            }
+            if (current == null) {
+                check(
+                    transportDao.markCredentialFailureTerminal(
+                        endpointId = endpointId,
+                        requestIdentity = requestIdentity,
+                        credentialEpochId = request.credentialEpochId,
+                        failedAccessGeneration = failedAccessGeneration,
+                        expectedAttemptId = expectedAttemptId,
+                        terminalAtUtc = updatedAtUtc,
+                        failureCode = "credential_family_missing",
+                    ) == 1,
+                )
+                return@withTransaction CredentialRecoveryAction.QUARANTINED
             }
 
             val requestCanRecover =
@@ -593,6 +610,17 @@ class SyncAuthPersistenceStore(
     suspend fun recoverInterruptedAuthFlows(updatedAtUtc: String): Int =
         database.withTransaction {
             var recovered = 0
+            val integrityRecovered = SyncRequestPersistenceStore(database)
+                .recoverInvalidRequestMetadata(
+                    terminalAtUtc = updatedAtUtc,
+                    limit = MAX_INTEGRITY_RECOVERY_ROWS,
+                )
+            recovered += integrityRecovered
+            if (integrityRecovered == MAX_INTEGRITY_RECOVERY_ROWS) {
+                // Keep recovery bounded. The next invocation continues the
+                // integrity queue before any full-row auth-recovery scan.
+                return@withTransaction recovered
+            }
             authDao.findAttempts(AUTH_ENROLL, DISPATCHING).forEach { attempt ->
                 val current = authDao.findState()
                 val exactPredecessor =
@@ -754,34 +782,6 @@ class SyncAuthPersistenceStore(
         }
     }
 
-    suspend fun beginRevoke(
-        request: SyncHttpRequestEntity,
-        nowEpochMs: Long,
-        updatedAtUtc: String,
-    ) {
-        require(request.endpointId == AUTH_REVOKE)
-        require(request.state == READY)
-        require(request.bodyStorageKind == SyncHttpRequestEntity.BODY_STORAGE_KEYSTORE_AEAD)
-        require(request.rawRequestBody == null)
-        val generation = checkNotNull(request.accessGenerationUsed) {
-            "Revoke request must retain its credential generation"
-        }
-        database.withTransaction {
-            check(
-                authDao.claimRevokeFamily(
-                    credentialEpochId = request.credentialEpochId,
-                    deviceId = request.deviceId,
-                    generation = generation,
-                    nowEpochMs = nowEpochMs,
-                    updatedAtUtc = updatedAtUtc,
-                ) == 1,
-            ) {
-                "Credential family is not eligible for revoke"
-            }
-            transportDao.insertRequest(request)
-        }
-    }
-
     /**
      * Returns false for a callback whose lease was already taken over.
      * A byte-identical terminal replay remains successful and idempotent.
@@ -803,10 +803,44 @@ class SyncAuthPersistenceStore(
             ) {
                 "Revoke request is missing"
             }
+            if (
+                request.state != TERMINAL &&
+                (
+                    request.state != SENDING ||
+                        request.activeAttemptId != response.expectedAttemptId
+                    )
+            ) {
+                return@withTransaction false
+            }
+            val familyBefore = authDao.findState()
+            if (
+                request.state != TERMINAL &&
+                (
+                    familyBefore == null ||
+                        familyBefore.credentialEpochId != request.credentialEpochId ||
+                        familyBefore.deviceId != request.deviceId ||
+                        familyBefore.state != REVOKE_PENDING ||
+                        (
+                            request.accessGenerationUsed != null &&
+                                request.accessGenerationUsed > 0 &&
+                                request.accessGenerationUsed != familyBefore.generation
+                            )
+                    )
+            ) {
+                return@withTransaction false
+            }
+            if (
+                request.state != TERMINAL &&
+                !requestStore.preflightFreshResponseRequestMetadata(
+                    request,
+                    response.terminalAtUtc,
+                )
+            ) {
+                return@withTransaction false
+            }
             val generation = checkNotNull(request.accessGenerationUsed) {
                 "Revoke request lost its credential generation"
             }
-            val familyBefore = authDao.findState()
             val installed = transportDao.storeTerminalResponse(
                 endpointId = response.endpointId,
                 requestIdentity = response.requestIdentity,
@@ -1006,7 +1040,9 @@ class SyncAuthPersistenceStore(
         val auth = bundle.authState
         val stream = bundle.streamState
         val session = bundle.bootstrapSession
-        val request = bundle.bootstrapRequest
+        require(CANONICAL_UUID_PATTERN.matches(auth.credentialEpochId)) {
+            "Enrollment credential epoch must be a canonical UUID"
+        }
         require(auth.state == ACTIVE)
         require(auth.generation == 1L)
         require(auth.bootstrapRequired)
@@ -1040,53 +1076,6 @@ class SyncAuthPersistenceStore(
                 session.stagedPageCount == 0 &&
                 session.stagedBodyBytes == 0L,
         )
-        require(
-            request.endpointId == SYNC_BOOTSTRAP &&
-                request.credentialEpochId == auth.credentialEpochId &&
-                request.deviceId == auth.deviceId &&
-                request.idempotencyKey == null &&
-                request.bodyStorageKind == SyncHttpRequestEntity.BODY_STORAGE_RAW &&
-                request.state == READY &&
-                request.attemptCount == 0 &&
-                request.activeAttemptId == null &&
-                request.accessGenerationUsed == auth.generation &&
-                request.terminalHttpStatus == null &&
-                request.exactResponseBody == null &&
-                request.responseSha256 == null &&
-                request.terminalAtUtc == null &&
-                request.terminalErrorCode == null,
-        )
-        validateBootstrapIntent(request, session)
-    }
-
-    private fun validateBootstrapIntent(
-        request: SyncHttpRequestEntity,
-        session: SyncBootstrapSessionEntity,
-    ) {
-        val body = checkNotNull(request.rawRequestBody)
-        val root = Json.parseToJsonElement(body.decodeToString()) as? JsonObject
-            ?: error("Bootstrap intent body must be a JSON object")
-        require(
-            root.keys == setOf(
-                "protocol_version",
-                "message_type",
-                "request_id",
-                "bootstrap_id",
-                "device_id",
-                "page_size",
-                "page_cursor",
-            ),
-        )
-        require(root.requiredString("protocol_version") == request.protocolVersion)
-        require(root.requiredString("message_type") == "bootstrap_request")
-        require(root.requiredString("request_id") == request.requestIdentity)
-        require(root.requiredString("bootstrap_id") == session.bootstrapId)
-        require(root.requiredString("device_id") == session.deviceId)
-        val pageSizePrimitive = root["page_size"] as? JsonPrimitive
-        require(pageSizePrimitive != null && !pageSizePrimitive.isString)
-        val pageSize = pageSizePrimitive.content.toIntOrNull()
-        require(pageSize != null && pageSize in 1..500)
-        require(root["page_cursor"] is JsonNull)
     }
 
     private fun validateRefreshSuccess(success: RefreshSuccessPersistence) {
@@ -1183,21 +1172,10 @@ class SyncAuthPersistenceStore(
         }
     }
 
-    private fun JsonObject.requiredString(field: String): String {
-        val primitive = checkNotNull(this[field]) {
-            "Bootstrap intent is missing $field"
-        }.jsonPrimitive
-        require(primitive.isString) {
-            "Bootstrap intent field $field must be a JSON string"
-        }
-        return primitive.content
-    }
-
     private companion object {
         const val AUTH_ENROLL = "auth_enroll"
         const val AUTH_REFRESH = "auth_refresh"
         const val AUTH_REVOKE = "auth_revoke"
-        const val SYNC_BOOTSTRAP = "sync_bootstrap"
         const val ACTIVE = "active"
         const val REFRESH_IN_FLIGHT = "refresh_in_flight"
         const val REVOKE_PENDING = "revoke_pending"
@@ -1213,12 +1191,16 @@ class SyncAuthPersistenceStore(
         const val TERMINAL = "terminal"
         const val BOOTSTRAP_REQUIRED = "bootstrap_required"
         const val STAGING = "staging"
+        const val MAX_INTEGRITY_RECOVERY_ROWS = 1_000
         val ENROLLMENT_REPLACEABLE_STATES = setOf(
             ACTIVE,
             QUARANTINED,
             "expired",
             REVOKED,
             INTEGRITY_FAILURE,
+        )
+        val CANONICAL_UUID_PATTERN = Regex(
+            "^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
         )
     }
 }
