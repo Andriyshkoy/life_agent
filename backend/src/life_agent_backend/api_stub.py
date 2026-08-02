@@ -28,6 +28,7 @@ for _spec in ENDPOINT_INGRESS_SPECS:
     if not _spec.endpoint.value.startswith("sync_") or _spec.endpoint in {
         ApiEndpoint.SYNC_PUSH,
         ApiEndpoint.SYNC_BOOTSTRAP,
+        ApiEndpoint.SYNC_PULL,
     }:
         continue
     router.add_api_route(

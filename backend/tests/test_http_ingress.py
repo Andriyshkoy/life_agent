@@ -809,7 +809,7 @@ async def test_auth_routes_reject_incomplete_bodies_before_database_access(
 
 
 @pytest.mark.asyncio
-async def test_replay_safe_stub_returns_retryable_503(
+async def test_pull_rejects_incomplete_body_before_database_access(
     settings: Settings,
     engine: AsyncEngine,
 ) -> None:
@@ -820,9 +820,9 @@ async def test_replay_safe_stub_returns_retryable_503(
             headers={"Authorization": f"Bearer {ACCESS_TOKEN}"},
         )
 
-    assert response.status_code == 503
+    assert response.status_code == 422
     assert response.json()["request_id"] == REQUEST_ID
-    assert response.json()["retryable"] is True
+    assert response.json()["retryable"] is False
 
 
 @pytest.mark.asyncio
