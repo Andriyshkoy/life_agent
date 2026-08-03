@@ -67,9 +67,12 @@ jobs:
           python scripts/validate_schemas.py
           python scripts/validate_repository.py
           python scripts/validate_android_security.py
+          python scripts/validate_backend_production_workflow.py
           python -m unittest scripts.test_validate_android_security
+          python -m unittest scripts.test_validate_backend_production_workflow
           bash -n scripts/run_android_m1_instrumented_ci.sh
           bash -n scripts/run_android_m1_cold_start_smoke.sh
+          bash -n backend/scripts/verify-runtime-image.sh
           bash -n infra/nginx/install-life-vhost.sh
           bash -n infra/nginx/update-life-vhost.sh
           (
@@ -303,6 +306,9 @@ jobs:
             echo "Unexpected pre-migration readiness response."
             exit 1
           fi
+
+      - name: Exercise the reusable backend image verifier
+        run: backend/scripts/verify-runtime-image.sh life-agent-backend:ci
 
   android-probe:
     name: android-probe
