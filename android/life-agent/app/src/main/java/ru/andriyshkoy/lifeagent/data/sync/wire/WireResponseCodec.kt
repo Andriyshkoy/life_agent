@@ -5,6 +5,106 @@ import java.time.Duration
 import java.time.Instant
 
 internal object WireResponseCodec {
+    /**
+     * Strictly decodes one fresh bootstrap or pull page without synthesizing
+     * cross-page state. Room reducers remain authoritative for cursor history,
+     * replay and replica topology.
+     */
+    fun decodeFreshReplicaPage(
+        httpStatus: Int,
+        body: ByteArray,
+        expectation: FreshReplicaPageExpectation,
+    ): FreshReplicaPage {
+        if (httpStatus != M2_SUCCESS_STATUS) {
+            throw WireProtocolException(WireProtocolFailure.STATUS_ERROR_MISMATCH)
+        }
+        val endpoint = expectation.request.endpoint
+        val document = parseResponseObject(
+            body = body,
+            byteLimit = endpoint.successMaxBytes,
+            shape = WireResponseShape(endpoint, apiError = false),
+        )
+        requireSuccessDiscriminators(document, endpoint)
+        val responseBodySha256 = sha256Hex(body)
+        return when (expectation) {
+            is FreshBootstrapPageExpectation -> decodeBootstrapPageLocal(
+                document = document,
+                expectation = expectation,
+                responseBodySha256 = responseBodySha256,
+            )
+
+            is FreshPullPageExpectation -> decodePullPageLocal(
+                document = document,
+                expectation = expectation,
+                responseBodySha256 = responseBodySha256,
+            )
+        }
+    }
+
+    /** Strict, state-free non-success decoder for durable bootstrap/pull requests. */
+    fun decodeDurableReplicaApiError(
+        httpStatus: Int,
+        body: ByteArray,
+        expectation: DurableReplicaApiErrorExpectation,
+    ): WireApiError {
+        val request = expectation.request
+        val endpoint = request.endpoint
+        if (
+            httpStatus == M2_SUCCESS_STATUS ||
+            endpoint.errorPolicies.none { it.status == httpStatus }
+        ) {
+            throw WireProtocolException(WireProtocolFailure.STATUS_ERROR_MISMATCH)
+        }
+        val document = parseResponseObject(
+            body = body,
+            byteLimit = M2_API_ERROR_MAX_BYTES,
+            shape = WireResponseShape(endpoint, apiError = true),
+        )
+        return decodeApiError(
+            document = document,
+            transportStatus = httpStatus,
+            endpoint = endpoint,
+            expectedCorrelation = request.correlationId,
+        )
+    }
+
+    /** Strict response decoder for canonical authenticated durable revoke evidence. */
+    fun decodeDurableRevokeResponse(
+        httpStatus: Int,
+        body: ByteArray,
+        evidence: DurableRevokeEvidence,
+    ): DecodedWireResponse {
+        requireCanonicalUuid(evidence.requestId)
+        requireCanonicalUuid(evidence.deviceId)
+        if (evidence.generation !in 1L..JSON_SAFE_INTEGER_MAX) schemaFailure()
+        val endpoint = M2Endpoint.AUTH_REVOKE
+        if (httpStatus == M2_SUCCESS_STATUS) {
+            val document = parseResponseObject(
+                body = body,
+                byteLimit = endpoint.successMaxBytes,
+                shape = WireResponseShape(endpoint, apiError = false),
+            )
+            requireSuccessDiscriminators(document, endpoint)
+            return decodeRevokeSuccess(document, evidence)
+        }
+        if (endpoint.errorPolicies.none { it.status == httpStatus }) {
+            throw WireProtocolException(WireProtocolFailure.STATUS_ERROR_MISMATCH)
+        }
+        val document = parseResponseObject(
+            body = body,
+            byteLimit = M2_API_ERROR_MAX_BYTES,
+            shape = WireResponseShape(endpoint, apiError = true),
+        )
+        return DecodedApiError(
+            decodeApiError(
+                document = document,
+                transportStatus = httpStatus,
+                endpoint = endpoint,
+                expectedCorrelation = evidence.requestId,
+            ),
+        )
+    }
+
     fun decode(
         httpStatus: Int,
         body: ByteArray,
@@ -45,13 +145,21 @@ internal object WireResponseCodec {
             byteLimit = M2_API_ERROR_MAX_BYTES,
             shape = WireResponseShape(endpoint, apiError = true),
         )
-        return DecodedApiError(decodeApiError(document, httpStatus, expectation))
+        return DecodedApiError(
+            decodeApiError(
+                document = document,
+                transportStatus = httpStatus,
+                endpoint = endpoint,
+                expectedCorrelation = expectation.request.correlationId,
+            ),
+        )
     }
 
     private fun decodeApiError(
         document: WireJsonObject,
         transportStatus: Int,
-        expectation: ResponseExpectation,
+        endpoint: M2Endpoint,
+        expectedCorrelation: String,
     ): WireApiError {
         document.requireExactFields(API_ERROR_FIELDS)
         document.requireConstant("protocol_version", M2_PROTOCOL_VERSION)
@@ -60,10 +168,9 @@ internal object WireResponseCodec {
             ?.also(::requireCanonicalUuid)
         val errorCode = ApiErrorCode.fromWire(document.requireString("error_code"))
             ?: schemaFailure()
-        val expectedCorrelation = expectation.request.correlationId
         val correlationMismatch = when {
             errorCode in ALWAYS_PRE_IDENTITY_ERROR_CODES -> requestId != null
-            allowsDualStageError(expectation.request.endpoint, errorCode) ->
+            allowsDualStageError(endpoint, errorCode) ->
                 requestId != null && requestId != expectedCorrelation
             else -> requestId != expectedCorrelation
         }
@@ -75,7 +182,7 @@ internal object WireResponseCodec {
             throw WireProtocolException(WireProtocolFailure.STATUS_ERROR_MISMATCH)
         }
         val retryable = document.requireBoolean("retryable")
-        val policy = expectation.request.endpoint.policyFor(bodyStatus, errorCode)
+        val policy = endpoint.policyFor(bodyStatus, errorCode)
             ?: throw WireProtocolException(WireProtocolFailure.STATUS_ERROR_MISMATCH)
         if (retryable != policy.retryable) {
             throw WireProtocolException(WireProtocolFailure.STATUS_ERROR_MISMATCH)
@@ -88,7 +195,7 @@ internal object WireResponseCodec {
             schemaFailure()
         }
         if (
-            expectation.request.endpoint != M2Endpoint.SYNC_PUSH &&
+            endpoint != M2Endpoint.SYNC_PUSH &&
             fieldErrors.any { it.path.startsWith("/operations/") }
         ) {
             schemaFailure()
@@ -198,13 +305,27 @@ internal object WireResponseCodec {
         document: WireJsonObject,
         expectation: RevokeResponseExpectation,
     ): RevokeSuccess {
-        document.requireExactFields(REVOKE_RESPONSE_FIELDS)
         val request = expectation.request
         validateRevokeRequest(request)
-        requireCorrelation(document.requireString("request_id"), request.requestId)
+        return decodeRevokeSuccess(
+            document = document,
+            evidence = DurableRevokeEvidence(
+                requestId = request.requestId,
+                deviceId = request.deviceId,
+                generation = request.generation,
+            ),
+        )
+    }
+
+    private fun decodeRevokeSuccess(
+        document: WireJsonObject,
+        evidence: DurableRevokeEvidence,
+    ): RevokeSuccess {
+        document.requireExactFields(REVOKE_RESPONSE_FIELDS)
+        requireCorrelation(document.requireString("request_id"), evidence.requestId)
         val deviceId = requireCanonicalUuid(document.requireString("device_id"))
         val generation = document.requireInteger("generation", 1L..JSON_SAFE_INTEGER_MAX)
-        if (deviceId != request.deviceId || generation != request.generation) {
+        if (deviceId != evidence.deviceId || generation != evidence.generation) {
             throw WireProtocolException(WireProtocolFailure.CORRELATION_MISMATCH)
         }
         document.requireConstant("status", "revoked")
@@ -214,7 +335,7 @@ internal object WireResponseCodec {
             throw WireProtocolException(WireProtocolFailure.AUTH_INVARIANT)
         }
         return RevokeSuccess(
-            requestId = request.requestId,
+            requestId = evidence.requestId,
             deviceId = deviceId,
             generation = generation,
             revokedAt = revokedAt,
@@ -817,6 +938,159 @@ internal object WireResponseCodec {
         expectation: BootstrapResponseExpectation,
         responseBodySha256: String,
     ): ValidatedBootstrapPage {
+        val fresh = decodeBootstrapPageLocal(
+            document = document,
+            expectation = FreshBootstrapPageExpectation(
+                request = expectation.request,
+                persistedRequestBodySha256 = expectation.persistedRequestBodySha256,
+            ),
+            responseBodySha256 = responseBodySha256,
+        )
+        val request = expectation.request
+        val page = fresh.page
+        val state = expectation.streamState
+        validateReplicaChainState(state)
+        val receipt = PageReplayReceipt(fresh.requestBodySha256, responseBodySha256)
+        val retainedReceipt = state.successfulBootstrapPageReceipts[request.requestId]
+        val exactReplay = retainedReceipt != null
+        if (exactReplay && retainedReceipt != receipt) pageFailure()
+        if (!exactReplay) validateBootstrapChainRequest(request, state)
+        if (
+            !exactReplay &&
+            (
+                (state.bootstrapSnapshotId != null &&
+                    state.bootstrapSnapshotId != page.snapshotId) ||
+                    (state.bootstrapIncrementalCursor != null &&
+                        state.bootstrapIncrementalCursor != page.incrementalCursor)
+                )
+        ) {
+            pageFailure()
+        }
+        val seenBootstrapPageCursors = state.seenBootstrapPageCursors.toMutableSet()
+        if (
+            !exactReplay &&
+            (
+                page.incrementalCursor in seenBootstrapPageCursors ||
+                    page.incrementalCursor in state.seenPullCursors ||
+                    (page.nextPageCursor != null &&
+                        (page.nextPageCursor in state.seenPullCursors ||
+                            !seenBootstrapPageCursors.add(page.nextPageCursor)))
+                )
+        ) {
+            pageFailure()
+        }
+        if (exactReplay) {
+            validateReplayedChangeReceipts(page.changes, state)
+            return ValidatedBootstrapPage(
+                page,
+                state,
+                fresh.requestBodySha256,
+                responseBodySha256,
+                replayed = true,
+            )
+        }
+        val advanced = validateChangeStream(
+            changes = page.changes,
+            pageId = page.pageId,
+            state = state.copy(
+                seenSuccessfulBootstrapRequestIds =
+                    state.seenSuccessfulBootstrapRequestIds + request.requestId,
+                successfulBootstrapPageReceipts =
+                    state.successfulBootstrapPageReceipts + (request.requestId to receipt),
+                seenBootstrapPageCursors = seenBootstrapPageCursors,
+                receivingDeviceId = request.deviceId,
+                activeBootstrapId = request.bootstrapId,
+                bootstrapPhase = if (page.complete) {
+                    BootstrapValidationPhase.COMPLETE
+                } else {
+                    BootstrapValidationPhase.IN_PROGRESS
+                },
+                expectedBootstrapPageCursor = page.nextPageCursor,
+                expectedPullCursor = if (page.complete) page.incrementalCursor else null,
+                pullContinuationRequired = false,
+                bootstrapSnapshotId = page.snapshotId,
+                bootstrapIncrementalCursor = page.incrementalCursor,
+            ),
+        )
+        return ValidatedBootstrapPage(
+            page,
+            advanced,
+            fresh.requestBodySha256,
+            responseBodySha256,
+        )
+    }
+
+    private fun decodePull(
+        document: WireJsonObject,
+        expectation: PullResponseExpectation,
+        responseBodySha256: String,
+    ): ValidatedPullPage {
+        val fresh = decodePullPageLocal(
+            document = document,
+            expectation = FreshPullPageExpectation(
+                request = expectation.request,
+                persistedRequestBodySha256 = expectation.persistedRequestBodySha256,
+            ),
+            responseBodySha256 = responseBodySha256,
+        )
+        val request = expectation.request
+        val page = fresh.page
+        val state = expectation.streamState
+        validateReplicaChainState(state)
+        val receipt = PageReplayReceipt(fresh.requestBodySha256, responseBodySha256)
+        val retainedReceipt = state.successfulPullPageReceipts[request.requestId]
+        val exactReplay = retainedReceipt != null
+        if (exactReplay && retainedReceipt != receipt) pageFailure()
+        if (!exactReplay) validatePullChainRequest(request, state)
+        val seenPullCursors = state.seenPullCursors.toMutableSet().apply {
+            add(page.fromCursor)
+        }
+        if (page.changes.isNotEmpty() && !exactReplay) {
+            if (
+                page.nextCursor in seenPullCursors ||
+                page.nextCursor in state.seenBootstrapPageCursors
+            ) {
+                pageFailure()
+            }
+            seenPullCursors += page.nextCursor
+        }
+        if (exactReplay) {
+            validateReplayedChangeReceipts(page.changes, state)
+            return ValidatedPullPage(
+                page,
+                state,
+                fresh.requestBodySha256,
+                responseBodySha256,
+                replayed = true,
+            )
+        }
+        val advanced = validateChangeStream(
+            page.changes,
+            page.pageId,
+            state.copy(
+                seenSuccessfulPullRequestIds =
+                    state.seenSuccessfulPullRequestIds + request.requestId,
+                successfulPullPageReceipts =
+                    state.successfulPullPageReceipts + (request.requestId to receipt),
+                seenPullCursors = seenPullCursors,
+                bootstrapPhase = BootstrapValidationPhase.INCREMENTAL,
+                expectedPullCursor = page.nextCursor,
+                pullContinuationRequired = page.hasMore,
+            ),
+        )
+        return ValidatedPullPage(
+            page,
+            advanced,
+            fresh.requestBodySha256,
+            responseBodySha256,
+        )
+    }
+
+    private fun decodeBootstrapPageLocal(
+        document: WireJsonObject,
+        expectation: FreshBootstrapPageExpectation,
+        responseBodySha256: String,
+    ): FreshBootstrapPage {
         document.requireExactFields(BOOTSTRAP_RESPONSE_FIELDS)
         val request = expectation.request
         requireCorrelation(document.requireString("request_id"), request.requestId)
@@ -831,47 +1105,20 @@ internal object WireResponseCodec {
         ) {
             throw WireProtocolException(WireProtocolFailure.CORRELATION_MISMATCH)
         }
-        val state = expectation.streamState
-        validateReplicaChainState(state)
         val requestBodySha256 = validatedPageRequestBodySha256(
             request,
             expectation.persistedRequestBodySha256,
         )
         validatePageHash(document)
         val pageSha256 = requireSha256(document.requireString("page_sha256"))
-        val receipt = PageReplayReceipt(requestBodySha256, responseBodySha256)
-        val retainedReceipt = state.successfulBootstrapPageReceipts[request.requestId]
-        val exactReplay = retainedReceipt != null
-        if (exactReplay && retainedReceipt != receipt) pageFailure()
-        if (!exactReplay) validateBootstrapChainRequest(request, state)
         val snapshotId = requireCanonicalUuid(document.requireString("snapshot_id"))
         val incrementalCursor = requireCursor(document.requireString("incremental_cursor"))
-        if (
-            !exactReplay &&
-            (
-                (state.bootstrapSnapshotId != null &&
-                    state.bootstrapSnapshotId != snapshotId) ||
-                    (state.bootstrapIncrementalCursor != null &&
-                        state.bootstrapIncrementalCursor != incrementalCursor)
-                )
-        ) {
-            pageFailure()
-        }
         val complete = document.requireBoolean("complete")
         val nextPageCursor = document.requireNullableString("next_page_cursor")
             ?.also(::requireCursor)
-        val seenBootstrapPageCursors = state.seenBootstrapPageCursors.toMutableSet()
         if (
-            !exactReplay &&
-            (
-                incrementalCursor in seenBootstrapPageCursors ||
-                    incrementalCursor in state.seenPullCursors ||
-                    fromPageCursor == incrementalCursor ||
-                    (nextPageCursor != null &&
-                        (nextPageCursor == incrementalCursor ||
-                            nextPageCursor in state.seenPullCursors ||
-                            !seenBootstrapPageCursors.add(nextPageCursor)))
-                )
+            fromPageCursor == incrementalCursor ||
+            nextPageCursor == incrementalCursor
         ) {
             pageFailure()
         }
@@ -888,67 +1135,31 @@ internal object WireResponseCodec {
         }
         val pageId = requireCanonicalUuid(document.requireString("page_id"))
         val serverTime = requireCanonicalServerInstant(document.requireString("server_time"))
-        val changes = decodeChanges(rawChanges, serverTime)
-        val page = BootstrapPageSuccess(
-            requestId = request.requestId,
-            bootstrapId = bootstrapId,
-            deviceId = deviceId,
-            fromPageCursor = fromPageCursor,
-            snapshotId = snapshotId,
-            pageId = pageId,
-            pageSha256 = pageSha256,
-            changes = changes,
-            nextPageCursor = nextPageCursor,
-            incrementalCursor = incrementalCursor,
-            complete = complete,
-            serverTime = serverTime,
-        )
-        if (exactReplay) {
-            validateReplayedChangeReceipts(changes, state)
-            return ValidatedBootstrapPage(
-                page,
-                state,
-                requestBodySha256,
-                responseBodySha256,
-                replayed = true,
-            )
-        }
-        val advanced = validateChangeStream(
-            changes = changes,
-            pageId = pageId,
-            state = state.copy(
-                seenSuccessfulBootstrapRequestIds =
-                    state.seenSuccessfulBootstrapRequestIds + request.requestId,
-                successfulBootstrapPageReceipts =
-                    state.successfulBootstrapPageReceipts + (request.requestId to receipt),
-                seenBootstrapPageCursors = seenBootstrapPageCursors,
-                receivingDeviceId = request.deviceId,
-                activeBootstrapId = request.bootstrapId,
-                bootstrapPhase = if (complete) {
-                    BootstrapValidationPhase.COMPLETE
-                } else {
-                    BootstrapValidationPhase.IN_PROGRESS
-                },
-                expectedBootstrapPageCursor = nextPageCursor,
-                expectedPullCursor = if (complete) incrementalCursor else null,
-                pullContinuationRequired = false,
-                bootstrapSnapshotId = snapshotId,
-                bootstrapIncrementalCursor = incrementalCursor,
+        return FreshBootstrapPage(
+            page = BootstrapPageSuccess(
+                requestId = request.requestId,
+                bootstrapId = bootstrapId,
+                deviceId = deviceId,
+                fromPageCursor = fromPageCursor,
+                snapshotId = snapshotId,
+                pageId = pageId,
+                pageSha256 = pageSha256,
+                changes = decodeChanges(rawChanges, serverTime),
+                nextPageCursor = nextPageCursor,
+                incrementalCursor = incrementalCursor,
+                complete = complete,
+                serverTime = serverTime,
             ),
-        )
-        return ValidatedBootstrapPage(
-            page,
-            advanced,
-            requestBodySha256,
-            responseBodySha256,
+            requestBodySha256 = requestBodySha256,
+            responseBodySha256 = responseBodySha256,
         )
     }
 
-    private fun decodePull(
+    private fun decodePullPageLocal(
         document: WireJsonObject,
-        expectation: PullResponseExpectation,
+        expectation: FreshPullPageExpectation,
         responseBodySha256: String,
-    ): ValidatedPullPage {
+    ): FreshPullPage {
         document.requireExactFields(PULL_RESPONSE_FIELDS)
         val request = expectation.request
         requireCorrelation(document.requireString("request_id"), request.requestId)
@@ -957,79 +1168,37 @@ internal object WireResponseCodec {
         if (deviceId != request.deviceId || fromCursor != request.cursor) {
             throw WireProtocolException(WireProtocolFailure.CORRELATION_MISMATCH)
         }
-        val state = expectation.streamState
-        validateReplicaChainState(state)
         val requestBodySha256 = validatedPageRequestBodySha256(
             request,
             expectation.persistedRequestBodySha256,
         )
         validatePageHash(document)
         val pageSha256 = requireSha256(document.requireString("page_sha256"))
-        val receipt = PageReplayReceipt(requestBodySha256, responseBodySha256)
-        val retainedReceipt = state.successfulPullPageReceipts[request.requestId]
-        val exactReplay = retainedReceipt != null
-        if (exactReplay && retainedReceipt != receipt) pageFailure()
-        if (!exactReplay) validatePullChainRequest(request, state)
         val rawChanges = document.requireArray("changes")
         if (rawChanges.elements.size > request.pageSize) pageFailure()
         val nextCursor = requireCursor(document.requireString("next_cursor"))
         val hasMore = document.requireBoolean("has_more")
-        val seenPullCursors = state.seenPullCursors.toMutableSet().apply { add(fromCursor) }
         if (rawChanges.elements.isEmpty()) {
             if (hasMore || nextCursor != fromCursor) pageFailure()
-        } else if (!exactReplay) {
-            if (
-                nextCursor in seenPullCursors ||
-                nextCursor in state.seenBootstrapPageCursors
-            ) {
-                pageFailure()
-            }
-            seenPullCursors += nextCursor
+        } else if (nextCursor == fromCursor) {
+            pageFailure()
         }
-        if (hasMore && rawChanges.elements.isEmpty()) pageFailure()
         val pageId = requireCanonicalUuid(document.requireString("page_id"))
         val serverTime = requireCanonicalServerInstant(document.requireString("server_time"))
-        val changes = decodeChanges(rawChanges, serverTime)
-        val page = PullPageSuccess(
-            requestId = request.requestId,
-            deviceId = deviceId,
-            fromCursor = fromCursor,
-            pageId = pageId,
-            pageSha256 = pageSha256,
-            changes = changes,
-            nextCursor = nextCursor,
-            hasMore = hasMore,
-            serverTime = serverTime,
-        )
-        if (exactReplay) {
-            validateReplayedChangeReceipts(changes, state)
-            return ValidatedPullPage(
-                page,
-                state,
-                requestBodySha256,
-                responseBodySha256,
-                replayed = true,
-            )
-        }
-        val advanced = validateChangeStream(
-            changes,
-            pageId,
-            state.copy(
-                seenSuccessfulPullRequestIds =
-                    state.seenSuccessfulPullRequestIds + request.requestId,
-                successfulPullPageReceipts =
-                    state.successfulPullPageReceipts + (request.requestId to receipt),
-                seenPullCursors = seenPullCursors,
-                bootstrapPhase = BootstrapValidationPhase.INCREMENTAL,
-                expectedPullCursor = nextCursor,
-                pullContinuationRequired = hasMore,
+        return FreshPullPage(
+            page = PullPageSuccess(
+                requestId = request.requestId,
+                deviceId = deviceId,
+                fromCursor = fromCursor,
+                pageId = pageId,
+                pageSha256 = pageSha256,
+                changes = decodeChanges(rawChanges, serverTime),
+                nextCursor = nextCursor,
+                hasMore = hasMore,
+                serverTime = serverTime,
             ),
-        )
-        return ValidatedPullPage(
-            page,
-            advanced,
-            requestBodySha256,
-            responseBodySha256,
+            requestBodySha256 = requestBodySha256,
+            responseBodySha256 = responseBodySha256,
         )
     }
 
