@@ -216,7 +216,7 @@ class M2AuthRuntimeTest {
         }
 
     @Test
-    fun productionConfigurationFailureIsAmbiguousAndNeverReplayed() = runTest {
+    fun productionEnrollmentConfigurationFailureStopsBeforeDurableClaim() = runTest {
         val events = mutableListOf<String>()
         val persistence = FakePersistence(events).apply {
             enrollmentFactory = { requestId -> enrollmentBinding(requestId) }
@@ -238,18 +238,18 @@ class M2AuthRuntimeTest {
             vault = vault,
         ).enroll(enrollmentCode, replaceActiveDevice = true)
 
-        assertSame(M2AuthRuntimeResult.ManualReenrollmentRequired, result)
+        assertSame(M2AuthRuntimeResult.LocalUnavailable, result)
         assertEquals(1, transportOpenCount)
-        assertEquals(1, persistence.beginEnrollmentCalls)
-        assertEquals(
-            listOf(Settlement(REQUEST_ID, "auth_outcome_unknown")),
-            persistence.enrollmentUnknowns,
-        )
+        assertEquals(0, persistence.beginEnrollmentCalls)
+        assertTrue(persistence.enrollmentUnknowns.isEmpty())
+        assertTrue(persistence.committedEnrollments.isEmpty())
+        assertTrue(vault.revokedKeys.isEmpty())
+        assertTrue(vault.revokedEpochs.isEmpty())
         assertSecretClosed(enrollmentCode)
     }
 
     @Test
-    fun productionTransportProviderCancellationSettlesAndPropagates() = runTest {
+    fun productionEnrollmentReadinessCancellationPrecedesDurableClaim() = runTest {
         val events = mutableListOf<String>()
         val persistence = FakePersistence(events).apply {
             enrollmentFactory = { requestId -> enrollmentBinding(requestId) }
@@ -276,10 +276,10 @@ class M2AuthRuntimeTest {
 
         assertTrue(failure === cancellation)
         assertEquals(1, transportOpenCount)
-        assertEquals(
-            listOf(Settlement(REQUEST_ID, "auth_exchange_cancelled")),
-            persistence.enrollmentUnknowns,
-        )
+        assertEquals(0, persistence.beginEnrollmentCalls)
+        assertTrue(persistence.enrollmentUnknowns.isEmpty())
+        assertTrue(vault.revokedKeys.isEmpty())
+        assertTrue(vault.revokedEpochs.isEmpty())
         assertSecretClosed(enrollmentCode)
     }
 
@@ -823,7 +823,7 @@ class M2AuthRuntimeTest {
     }
 
     private class FakeExchange : M2AuthExchangeBoundary {
-        var refreshReadinessCalls = 0
+        var transportReadinessCalls = 0
         var enrollCalls = 0
         var refreshCalls = 0
         var lastRefreshResponse: RefreshSuccess? = null
@@ -840,9 +840,9 @@ class M2AuthRuntimeTest {
                 RefreshExchangeOutcome.LocalFailure
             }
 
-        override suspend fun prepareRefreshTransport(): M2AuthRefreshTransportReadiness {
-            refreshReadinessCalls += 1
-            return M2AuthRefreshTransportReadiness.READY
+        override suspend fun prepareTransport(): M2AuthTransportReadiness {
+            transportReadinessCalls += 1
+            return M2AuthTransportReadiness.READY
         }
 
         override suspend fun enroll(

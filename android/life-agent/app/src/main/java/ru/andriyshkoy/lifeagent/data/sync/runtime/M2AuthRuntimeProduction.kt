@@ -182,13 +182,13 @@ internal class ProductionM2AuthExchangeBoundary(
         transportProvider::open,
     )
 
-    override suspend fun prepareRefreshTransport(): M2AuthRefreshTransportReadiness = try {
+    override suspend fun prepareTransport(): M2AuthTransportReadiness = try {
         transport
-        M2AuthRefreshTransportReadiness.READY
+        M2AuthTransportReadiness.READY
     } catch (error: CancellationException) {
         throw error
     } catch (_: Exception) {
-        M2AuthRefreshTransportReadiness.LOCAL_UNAVAILABLE
+        M2AuthTransportReadiness.LOCAL_UNAVAILABLE
     }
 
     override suspend fun enroll(
