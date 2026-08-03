@@ -46,6 +46,27 @@ internal class AccessRecoveryBinding internal constructor(
 }
 
 /**
+ * Atomic outcome of one bounded interrupted-auth recovery transaction.
+ *
+ * [recoveredCount] includes request-integrity and stale-attempt cleanup.
+ * [currentAuthorityChanged] is narrower: it is true only when the installed
+ * credential-family authority observed at transaction entry differs on exit.
+ */
+internal class InterruptedAuthRecoveryResult internal constructor(
+    val recoveredCount: Int,
+    val currentAuthorityChanged: Boolean,
+) {
+    init {
+        require(recoveredCount >= 0)
+    }
+
+    override fun toString(): String =
+        "InterruptedAuthRecoveryResult(" +
+            "count=$recoveredCount,currentAuthorityChanged=$currentAuthorityChanged," +
+            "redacted=true)"
+}
+
+/**
  * Owns an exact copy of the durable refresh envelope for one claimed attempt.
  * Closing the binding wipes its byte arrays. Callers own and must wipe copies.
  */
@@ -977,8 +998,11 @@ class SyncAuthPersistenceStore(
      * A process death after a non-replayable refresh was dispatched is always
      * ambiguous. It is quarantined before any request can become runnable.
      */
-    suspend fun recoverInterruptedAuthFlows(updatedAtUtc: String): Int =
+    internal suspend fun recoverInterruptedAuthFlows(
+        updatedAtUtc: String,
+    ): InterruptedAuthRecoveryResult =
         database.withTransaction {
+            val authorityBefore = authDao.findState().toRecoveryAuthoritySnapshot()
             var recovered = 0
             val integrityRecovered = SyncRequestPersistenceStore(database)
                 .recoverInvalidRequestMetadata(
@@ -989,7 +1013,13 @@ class SyncAuthPersistenceStore(
             if (integrityRecovered == MAX_INTEGRITY_RECOVERY_ROWS) {
                 // Keep recovery bounded. The next invocation continues the
                 // integrity queue before any full-row auth-recovery scan.
-                return@withTransaction recovered
+                return@withTransaction InterruptedAuthRecoveryResult(
+                    recoveredCount = recovered,
+                    currentAuthorityChanged = currentAuthorityChanged(
+                        authorityBefore,
+                        authDao.findState().toRecoveryAuthoritySnapshot(),
+                    ),
+                )
             }
             authDao.findAttempts(AUTH_ENROLL, DISPATCHING).forEach { attempt ->
                 val current = authDao.findState()
@@ -1108,7 +1138,13 @@ class SyncAuthPersistenceStore(
                     )
                     recovered += 1
                 }
-            recovered
+            InterruptedAuthRecoveryResult(
+                recoveredCount = recovered,
+                currentAuthorityChanged = currentAuthorityChanged(
+                    authorityBefore,
+                    authDao.findState().toRecoveryAuthoritySnapshot(),
+                ),
+            )
         }
 
     private suspend fun quarantineEnrollmentAttempt(
@@ -1664,3 +1700,42 @@ class SyncAuthPersistenceStore(
         )
     }
 }
+
+private fun currentAuthorityChanged(
+    before: RecoveryAuthoritySnapshot?,
+    after: RecoveryAuthoritySnapshot?,
+): Boolean {
+    if (before == null || after == null) return before != after
+    return before.credentialEpochId != after.credentialEpochId ||
+        before.installationId != after.installationId ||
+        before.localOwnerId != after.localOwnerId ||
+        before.deviceId != after.deviceId ||
+        before.personId != after.personId ||
+        before.generation != after.generation ||
+        before.state != after.state
+}
+
+private class RecoveryAuthoritySnapshot(
+    val credentialEpochId: String,
+    val installationId: String,
+    val localOwnerId: String,
+    val deviceId: String,
+    val personId: String,
+    val generation: Long,
+    val state: String,
+) {
+    override fun toString(): String = "RecoveryAuthoritySnapshot(redacted=true)"
+}
+
+private fun SyncAuthStateEntity?.toRecoveryAuthoritySnapshot(): RecoveryAuthoritySnapshot? =
+    this?.let { authority ->
+        RecoveryAuthoritySnapshot(
+            credentialEpochId = authority.credentialEpochId,
+            installationId = authority.installationId,
+            localOwnerId = authority.localOwnerId,
+            deviceId = authority.deviceId,
+            personId = authority.personId,
+            generation = authority.generation,
+            state = authority.state,
+        )
+    }

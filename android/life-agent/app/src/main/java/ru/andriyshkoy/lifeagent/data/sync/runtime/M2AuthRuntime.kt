@@ -11,6 +11,7 @@ import ru.andriyshkoy.lifeagent.core.id.UuidGenerator
 import ru.andriyshkoy.lifeagent.data.local.db.AccessRecoveryBinding
 import ru.andriyshkoy.lifeagent.data.local.db.EnrollmentAttemptBinding
 import ru.andriyshkoy.lifeagent.data.local.db.EnrollmentSuccessPersistence
+import ru.andriyshkoy.lifeagent.data.local.db.InterruptedAuthRecoveryResult
 import ru.andriyshkoy.lifeagent.data.local.db.RefreshAttemptBinding
 import ru.andriyshkoy.lifeagent.data.local.db.RefreshSuccessPersistence
 import ru.andriyshkoy.lifeagent.data.security.NewDurableRequestPersistence
@@ -159,7 +160,7 @@ internal interface M2AuthPersistenceBoundary {
     suspend fun enrollmentUnknown(requestId: String, updatedAtUtc: String, failureCode: String)
     suspend fun refreshRejected(requestId: String, updatedAtUtc: String, failureCode: String)
     suspend fun refreshUnknown(requestId: String, updatedAtUtc: String, failureCode: String)
-    suspend fun recoverInterrupted(updatedAtUtc: String): Int
+    suspend fun recoverInterrupted(updatedAtUtc: String): InterruptedAuthRecoveryResult
 }
 
 internal interface M2AuthCredentialBoundary {
@@ -290,11 +291,11 @@ internal class M2AuthRuntime internal constructor(
     suspend fun recoverInterruptedAuthFlows(): M2AuthRuntimeResult {
         if (!operationMutex.tryLock()) return M2AuthRuntimeResult.Busy
         return try {
-            val recoveredCount = persistence.recoverInterrupted(clock.instant().toString())
-            if (recoveredCount > 0) {
+            val recovery = persistence.recoverInterrupted(clock.instant().toString())
+            if (recovery.currentAuthorityChanged) {
                 vault.clear()
             }
-            M2AuthRuntimeResult.RecoveryComplete(recoveredCount)
+            M2AuthRuntimeResult.RecoveryComplete(recovery.recoveredCount)
         } finally {
             operationMutex.unlock()
         }

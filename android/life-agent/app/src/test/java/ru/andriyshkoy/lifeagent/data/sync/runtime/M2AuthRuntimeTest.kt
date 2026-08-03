@@ -16,6 +16,7 @@ import ru.andriyshkoy.lifeagent.core.id.UuidGenerator
 import ru.andriyshkoy.lifeagent.data.local.db.AccessRecoveryBinding
 import ru.andriyshkoy.lifeagent.data.local.db.EnrollmentAttemptBinding
 import ru.andriyshkoy.lifeagent.data.local.db.EnrollmentSuccessPersistence
+import ru.andriyshkoy.lifeagent.data.local.db.InterruptedAuthRecoveryResult
 import ru.andriyshkoy.lifeagent.data.local.db.RefreshAttemptBinding
 import ru.andriyshkoy.lifeagent.data.local.db.RefreshSuccessPersistence
 import ru.andriyshkoy.lifeagent.data.local.db.entity.SyncAuthStateEntity
@@ -58,7 +59,10 @@ class M2AuthRuntimeTest {
     fun recoveredInterruptedAuthorityClearsProcessAccessVault() = runTest {
         val events = mutableListOf<String>()
         val persistence = FakePersistence(events).apply {
-            interruptedRecoveryCount = 1
+            interruptedRecovery = InterruptedAuthRecoveryResult(
+                recoveredCount = 1,
+                currentAuthorityChanged = true,
+            )
         }
         val vault = FakeVault(events)
         val key = AccessTokenKey(EPOCH_ID, 7)
@@ -76,6 +80,35 @@ class M2AuthRuntimeTest {
         assertEquals(1, recovery.recoveredCount)
         assertEquals(1, vault.clearCalls)
         assertFalse(vault.contains(key))
+        assertSecretClosed(token)
+    }
+
+    @Test
+    fun staleOnlyRecoveryCountPreservesExactCurrentProcessAuthority() = runTest {
+        val events = mutableListOf<String>()
+        val persistence = FakePersistence(events).apply {
+            interruptedRecovery = InterruptedAuthRecoveryResult(
+                recoveredCount = 1,
+                currentAuthorityChanged = false,
+            )
+        }
+        val vault = FakeVault(events)
+        val key = AccessTokenKey(EPOCH_ID, 7)
+        val token = WipeableSecret.ascii(ACCESS_TOKEN)
+        vault.replace(key, token)
+
+        val result = runtime(
+            persistence = persistence,
+            credentials = FakeCredentials(),
+            exchange = FakeExchange(),
+            vault = vault,
+        ).recoverInterruptedAuthFlows()
+
+        val recovery = result as M2AuthRuntimeResult.RecoveryComplete
+        assertEquals(1, recovery.recoveredCount)
+        assertEquals(0, vault.clearCalls)
+        assertTrue(vault.contains(key))
+        vault.clear()
         assertSecretClosed(token)
     }
 
@@ -341,6 +374,10 @@ class M2AuthRuntimeTest {
                     AuthAccessSource.REFRESH,
                 ),
                 M2AuthRuntimeResult.DurableCredentialsCommitted(AccessTokenKey(EPOCH_ID, 8)),
+                InterruptedAuthRecoveryResult(
+                    recoveredCount = 1,
+                    currentAuthorityChanged = false,
+                ),
                 M2AuthRuntimePolicy(),
                 EnrollmentInstallationIdentifiers(EPOCH_ID, BOOTSTRAP_ID, BOOTSTRAP_REQUEST_ID),
                 enrollmentBinding,
@@ -405,7 +442,10 @@ class M2AuthRuntimeTest {
         var beginEnrollmentCalls = 0
         var readAccessCalls = 0
         var beginRefreshCalls = 0
-        var interruptedRecoveryCount = 0
+        var interruptedRecovery = InterruptedAuthRecoveryResult(
+            recoveredCount = 0,
+            currentAuthorityChanged = false,
+        )
         var lastRefreshBinding: RefreshAttemptBinding? = null
         val committedEnrollments = mutableListOf<PreparedEnrollmentInstallation>()
         val committedRefreshes = mutableListOf<PreparedRefreshInstallation>()
@@ -478,8 +518,9 @@ class M2AuthRuntimeTest {
             refreshUnknowns += Settlement(requestId, failureCode)
         }
 
-        override suspend fun recoverInterrupted(updatedAtUtc: String): Int =
-            interruptedRecoveryCount
+        override suspend fun recoverInterrupted(
+            updatedAtUtc: String,
+        ): InterruptedAuthRecoveryResult = interruptedRecovery
     }
 
     private class FakeCredentials : M2AuthCredentialBoundary {

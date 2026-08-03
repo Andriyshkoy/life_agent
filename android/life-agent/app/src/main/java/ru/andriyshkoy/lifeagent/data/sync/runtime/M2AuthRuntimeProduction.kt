@@ -9,6 +9,7 @@ import ru.andriyshkoy.lifeagent.core.id.UuidGenerator
 import ru.andriyshkoy.lifeagent.data.local.db.AccessRecoveryBinding
 import ru.andriyshkoy.lifeagent.data.local.db.EnrollmentAttemptBinding
 import ru.andriyshkoy.lifeagent.data.local.db.EnrollmentSuccessPersistence
+import ru.andriyshkoy.lifeagent.data.local.db.InterruptedAuthRecoveryResult
 import ru.andriyshkoy.lifeagent.data.local.db.LifeAgentDatabase
 import ru.andriyshkoy.lifeagent.data.local.db.ProtectedSyncRequestStore
 import ru.andriyshkoy.lifeagent.data.local.db.RefreshAttemptBinding
@@ -145,7 +146,9 @@ internal class RoomM2AuthPersistenceBoundary(
         auth.commitRefreshOutcomeUnknown(requestId, updatedAtUtc, failureCode)
     }
 
-    override suspend fun recoverInterrupted(updatedAtUtc: String): Int =
+    override suspend fun recoverInterrupted(
+        updatedAtUtc: String,
+    ): InterruptedAuthRecoveryResult =
         auth.recoverInterruptedAuthFlows(updatedAtUtc)
 
     override fun toString(): String = "RoomM2AuthPersistenceBoundary(redacted=true)"

@@ -422,11 +422,10 @@ class RequestProtectionStateRecoveryInstrumentedTest {
                 }
                 fixture.reopen()
 
-                assertEquals(
-                    1,
-                    SyncAuthPersistenceStore(fixture.database)
-                        .recoverInterruptedAuthFlows(updatedAtUtc = RECOVERY_UTC),
-                )
+                val recovery = SyncAuthPersistenceStore(fixture.database)
+                    .recoverInterruptedAuthFlows(updatedAtUtc = RECOVERY_UTC)
+                assertEquals(1, recovery.recoveredCount)
+                assertFalse(recovery.currentAuthorityChanged)
                 val recovered = requireNotNull(
                     fixture.database.syncTransportDao().findRequest(SYNC_PULL, requestId),
                 )
@@ -449,7 +448,8 @@ class RequestProtectionStateRecoveryInstrumentedTest {
                 assertEquals(
                     0,
                     SyncAuthPersistenceStore(fixture.database)
-                        .recoverInterruptedAuthFlows(updatedAtUtc = RECOVERY_UTC),
+                        .recoverInterruptedAuthFlows(updatedAtUtc = RECOVERY_UTC)
+                        .recoveredCount,
                 )
             }
         }
@@ -482,7 +482,8 @@ class RequestProtectionStateRecoveryInstrumentedTest {
         val authStore = SyncAuthPersistenceStore(fixture.database)
         assertEquals(
             MAX_INTEGRITY_RECOVERY_ROWS,
-            authStore.recoverInterruptedAuthFlows(updatedAtUtc = RECOVERY_UTC),
+            authStore.recoverInterruptedAuthFlows(updatedAtUtc = RECOVERY_UTC)
+                .recoveredCount,
         )
         assertEquals(
             1,
@@ -492,11 +493,13 @@ class RequestProtectionStateRecoveryInstrumentedTest {
         )
         assertEquals(
             1,
-            authStore.recoverInterruptedAuthFlows(updatedAtUtc = RECOVERY_UTC),
+            authStore.recoverInterruptedAuthFlows(updatedAtUtc = RECOVERY_UTC)
+                .recoveredCount,
         )
         assertEquals(
             0,
-            authStore.recoverInterruptedAuthFlows(updatedAtUtc = RECOVERY_UTC),
+            authStore.recoverInterruptedAuthFlows(updatedAtUtc = RECOVERY_UTC)
+                .recoveredCount,
         )
         assertEquals(
             MAX_INTEGRITY_RECOVERY_ROWS + 1,

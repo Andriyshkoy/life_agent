@@ -319,7 +319,7 @@ class SyncWholeRequestRecoveryInstrumentedTest {
                 SyncAuthPersistenceStore(fixture.database)
                     .recoverInterruptedAuthFlows(
                         updatedAtUtc = "2030-01-01T00:00:00.300Z",
-                    ),
+                    ).recoveredCount,
             )
             val terminal = fixture.database.syncTransportDao()
                 .findRequest("sync_push", push.batchId)

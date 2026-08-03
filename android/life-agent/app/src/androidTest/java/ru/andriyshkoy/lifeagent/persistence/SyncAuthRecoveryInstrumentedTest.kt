@@ -397,12 +397,11 @@ class SyncAuthRecoveryInstrumentedTest {
         fixture.reopen()
         store = SyncAuthPersistenceStore(fixture.database)
 
-        assertEquals(
-            1,
-            store.recoverInterruptedAuthFlows(
-                updatedAtUtc = instant(SyncM2PersistenceFixture.NOW_MS + 300),
-            ),
+        val recovery = store.recoverInterruptedAuthFlows(
+            updatedAtUtc = instant(SyncM2PersistenceFixture.NOW_MS + 300),
         )
+        assertEquals(1, recovery.recoveredCount)
+        assertTrue(recovery.currentAuthorityChanged)
         val auth = requireNotNull(fixture.database.syncAuthDao().findState())
         assertEquals("quarantined", auth.state)
         assertNull(auth.refreshTokenCiphertext)
@@ -441,12 +440,11 @@ class SyncAuthRecoveryInstrumentedTest {
         assertEquals("active", fixture.database.syncAuthDao().findState()?.state)
         fixture.reopen()
         store = SyncAuthPersistenceStore(fixture.database)
-        assertEquals(
-            1,
-            store.recoverInterruptedAuthFlows(
-                updatedAtUtc = instant(SyncM2PersistenceFixture.NOW_MS + 300),
-            ),
+        val recovery = store.recoverInterruptedAuthFlows(
+            updatedAtUtc = instant(SyncM2PersistenceFixture.NOW_MS + 300),
         )
+        assertEquals(1, recovery.recoveredCount)
+        assertTrue(recovery.currentAuthorityChanged)
         assertEquals(
             "quarantined",
             fixture.database.syncAuthDao().findState()?.state,
