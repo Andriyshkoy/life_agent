@@ -27,16 +27,104 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 2
     steps:
-      - name: Require develop as the production release source
+      - name: Require a verified production release source
         env:
+          GH_TOKEN: ${{ github.token }}
           RELEASE_HEAD: ${{ github.head_ref }}
+          RELEASE_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          RELEASE_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           RELEASE_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+          RELEASE_HEAD_REPOSITORY_ID: ${{ github.event.pull_request.head.repo.id }}
           CURRENT_REPOSITORY: ${{ github.repository }}
+          CURRENT_REPOSITORY_ID: ${{ github.repository_id }}
         run: |
-          if [ "$RELEASE_HEAD" != "develop" ] ||
-            [ "$RELEASE_HEAD_REPOSITORY" != "$CURRENT_REPOSITORY" ]; then
-            echo "Pull requests into main must come from this repository's develop branch."
+          set -Eeuo pipefail
+
+          release_source_error() {
+            echo "Production release source verification failed."
             exit 1
+          }
+
+          read_branch_sha() {
+            local branch_name="$1"
+            gh api \
+              --method GET \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "repos/$CURRENT_REPOSITORY/git/ref/heads/$branch_name" \
+              --jq '.object.sha'
+          }
+
+          read_tree_sha() {
+            local commit_sha="$1"
+            gh api \
+              --method GET \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "repos/$CURRENT_REPOSITORY/git/commits/$commit_sha" \
+              --jq '.tree.sha'
+          }
+
+          if [ "$RELEASE_HEAD_REPOSITORY" != "$CURRENT_REPOSITORY" ] ||
+            [ "$RELEASE_HEAD_REPOSITORY_ID" != "$CURRENT_REPOSITORY_ID" ] ||
+            [[ ! "$CURRENT_REPOSITORY_ID" =~ ^[1-9][0-9]*$ ]]; then
+            release_source_error
+          fi
+
+          if [[ ! "$RELEASE_HEAD" =~ ^release/[a-z0-9][a-z0-9._/-]{0,119}$ ]]; then
+            release_source_error
+          fi
+          if [[ ! "$RELEASE_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]] ||
+            [[ ! "$RELEASE_BASE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            release_source_error
+          fi
+
+          current_main_sha="$(read_branch_sha main)"
+          current_develop_sha="$(read_branch_sha develop)"
+          current_release_sha="$(read_branch_sha "$RELEASE_HEAD")"
+          for observed_sha in \
+            "$current_main_sha" \
+            "$current_develop_sha" \
+            "$current_release_sha"; do
+            if [[ ! "$observed_sha" =~ ^[0-9a-f]{40}$ ]]; then
+              release_source_error
+            fi
+          done
+          if [ "$RELEASE_BASE_SHA" != "$current_main_sha" ] ||
+            [ "$RELEASE_HEAD_SHA" != "$current_release_sha" ]; then
+            release_source_error
+          fi
+
+          compare_record="$(
+            gh api \
+              --method GET \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "repos/$CURRENT_REPOSITORY/compare/$current_main_sha...$RELEASE_HEAD_SHA" \
+              --jq '[.status, (.behind_by | tostring), .base_commit.sha, .merge_base_commit.sha] | @tsv'
+          )"
+          IFS=$'\t' read -r \
+            compare_status \
+            compare_behind_by \
+            compare_base_sha \
+            compare_merge_base_sha \
+            <<<"$compare_record"
+          if [[ ! "$compare_status" =~ ^(ahead|identical)$ ]] ||
+            [ "$compare_behind_by" != "0" ] ||
+            [ "$compare_base_sha" != "$current_main_sha" ] ||
+            [ "$compare_merge_base_sha" != "$current_main_sha" ]; then
+            release_source_error
+          fi
+
+          release_tree_sha="$(read_tree_sha "$RELEASE_HEAD_SHA")"
+          develop_tree_sha="$(read_tree_sha "$current_develop_sha")"
+          if [[ ! "$release_tree_sha" =~ ^[0-9a-f]{40}$ ]] ||
+            [[ ! "$develop_tree_sha" =~ ^[0-9a-f]{40}$ ]] ||
+            [ "$release_tree_sha" != "$develop_tree_sha" ]; then
+            release_source_error
+          fi
+
+          if [ "$(read_branch_sha main)" != "$current_main_sha" ] ||
+            [ "$(read_branch_sha develop)" != "$current_develop_sha" ] ||
+            [ "$(read_branch_sha "$RELEASE_HEAD")" != "$RELEASE_HEAD_SHA" ]; then
+            release_source_error
           fi
 
   contracts:

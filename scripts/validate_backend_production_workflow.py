@@ -35,7 +35,7 @@ def extract_job(text: str, job_id: str) -> str:
     jobs_offset = text.find("\njobs:\n")
     require(jobs_offset >= 0, "missing jobs mapping")
     jobs_text = text[jobs_offset + 1 :]
-    starts = list(re.finditer(r"(?m)^  ([a-zA-Z_][a-zA-Z0-9_]*):\n", jobs_text))
+    starts = list(re.finditer(r"(?m)^  ([a-zA-Z_][a-zA-Z0-9_-]*):\n", jobs_text))
     for index, match in enumerate(starts):
         if match.group(1) != job_id:
             continue
@@ -226,6 +226,14 @@ def validate_bundle_state(root: Path = ROOT) -> str:
 
 def validate_ci_integration(text: str) -> None:
     require(
+        "permissions:\n  contents: read\n" in text,
+        "CI must keep repository contents read-only",
+    )
+    require(
+        "contents: write" not in text,
+        "CI must not receive repository contents write access",
+    )
+    require(
         "          python scripts/validate_production_infra.py\n" in text,
         "CI must run the production infrastructure validator",
     )
@@ -233,6 +241,133 @@ def validate_ci_integration(text: str) -> None:
         "          python -m unittest scripts.test_validate_production_infra\n"
         in text,
         "CI must run the production infrastructure regression tests",
+    )
+
+    release_job = extract_job(text, "release-source")
+    required_release_fragments = {
+        "main pull-request release gate": (
+            "if: github.event_name == 'pull_request' && github.base_ref == 'main'"
+        ),
+        "job-scoped GitHub token": "GH_TOKEN: ${{ github.token }}",
+        "immutable pull-request head": (
+            "RELEASE_HEAD_SHA: ${{ github.event.pull_request.head.sha }}"
+        ),
+        "immutable pull-request base": (
+            "RELEASE_BASE_SHA: ${{ github.event.pull_request.base.sha }}"
+        ),
+        "head repository identity": (
+            "RELEASE_HEAD_REPOSITORY_ID: ${{ github.event.pull_request.head.repo.id }}"
+        ),
+        "current repository identity": (
+            "CURRENT_REPOSITORY_ID: ${{ github.repository_id }}"
+        ),
+        "fail-closed shell": "set -Eeuo pipefail",
+        "read-only API method": "--method GET",
+        "pinned REST API version": "X-GitHub-Api-Version: 2022-11-28",
+        "exact ref endpoint": (
+            '"repos/$CURRENT_REPOSITORY/git/ref/heads/$branch_name"'
+        ),
+        "exact ref object": "--jq '.object.sha'",
+        "same-repository name guard": (
+            '[ "$RELEASE_HEAD_REPOSITORY" != "$CURRENT_REPOSITORY" ]'
+        ),
+        "same-repository ID guard": (
+            '[ "$RELEASE_HEAD_REPOSITORY_ID" != "$CURRENT_REPOSITORY_ID" ]'
+        ),
+        "bounded release namespace": (
+            '[[ ! "$RELEASE_HEAD" =~ ^release/[a-z0-9][a-z0-9._/-]{0,119}$ ]]'
+        ),
+        "lowercase event SHA guard": (
+            '[[ ! "$RELEASE_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]'
+        ),
+        "lowercase base SHA guard": (
+            '[[ ! "$RELEASE_BASE_SHA" =~ ^[0-9a-f]{40}$ ]]'
+        ),
+        "live ref SHA guard": "for observed_sha in",
+        "current main ref": "current_main_sha=\"$(read_branch_sha main)\"",
+        "current develop ref": "current_develop_sha=\"$(read_branch_sha develop)\"",
+        "exact release ref": (
+            'current_release_sha="$(read_branch_sha "$RELEASE_HEAD")"'
+        ),
+        "fresh base requirement": (
+            '[ "$RELEASE_BASE_SHA" != "$current_main_sha" ]'
+        ),
+        "exact head requirement": (
+            '[ "$RELEASE_HEAD_SHA" != "$current_release_sha" ]'
+        ),
+        "main ancestry comparison": (
+            '"repos/$CURRENT_REPOSITORY/compare/'
+            '$current_main_sha...$RELEASE_HEAD_SHA"'
+        ),
+        "zero behind requirement": '[ "$compare_behind_by" != "0" ]',
+        "allowed compare status": (
+            '[[ ! "$compare_status" =~ ^(ahead|identical)$ ]]'
+        ),
+        "exact compare base": '[ "$compare_base_sha" != "$current_main_sha" ]',
+        "exact merge base": (
+            '[ "$compare_merge_base_sha" != "$current_main_sha" ]'
+        ),
+        "git commit tree lookup": (
+            '"repos/$CURRENT_REPOSITORY/git/commits/$commit_sha"'
+        ),
+        "exact commit tree object": "--jq '.tree.sha'",
+        "exact develop tree": (
+            '[ "$release_tree_sha" != "$develop_tree_sha" ]'
+        ),
+        "final main ref recheck": (
+            '[ "$(read_branch_sha main)" != "$current_main_sha" ]'
+        ),
+        "final develop ref recheck": (
+            '[ "$(read_branch_sha develop)" != "$current_develop_sha" ]'
+        ),
+        "final release ref recheck": (
+            '[ "$(read_branch_sha "$RELEASE_HEAD")" != "$RELEASE_HEAD_SHA" ]'
+        ),
+    }
+    for label, fragment in required_release_fragments.items():
+        require(fragment in release_job, f"missing {label}")
+
+    require(
+        release_job.count("--method GET") == 3
+        and release_job.count("X-GitHub-Api-Version: 2022-11-28") == 3,
+        "release-source API calls must stay GET-only and version-pinned",
+    )
+
+    require(
+        "pull_request_target:" not in text,
+        "privileged pull-request-target execution is forbidden",
+    )
+    require(
+        "actions/checkout" not in release_job,
+        "release-source must not execute pull-request content",
+    )
+    require(
+        "    permissions:" not in release_job
+        and re.search(r"(?m)^\s+[A-Za-z0-9_-]+: write\s*$", text) is None,
+        "release-source must not gain write permissions",
+    )
+    require(
+        "exit 0" not in release_job,
+        "every release source must pass the complete proof path",
+    )
+    require(
+        "continue-on-error: true" not in release_job
+        and "|| true" not in release_job
+        and "set +e" not in release_job,
+        "release-source must fail closed on API or shell errors",
+    )
+    require(
+        "set -x" not in release_job
+        and "--verbose" not in release_job
+        and "--cache" not in release_job
+        and "actions/cache" not in release_job,
+        "release-source must not expose or persist API data",
+    )
+    require(
+        release_job.count("$(read_branch_sha main)") == 2
+        and release_job.count("$(read_branch_sha develop)") == 2
+        and release_job.count('$(read_branch_sha "$RELEASE_HEAD")') == 2,
+        "release refs must be read before and after proof validation",
     )
 
 

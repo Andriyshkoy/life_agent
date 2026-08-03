@@ -36,6 +36,179 @@ class BackendProductionWorkflowValidatorTest(unittest.TestCase):
         with self.assertRaisesRegex(WorkflowValidationError, "infrastructure validator"):
             validate_ci_integration(mutated)
 
+    def test_release_source_requires_every_bridge_proof(self) -> None:
+        mutations = (
+            (
+                "RELEASE_HEAD_SHA: ${{ github.event.pull_request.head.sha }}",
+                "immutable pull-request head",
+            ),
+            (
+                "RELEASE_BASE_SHA: ${{ github.event.pull_request.base.sha }}",
+                "immutable pull-request base",
+            ),
+            (
+                "RELEASE_HEAD_REPOSITORY_ID: "
+                "${{ github.event.pull_request.head.repo.id }}",
+                "head repository identity",
+            ),
+            (
+                '[ "$RELEASE_HEAD_REPOSITORY" != "$CURRENT_REPOSITORY" ]',
+                "same-repository name guard",
+            ),
+            (
+                '[ "$RELEASE_HEAD_REPOSITORY_ID" != "$CURRENT_REPOSITORY_ID" ]',
+                "same-repository ID guard",
+            ),
+            (
+                '[[ ! "$RELEASE_HEAD" =~ '
+                '^release/[a-z0-9][a-z0-9._/-]{0,119}$ ]]',
+                "bounded release namespace",
+            ),
+            (
+                '[[ ! "$RELEASE_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]',
+                "lowercase event SHA guard",
+            ),
+            (
+                '[[ ! "$RELEASE_BASE_SHA" =~ ^[0-9a-f]{40}$ ]]',
+                "lowercase base SHA guard",
+            ),
+            (
+                '[ "$RELEASE_BASE_SHA" != "$current_main_sha" ]',
+                "fresh base requirement",
+            ),
+            (
+                '[ "$RELEASE_HEAD_SHA" != "$current_release_sha" ]',
+                "exact head requirement",
+            ),
+            (
+                '"repos/$CURRENT_REPOSITORY/compare/'
+                '$current_main_sha...$RELEASE_HEAD_SHA"',
+                "main ancestry comparison",
+            ),
+            ('[ "$compare_behind_by" != "0" ]', "zero behind requirement"),
+            (
+                '[[ ! "$compare_status" =~ ^(ahead|identical)$ ]]',
+                "allowed compare status",
+            ),
+            (
+                '[ "$compare_merge_base_sha" != "$current_main_sha" ]',
+                "exact merge base",
+            ),
+            (
+                '[ "$release_tree_sha" != "$develop_tree_sha" ]',
+                "exact develop tree",
+            ),
+            (
+                '[ "$(read_branch_sha main)" != "$current_main_sha" ]',
+                "final main ref recheck",
+            ),
+            (
+                '[ "$(read_branch_sha develop)" != "$current_develop_sha" ]',
+                "final develop ref recheck",
+            ),
+            (
+                '[ "$(read_branch_sha "$RELEASE_HEAD")" '
+                '!= "$RELEASE_HEAD_SHA" ]',
+                "final release ref recheck",
+            ),
+        )
+        for fragment, message in mutations:
+            with self.subTest(message=message):
+                self.assertIn(fragment, self.ci_workflow)
+                mutated = self.ci_workflow.replace(fragment, "guard-removed", 1)
+                with self.assertRaisesRegex(WorkflowValidationError, message):
+                    validate_ci_integration(mutated)
+
+    def test_release_source_rejects_error_suppression(self) -> None:
+        mutated = self.ci_workflow.replace(
+            "            gh api \\\n",
+            "            gh api || true \\\n",
+            1,
+        )
+        with self.assertRaisesRegex(WorkflowValidationError, "fail closed"):
+            validate_ci_integration(mutated)
+
+    def test_release_source_rejects_proof_shortcut(self) -> None:
+        mutated = self.ci_workflow.replace(
+            '          current_main_sha="$(read_branch_sha main)"\n',
+            "          exit 0\n"
+            '          current_main_sha="$(read_branch_sha main)"\n',
+            1,
+        )
+        with self.assertRaisesRegex(WorkflowValidationError, "complete proof path"):
+            validate_ci_integration(mutated)
+
+    def test_release_source_rejects_contents_write_access(self) -> None:
+        mutated = self.ci_workflow.replace(
+            "permissions:\n  contents: read\n",
+            "permissions:\n  contents: write\n",
+            1,
+        )
+        with self.assertRaisesRegex(WorkflowValidationError, "read-only"):
+            validate_ci_integration(mutated)
+
+    def test_release_source_rejects_job_write_permission(self) -> None:
+        mutated = self.ci_workflow.replace(
+            "    steps:\n      - name: Require a verified production release source\n",
+            "    permissions:\n"
+            "      issues: write\n"
+            "    steps:\n"
+            "      - name: Require a verified production release source\n",
+            1,
+        )
+        with self.assertRaisesRegex(WorkflowValidationError, "write permissions"):
+            validate_ci_integration(mutated)
+
+    def test_release_source_api_shape_is_pinned(self) -> None:
+        mutations = (
+            ("--method GET", "--method POST"),
+            (
+                "X-GitHub-Api-Version: 2022-11-28",
+                "X-GitHub-Api-Version: unpinned",
+            ),
+            ("--jq '.object.sha'", "--jq '.object.url'"),
+            ("--jq '.tree.sha'", "--jq '.tree.url'"),
+            (
+                '"repos/$CURRENT_REPOSITORY/git/ref/heads/$branch_name"',
+                '"repos/$CURRENT_REPOSITORY/git/refs/$branch_name"',
+            ),
+        )
+        for original, replacement in mutations:
+            with self.subTest(fragment=original):
+                mutated = self.ci_workflow.replace(original, replacement, 1)
+                self.assertNotEqual(mutated, self.ci_workflow)
+                with self.assertRaises(WorkflowValidationError):
+                    validate_ci_integration(mutated)
+
+    def test_release_source_rejects_api_cache(self) -> None:
+        mutated = self.ci_workflow.replace(
+            "            gh api \\\n",
+            "            gh api --cache 1h \\\n",
+            1,
+        )
+        with self.assertRaisesRegex(WorkflowValidationError, "expose or persist"):
+            validate_ci_integration(mutated)
+
+    def test_release_source_rejects_checkout(self) -> None:
+        mutated = self.ci_workflow.replace(
+            "\n  contracts:\n",
+            "      - name: Forbidden checkout\n"
+            "        uses: actions/checkout@deadbeef\n\n"
+            "  contracts:\n",
+            1,
+        )
+        with self.assertRaisesRegex(WorkflowValidationError, "must not execute"):
+            validate_ci_integration(mutated)
+
+    def test_release_source_rejects_pull_request_target(self) -> None:
+        mutated = self.ci_workflow.replace(
+            "  pull_request:\n",
+            "  pull_request_target:\n",
+            1,
+        )
+        with self.assertRaisesRegex(WorkflowValidationError, "pull-request-target"):
+            validate_ci_integration(mutated)
+
     def test_develop_trigger_is_rejected(self) -> None:
         mutated = self.workflow.replace(
             "      - main\n",
