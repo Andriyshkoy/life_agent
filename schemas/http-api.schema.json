@@ -1,0 +1,4213 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://life-agent.local/schemas/http-api.schema.json",
+  "title": "Life Agent HTTP API transport manifest",
+  "description": "Closed normative v1 transport, request-semantic and response-semantic contract for device enrollment, credential rotation and note synchronization. Implementations consume this schema plus the frozen manifest; executable validators are acceptance evidence rather than an additional contract source.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "manifest_version",
+    "manifest_type",
+    "transport",
+    "durable_replay_policy",
+    "cursor_policy",
+    "client_policy",
+    "endpoints"
+  ],
+  "properties": {
+    "manifest_version": {
+      "const": "1.0.0"
+    },
+    "manifest_type": {
+      "const": "life_agent_http_api"
+    },
+    "transport": {
+      "$ref": "#/$defs/transport"
+    },
+    "durable_replay_policy": {
+      "$ref": "#/$defs/durableReplayPolicy"
+    },
+    "cursor_policy": {
+      "$ref": "#/$defs/cursorPolicy"
+    },
+    "client_policy": {
+      "$ref": "#/$defs/clientPolicy"
+    },
+    "endpoints": {
+      "$ref": "#/$defs/endpoints"
+    }
+  },
+  "$defs": {
+    "transport": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "protocol",
+        "request_media_type",
+        "success_media_type",
+        "error_media_type",
+        "charset",
+        "request_content_encoding",
+        "success_content_encoding",
+        "error_content_encoding",
+        "redirects",
+        "success_status",
+        "request_headers",
+        "response_headers",
+        "status_classification",
+        "byte_limit_semantics",
+        "api_error"
+      ],
+      "properties": {
+        "protocol": {
+          "const": "HTTPS"
+        },
+        "request_media_type": {
+          "const": "application/json"
+        },
+        "success_media_type": {
+          "const": "application/json"
+        },
+        "error_media_type": {
+          "const": "application/json"
+        },
+        "charset": {
+          "const": "UTF-8"
+        },
+        "request_content_encoding": {
+          "const": "identity_or_absent"
+        },
+        "success_content_encoding": {
+          "const": "identity_or_absent"
+        },
+        "error_content_encoding": {
+          "const": "identity_or_absent"
+        },
+        "redirects": {
+          "const": "forbidden"
+        },
+        "success_status": {
+          "const": 200
+        },
+        "request_headers": {
+          "$ref": "#/$defs/requestHeaders"
+        },
+        "response_headers": {
+          "$ref": "#/$defs/responseHeaders"
+        },
+        "status_classification": {
+          "$ref": "#/$defs/statusClassification"
+        },
+        "byte_limit_semantics": {
+          "$ref": "#/$defs/byteLimitSemantics"
+        },
+        "api_error": {
+          "$ref": "#/$defs/apiErrorPolicy"
+        }
+      }
+    },
+    "requestHeaders": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "content_type",
+        "content_encoding",
+        "authorization",
+        "idempotency_key",
+        "cardinality",
+        "limits",
+        "combined_failure_precedence"
+      ],
+      "properties": {
+        "content_type": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "required",
+            "media_type",
+            "allowed_parameters",
+            "accepted_wire_values_ascii_case_insensitive",
+            "other_lexical_forms",
+            "missing_or_invalid_status",
+            "duplicate_status"
+          ],
+          "properties": {
+            "required": {
+              "const": true
+            },
+            "media_type": {
+              "const": "application/json"
+            },
+            "allowed_parameters": {
+              "const": [
+                "charset=utf-8"
+              ]
+            },
+            "accepted_wire_values_ascii_case_insensitive": {
+              "const": [
+                "application/json",
+                "application/json; charset=utf-8"
+              ]
+            },
+            "other_lexical_forms": {
+              "const": "unsupported_media_type"
+            },
+            "missing_or_invalid_status": {
+              "const": 415
+            },
+            "duplicate_status": {
+              "const": 415
+            }
+          }
+        },
+        "content_encoding": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "allowed",
+            "absence_means",
+            "unsupported_status",
+            "duplicate_status",
+            "decode_before_json_parse"
+          ],
+          "properties": {
+            "allowed": {
+              "const": [
+                "absent",
+                "identity"
+              ]
+            },
+            "absence_means": {
+              "const": "identity"
+            },
+            "unsupported_status": {
+              "const": 415
+            },
+            "duplicate_status": {
+              "const": 415
+            },
+            "decode_before_json_parse": {
+              "const": true
+            }
+          }
+        },
+        "authorization": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "bearer_endpoint_ids",
+            "forbidden_endpoint_ids",
+            "header_name",
+            "wire_syntax",
+            "token_schema_ref",
+            "missing_status",
+            "duplicate_or_malformed_status",
+            "neutral_error_code",
+            "missing_duplicate_or_malformed_credential_lookup",
+            "well_formed_credential_lookup",
+            "www_authenticate",
+            "request_schema_invalid_lexical_scope",
+            "credential_logging"
+          ],
+          "properties": {
+            "bearer_endpoint_ids": {
+              "const": [
+                "sync_push",
+                "sync_bootstrap",
+                "sync_pull"
+              ]
+            },
+            "forbidden_endpoint_ids": {
+              "const": [
+                "auth_enroll",
+                "auth_refresh",
+                "auth_revoke"
+              ]
+            },
+            "header_name": {
+              "const": "Authorization"
+            },
+            "wire_syntax": {
+              "const": "Bearer SP access_token"
+            },
+            "token_schema_ref": {
+              "const": "auth-wire.schema.json#/$defs/accessToken"
+            },
+            "missing_status": {
+              "const": 401
+            },
+            "duplicate_or_malformed_status": {
+              "const": 401
+            },
+            "neutral_error_code": {
+              "const": "credential_unavailable"
+            },
+            "missing_duplicate_or_malformed_credential_lookup": {
+              "const": "forbidden"
+            },
+            "well_formed_credential_lookup": {
+              "const": "keyed_hmac_only"
+            },
+            "www_authenticate": {
+              "const": "required_fixed_Bearer"
+            },
+            "request_schema_invalid_lexical_scope": {
+              "const": "credential_fields_inside_json_auth_bodies_only"
+            },
+            "credential_logging": {
+              "const": "forbidden"
+            }
+          }
+        },
+        "idempotency_key": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "required_endpoint_ids",
+            "forbidden_endpoint_ids",
+            "header_name",
+            "wire_syntax",
+            "duplicate_or_malformed_status",
+            "body_binding"
+          ],
+          "properties": {
+            "required_endpoint_ids": {
+              "const": [
+                "sync_push"
+              ]
+            },
+            "forbidden_endpoint_ids": {
+              "const": [
+                "auth_enroll",
+                "auth_refresh",
+                "auth_revoke",
+                "sync_bootstrap",
+                "sync_pull"
+              ]
+            },
+            "header_name": {
+              "const": "Idempotency-Key"
+            },
+            "wire_syntax": {
+              "const": "canonical_lowercase_uuid"
+            },
+            "duplicate_or_malformed_status": {
+              "const": 400
+            },
+            "body_binding": {
+              "const": "exact_match_to_batch_id"
+            }
+          }
+        },
+        "cardinality": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "header_name_comparison",
+            "content_type",
+            "content_encoding",
+            "authorization",
+            "idempotency_key",
+            "duplicate_processing"
+          ],
+          "properties": {
+            "header_name_comparison": {
+              "const": "ascii_case_insensitive"
+            },
+            "content_type": {
+              "const": "exactly_one"
+            },
+            "content_encoding": {
+              "const": "at_most_one"
+            },
+            "authorization": {
+              "const": "exactly_one_on_bearer_endpoints_zero_on_auth_endpoints"
+            },
+            "idempotency_key": {
+              "const": "exactly_one_on_sync_push_zero_on_other_endpoints"
+            },
+            "duplicate_processing": {
+              "const": "reject_before_body_decode_or_parse_never_combine"
+            }
+          }
+        },
+        "limits": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "max_header_count",
+            "max_total_bytes",
+            "total_bytes_measurement",
+            "max_name_bytes",
+            "max_value_bytes",
+            "authorization_value_max_bytes",
+            "idempotency_key_value_max_bytes",
+            "over_limit_status"
+          ],
+          "properties": {
+            "max_header_count": {
+              "const": 32
+            },
+            "max_total_bytes": {
+              "const": 16384
+            },
+            "total_bytes_measurement": {
+              "const": "sum_ascii_name_octets_plus_ascii_value_octets_excluding_http_framing"
+            },
+            "max_name_bytes": {
+              "const": 64
+            },
+            "max_value_bytes": {
+              "const": 8192
+            },
+            "authorization_value_max_bytes": {
+              "const": 256
+            },
+            "idempotency_key_value_max_bytes": {
+              "const": 36
+            },
+            "over_limit_status": {
+              "const": 413
+            }
+          }
+        },
+        "combined_failure_precedence": {
+          "const": [
+            "header_count_and_byte_limits",
+            "content_type_required_exact_grammar_and_cardinality",
+            "content_encoding_allowed_value_and_cardinality",
+            "duplicate_authorization",
+            "duplicate_idempotency_key",
+            "bounded_raw_body_read",
+            "strict_utf8_duplicate_key_and_bounded_json_parse",
+            "correlation_extraction_and_observable_unsupported_protocol",
+            "single_authorization_value_grammar",
+            "single_idempotency_key_value_grammar",
+            "endpoint_schema_authentication_and_domain_validation"
+          ]
+        }
+      }
+    },
+    "responseHeaders": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "content_type",
+        "content_encoding",
+        "cache_control",
+        "www_authenticate",
+        "retry_after",
+        "cardinality",
+        "limits"
+      ],
+      "properties": {
+        "content_type": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "required_for_contract_responses",
+            "media_type",
+            "charset"
+          ],
+          "properties": {
+            "required_for_contract_responses": {
+              "const": true
+            },
+            "media_type": {
+              "const": "application/json"
+            },
+            "charset": {
+              "const": "UTF-8"
+            }
+          }
+        },
+        "content_encoding": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "allowed"
+          ],
+          "properties": {
+            "allowed": {
+              "const": [
+                "absent",
+                "identity"
+              ]
+            }
+          }
+        },
+        "cache_control": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "required",
+            "value"
+          ],
+          "properties": {
+            "required": {
+              "const": true
+            },
+            "value": {
+              "const": "no-store"
+            }
+          }
+        },
+        "www_authenticate": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "required_context",
+            "value",
+            "forbidden_otherwise"
+          ],
+          "properties": {
+            "required_context": {
+              "const": "every_401_credential_unavailable_from_bearer_access_endpoint_including_missing_or_malformed_authorization"
+            },
+            "value": {
+              "const": "Bearer"
+            },
+            "forbidden_otherwise": {
+              "const": true
+            }
+          }
+        },
+        "retry_after": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "allowed_statuses",
+            "wire_syntax",
+            "minimum_seconds",
+            "maximum_seconds",
+            "forbidden_otherwise"
+          ],
+          "properties": {
+            "allowed_statuses": {
+              "const": [
+                429,
+                503
+              ]
+            },
+            "wire_syntax": {
+              "const": "decimal_delta_seconds"
+            },
+            "minimum_seconds": {
+              "const": 0
+            },
+            "maximum_seconds": {
+              "const": 300
+            },
+            "forbidden_otherwise": {
+              "const": true
+            }
+          }
+        },
+        "cardinality": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "header_name_comparison",
+            "content_type",
+            "content_encoding",
+            "cache_control",
+            "www_authenticate",
+            "retry_after",
+            "duplicate_processing"
+          ],
+          "properties": {
+            "header_name_comparison": {
+              "const": "ascii_case_insensitive"
+            },
+            "content_type": {
+              "const": "exactly_one"
+            },
+            "content_encoding": {
+              "const": "at_most_one"
+            },
+            "cache_control": {
+              "const": "exactly_one"
+            },
+            "www_authenticate": {
+              "const": "exactly_one_in_required_context_zero_otherwise"
+            },
+            "retry_after": {
+              "const": "at_most_one_in_allowed_context_zero_otherwise"
+            },
+            "duplicate_processing": {
+              "const": "protocol_integrity_failure_never_combine"
+            }
+          }
+        },
+        "limits": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "max_header_count",
+            "max_total_bytes",
+            "total_bytes_measurement",
+            "max_name_bytes",
+            "max_value_bytes",
+            "over_limit_action"
+          ],
+          "properties": {
+            "max_header_count": {
+              "const": 32
+            },
+            "max_total_bytes": {
+              "const": 16384
+            },
+            "total_bytes_measurement": {
+              "const": "sum_ascii_name_octets_plus_ascii_value_octets_excluding_http_framing"
+            },
+            "max_name_bytes": {
+              "const": 64
+            },
+            "max_value_bytes": {
+              "const": 8192
+            },
+            "over_limit_action": {
+              "const": "protocol_integrity_failure_do_not_parse_body"
+            }
+          }
+        }
+      }
+    },
+    "statusClassification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "success",
+        "trusted_api_error_statuses",
+        "ambiguous_transport_statuses",
+        "status_503_rule",
+        "other_status_rule"
+      ],
+      "properties": {
+        "success": {
+          "const": 200
+        },
+        "trusted_api_error_statuses": {
+          "const": [
+            400,
+            401,
+            403,
+            409,
+            410,
+            413,
+            415,
+            422,
+            429,
+            503
+          ]
+        },
+        "ambiguous_transport_statuses": {
+          "const": [
+            408,
+            500,
+            502,
+            503,
+            504
+          ]
+        },
+        "status_503_rule": {
+          "const": "trusted_only_after_transport_route_correlation_schema_status_and_endpoint_allowlist_validation"
+        },
+        "other_status_rule": {
+          "const": "protocol_integrity_failure_body_untrusted"
+        }
+      }
+    },
+    "byteLimitSemantics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "request_raw_measurement",
+        "request_decompressed_measurement",
+        "request_over_limit",
+        "response_raw_measurement",
+        "response_decompressed_measurement",
+        "response_over_limit",
+        "identity_encoding_size_relation"
+      ],
+      "properties": {
+        "request_raw_measurement": {
+          "const": "http_entity_body_octets_before_content_decode"
+        },
+        "request_decompressed_measurement": {
+          "const": "octets_after_content_decode_before_utf8_or_json"
+        },
+        "request_over_limit": {
+          "const": "stop_reading_and_return_413_request_too_large"
+        },
+        "response_raw_measurement": {
+          "const": "http_entity_body_octets_before_content_decode"
+        },
+        "response_decompressed_measurement": {
+          "const": "octets_after_content_decode_before_utf8_or_json"
+        },
+        "response_over_limit": {
+          "const": "protocol_integrity_failure_do_not_parse"
+        },
+        "identity_encoding_size_relation": {
+          "const": "raw_and_decompressed_octet_counts_equal"
+        }
+      }
+    },
+    "apiErrorPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_ref",
+        "raw_max_bytes",
+        "decompressed_max_bytes",
+        "parse_policy",
+        "require_http_status_match",
+        "error_correlation",
+        "invalid_body_classification",
+        "endpoint_allowlist_required"
+      ],
+      "properties": {
+        "schema_ref": {
+          "const": "api-error.schema.json"
+        },
+        "raw_max_bytes": {
+          "const": 16384
+        },
+        "decompressed_max_bytes": {
+          "const": 16384
+        },
+        "parse_policy": {
+          "const": "only_after_media_encoding_and_byte_limit_checks"
+        },
+        "require_http_status_match": {
+          "const": true
+        },
+        "error_correlation": {
+          "$ref": "#/$defs/apiErrorCorrelation"
+        },
+        "invalid_body_classification": {
+          "const": "protocol_integrity_failure"
+        },
+        "endpoint_allowlist_required": {
+          "const": true
+        }
+      }
+    },
+    "apiErrorCorrelation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "after_request_identity_extracted",
+        "before_request_identity_extracted",
+        "null_after_request_identity_extracted",
+        "route_context",
+        "identifier_source",
+        "extraction_order",
+        "authentication_failure_with_valid_identifier",
+        "duplicate_key_or_invalid_identifier",
+        "unparseable_or_over_limit_body"
+      ],
+      "properties": {
+        "after_request_identity_extracted": {
+          "const": "exact_match_required"
+        },
+        "before_request_identity_extracted": {
+          "const": "request_id_must_be_null"
+        },
+        "null_after_request_identity_extracted": {
+          "const": "forbidden"
+        },
+        "route_context": {
+          "const": "matched_endpoint_id_and_method_required"
+        },
+        "identifier_source": {
+          "const": "endpoint_declared_body_field_only"
+        },
+        "extraction_order": {
+          "const": "after_transport_limits_media_encoding_and_strict_json_before_authentication_or_domain_rejection"
+        },
+        "authentication_failure_with_valid_identifier": {
+          "const": "exact_identifier_required"
+        },
+        "duplicate_key_or_invalid_identifier": {
+          "const": "request_id_null"
+        },
+        "unparseable_or_over_limit_body": {
+          "const": "request_id_null"
+        }
+      }
+    },
+    "durableReplayPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "endpoint_ids",
+        "non_durable_endpoint_ids",
+        "commit_boundary",
+        "request_fingerprint",
+        "response_body",
+        "terminal_outcomes",
+        "retention",
+        "privacy",
+        "quotas",
+        "delete_purge"
+      ],
+      "properties": {
+        "endpoint_ids": {
+          "const": [
+            "auth_revoke",
+            "sync_push",
+            "sync_bootstrap",
+            "sync_pull"
+          ]
+        },
+        "non_durable_endpoint_ids": {
+          "const": [
+            "auth_enroll",
+            "auth_refresh"
+          ]
+        },
+        "commit_boundary": {
+          "const": "identity_fingerprint_and_genuinely_terminal_outcome_with_exact_response_body_committed_atomically_before_send"
+        },
+        "request_fingerprint": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "algorithm",
+            "input",
+            "key_source",
+            "key_generation",
+            "domain_separation",
+            "namespace_input_order",
+            "mac_input_order",
+            "length_prefix_encoding",
+            "field_encoding",
+            "key_epoch_encoding",
+            "mac_input_framing",
+            "encoding",
+            "comparison",
+            "raw_body_persistence",
+            "key_lifetime"
+          ],
+          "properties": {
+            "algorithm": {
+              "const": "HMAC-SHA-256"
+            },
+            "input": {
+              "const": "exact_raw_http_entity_body_octets_before_utf8_decode_json_parse_or_normalization"
+            },
+            "key_source": {
+              "const": "dedicated_server_secret_replay_fingerprint_key"
+            },
+            "key_generation": {
+              "const": "required_and_persisted_with_request_identity_and_replay_record_when_durable"
+            },
+            "domain_separation": {
+              "const": "life-agent/http-request-body-fingerprint/v1"
+            },
+            "namespace_input_order": {
+              "const": [
+                "endpoint_id",
+                "protocol_version",
+                "internal_credential_family_id",
+                "internal_device_id"
+              ]
+            },
+            "mac_input_order": {
+              "const": [
+                "domain",
+                "endpoint_id",
+                "protocol_version",
+                "internal_credential_family_id",
+                "internal_device_id",
+                "key_epoch_uint64_be",
+                "raw_body_octets"
+              ]
+            },
+            "length_prefix_encoding": {
+              "const": "unsigned_uint64_big_endian_octet_length_before_every_input_component"
+            },
+            "field_encoding": {
+              "const": "domain_endpoint_protocol_and_device_canonical_ascii_internal_family_canonical_utf8"
+            },
+            "key_epoch_encoding": {
+              "const": "exactly_8_octets_unsigned_uint64_big_endian"
+            },
+            "mac_input_framing": {
+              "const": "every_component_including_key_epoch_and_raw_body_is_uint64_be_length_prefixed"
+            },
+            "encoding": {
+              "const": "lowercase_hex"
+            },
+            "comparison": {
+              "const": "constant_time_exact_digest"
+            },
+            "raw_body_persistence": {
+              "const": "forbidden_digest_only"
+            },
+            "key_lifetime": {
+              "const": "epoch_key_retained_until_every_replay_record_and_credential_tombstone_that_references_it_is_actually_deleted_by_gc_or_authorized_purge"
+            }
+          }
+        },
+        "response_body": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "replay_semantics",
+            "server_time",
+            "status",
+            "headers"
+          ],
+          "properties": {
+            "replay_semantics": {
+              "const": "exact_original_http_response_body_octets_for_stored_terminal_outcomes_only"
+            },
+            "server_time": {
+              "const": "frozen_in_replayed_body"
+            },
+            "status": {
+              "const": "frozen_original_status"
+            },
+            "headers": {
+              "const": "regenerated_only_from_closed_transport_policy"
+            }
+          }
+        },
+        "terminal_outcomes": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "stored",
+            "trusted_401_scope",
+            "excluded",
+            "recoverable_outcomes",
+            "atomicity",
+            "replay"
+          ],
+          "properties": {
+            "stored": {
+              "const": [
+                "authenticated_success",
+                "authenticated_nonretryable_terminal_api_error",
+                "terminal_auth_revoke_401_credential_unavailable",
+                "terminal_operation_result_batch"
+              ]
+            },
+            "trusted_401_scope": {
+              "const": "auth_revoke_401_may_be_terminal_and_every_sync_401_is_server_nonfrozen_regardless_of_client_local_recovery_state"
+            },
+            "excluded": {
+              "const": [
+                "body_unavailable_or_over_limit_before_identity",
+                "malformed_or_invalid_request_identity",
+                "unresolved_or_unauthenticated_replay_namespace",
+                "collision_or_idempotency_mismatch_response",
+                "every_sync_401_credential_unavailable_including_second_current_generation_401",
+                "retryable_429_rate_limited",
+                "retryable_503_temporarily_unavailable",
+                "untrusted_transport_or_protocol_response"
+              ]
+            },
+            "recoverable_outcomes": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "sync_401",
+                "retryable_429_503",
+                "exclusion_precondition"
+              ],
+              "properties": {
+                "sync_401": {
+                  "const": "server_never_freezes_client_applies_sync_unauthorized_recovery_and_quarantines_on_second_current_generation_401"
+                },
+                "retryable_429_503": {
+                  "const": "do_not_freeze_run_bounded_retry_with_exact_original_request"
+                },
+                "exclusion_precondition": {
+                  "const": "retryable_rate_limited_or_temporarily_unavailable_emitted_only_when_no_endpoint_mutation_committed"
+                }
+              }
+            },
+            "atomicity": {
+              "const": "genuinely_terminal_status_error_retryable_headers_and_exact_response_body_committed_before_send"
+            },
+            "replay": {
+              "const": "byte_exact_original_response_body_only_for_stored_terminal_outcomes_with_frozen_status_and_retryable_value"
+            }
+          }
+        },
+        "retention": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "minimum_client_retry_window_seconds",
+            "internal_token_family_tombstone_minimum_seconds",
+            "auth_revoke",
+            "sync_push_batch",
+            "sync_operation",
+            "sync_page",
+            "fingerprint_key_epoch",
+            "expired_record_action"
+          ],
+          "properties": {
+            "minimum_client_retry_window_seconds": {
+              "const": 2592000
+            },
+            "internal_token_family_tombstone_minimum_seconds": {
+              "const": 2592000
+            },
+            "auth_revoke": {
+              "const": "not_shorter_than_maximum_of_internal_token_family_tombstone_and_minimum_client_retry_window"
+            },
+            "sync_push_batch": {
+              "const": "not_shorter_than_minimum_client_retry_window"
+            },
+            "sync_operation": {
+              "const": "not_shorter_than_committed_domain_record"
+            },
+            "sync_page": {
+              "const": "not_shorter_than_minimum_client_retry_window"
+            },
+            "fingerprint_key_epoch": {
+              "const": "retained_until_every_replay_record_and_token_tombstone_that_references_it_is_actually_deleted"
+            },
+            "expired_record_action": {
+              "const": "retention_deadline_only_makes_record_gc_eligible_retained_row_remains_authoritative_for_exact_replay_or_collision_and_blocks_reexecution_until_actual_delete"
+            }
+          }
+        },
+        "privacy": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "stored_request_material",
+            "stored_response_body",
+            "credential_material",
+            "application_logs",
+            "access_scope",
+            "deletion"
+          ],
+          "properties": {
+            "stored_request_material": {
+              "const": "identity_fields_key_generation_and_keyed_hmac_fingerprint_only"
+            },
+            "stored_response_body": {
+              "const": "encrypted_at_rest"
+            },
+            "credential_material": {
+              "const": "forbidden"
+            },
+            "application_logs": {
+              "const": "no_request_or_response_body"
+            },
+            "access_scope": {
+              "const": "server_process_only"
+            },
+            "deletion": {
+              "const": "cascade_with_governing_device_or_domain_retention_policy"
+            }
+          }
+        },
+        "quotas": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "scope",
+            "max_records_per_device",
+            "max_stored_response_body_bytes_per_device",
+            "max_record_body_bytes",
+            "enforcement",
+            "eviction"
+          ],
+          "properties": {
+            "scope": {
+              "const": "internal_person_and_device"
+            },
+            "max_records_per_device": {
+              "const": 100000
+            },
+            "max_stored_response_body_bytes_per_device": {
+              "const": 536870912
+            },
+            "max_record_body_bytes": {
+              "const": 4194304
+            },
+            "enforcement": {
+              "const": "reject_before_endpoint_mutation_with_rate_limited"
+            },
+            "eviction": {
+              "const": "gc_may_delete_expired_records_only_and_retained_expired_rows_remain_authoritative_until_transactional_delete"
+            }
+          }
+        },
+        "delete_purge": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "triggers",
+            "purged_material",
+            "purge_generation",
+            "execution",
+            "postcondition"
+          ],
+          "properties": {
+            "triggers": {
+              "const": [
+                "authorized_person_delete",
+                "authorized_device_delete",
+                "governing_domain_record_delete"
+              ]
+            },
+            "purged_material": {
+              "const": [
+                "request_identity",
+                "keyed_request_fingerprint",
+                "exact_response_body",
+                "cursor_snapshot_and_handles"
+              ]
+            },
+            "purge_generation": {
+              "const": "increment_before_handle_invalidation_and_persist_with_delete"
+            },
+            "execution": {
+              "const": "transactional_delete_or_durable_purge_outbox_until_complete"
+            },
+            "postcondition": {
+              "const": "no_readable_payload_credential_or_replayable_cursor_remains"
+            }
+          }
+        }
+      }
+    },
+    "cursorPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "endpoint_ids",
+        "wire_handle",
+        "server_binding",
+        "expiry_recovery",
+        "purge"
+      ],
+      "properties": {
+        "endpoint_ids": {
+          "const": [
+            "sync_bootstrap",
+            "sync_pull"
+          ]
+        },
+        "wire_handle": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "representation",
+            "entropy_bits_minimum",
+            "generation",
+            "client_semantics"
+          ],
+          "properties": {
+            "representation": {
+              "const": "canonical_unpadded_base64url_random_handle"
+            },
+            "entropy_bits_minimum": {
+              "const": 256
+            },
+            "generation": {
+              "const": 1
+            },
+            "client_semantics": {
+              "const": "opaque_store_and_echo_only"
+            }
+          }
+        },
+        "server_binding": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "components",
+            "bootstrap_components",
+            "exact_match_required",
+            "raw_credentials"
+          ],
+          "properties": {
+            "components": {
+              "const": [
+                "internal_person_id",
+                "internal_device_id",
+                "internal_credential_family_id",
+                "protocol_stream",
+                "snapshot_id",
+                "exact_position",
+                "expires_at",
+                "signing_key_generation",
+                "purge_generation"
+              ]
+            },
+            "bootstrap_components": {
+              "const": [
+                "bootstrap_id"
+              ]
+            },
+            "exact_match_required": {
+              "const": true
+            },
+            "raw_credentials": {
+              "const": "forbidden"
+            }
+          }
+        },
+        "expiry_recovery": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "authority",
+            "endpoint_policy_match",
+            "bootstrap_snapshot_expired",
+            "incremental_snapshot_or_history_expired",
+            "invalid_or_binding_mismatch"
+          ],
+          "properties": {
+            "authority": {
+              "const": "authoritative_over_generic_cursor_recovery"
+            },
+            "endpoint_policy_match": {
+              "const": "sync_bootstrap_and_sync_pull_error_matrices_must_include_exact_code_status_pairs"
+            },
+            "bootstrap_snapshot_expired": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "error_code",
+                "http_status",
+                "client_action"
+              ],
+              "properties": {
+                "error_code": {
+                  "const": "cursor_expired"
+                },
+                "http_status": {
+                  "const": 410
+                },
+                "client_action": {
+                  "const": "restart_bootstrap_with_new_request_id_and_bootstrap_id"
+                }
+              }
+            },
+            "incremental_snapshot_or_history_expired": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "error_code",
+                "http_status",
+                "client_action"
+              ],
+              "properties": {
+                "error_code": {
+                  "const": "bootstrap_required"
+                },
+                "http_status": {
+                  "const": 409
+                },
+                "client_action": {
+                  "const": "start_explicit_bootstrap"
+                }
+              }
+            },
+            "invalid_or_binding_mismatch": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "error_code",
+                "http_status",
+                "client_action"
+              ],
+              "properties": {
+                "error_code": {
+                  "const": "cursor_invalid"
+                },
+                "http_status": {
+                  "const": 400
+                },
+                "client_action": {
+                  "const": "halt_in_integrity_state"
+                }
+              }
+            }
+          }
+        },
+        "purge": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "delete_bound_handles",
+            "increment_purge_generation",
+            "handle_reuse"
+          ],
+          "properties": {
+            "delete_bound_handles": {
+              "const": true
+            },
+            "increment_purge_generation": {
+              "const": true
+            },
+            "handle_reuse": {
+              "const": "forbidden"
+            }
+          }
+        }
+      }
+    },
+    "boundedBackoff": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "strategy",
+        "initial_delay_ms",
+        "multiplier",
+        "max_delay_ms",
+        "max_attempts",
+        "attempt_count_semantics",
+        "state_persistence",
+        "refresh_retry_budget",
+        "honor_retry_after",
+        "retry_after_max_seconds",
+        "deadline_ms",
+        "delay_formula",
+        "invalid_retry_after",
+        "budget_exhaustion_action"
+      ],
+      "properties": {
+        "strategy": {
+          "const": "exponential_full_jitter"
+        },
+        "initial_delay_ms": {
+          "const": 1000
+        },
+        "multiplier": {
+          "const": 2
+        },
+        "max_delay_ms": {
+          "const": 300000
+        },
+        "max_attempts": {
+          "const": 8
+        },
+        "attempt_count_semantics": {
+          "const": "total_attempts_including_initial_attempt"
+        },
+        "state_persistence": {
+          "const": "attempt_count_and_deadline_persisted_by_durable_request_identity_across_process_restart"
+        },
+        "refresh_retry_budget": {
+          "const": "exact_original_request_retry_after_refresh_consumes_one_total_attempt"
+        },
+        "honor_retry_after": {
+          "const": true
+        },
+        "retry_after_max_seconds": {
+          "const": 300
+        },
+        "deadline_ms": {
+          "const": 1800000
+        },
+        "delay_formula": {
+          "const": "min(max(valid_retry_after_ms,exponential_full_jitter_ms),max_delay_ms,remaining_deadline_ms)"
+        },
+        "invalid_retry_after": {
+          "const": "ignore_and_use_exponential_full_jitter"
+        },
+        "budget_exhaustion_action": {
+          "const": "terminal_retry_budget_exhausted_no_automatic_retry"
+        }
+      }
+    },
+    "clientPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "untrusted_transport_failure",
+        "sync_unauthorized_recovery",
+        "api_error_actions",
+        "endpoint_outcome_actions",
+        "replacement_enrollment",
+        "android_execution"
+      ],
+      "properties": {
+        "untrusted_transport_failure": {
+          "$ref": "#/$defs/untrustedTransportFailure"
+        },
+        "sync_unauthorized_recovery": {
+          "$ref": "#/$defs/syncUnauthorizedRecovery"
+        },
+        "api_error_actions": {
+          "$ref": "#/$defs/apiErrorActions"
+        },
+        "endpoint_outcome_actions": {
+          "$ref": "#/$defs/endpointOutcomeActions"
+        },
+        "replacement_enrollment": {
+          "$ref": "#/$defs/replacementEnrollmentPolicy"
+        },
+        "android_execution": {
+          "$ref": "#/$defs/androidExecution"
+        }
+      }
+    },
+    "untrustedTransportFailure": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "http_statuses",
+        "network_failures",
+        "classification",
+        "parse_response_body",
+        "trust_response_body",
+        "automatic_same_request_retry_endpoint_ids",
+        "automatic_same_request_retry_forbidden_endpoint_ids",
+        "forbidden_endpoint_action",
+        "auth_fail_closed_transition",
+        "status_503_precondition",
+        "endpoint_policy_precedence",
+        "retry"
+      ],
+      "properties": {
+        "http_statuses": {
+          "const": [
+            408,
+            500,
+            502,
+            503,
+            504
+          ]
+        },
+        "network_failures": {
+          "const": [
+            "io_error",
+            "timeout"
+          ]
+        },
+        "classification": {
+          "const": "retryable_transport_failure"
+        },
+        "parse_response_body": {
+          "const": false
+        },
+        "trust_response_body": {
+          "const": false
+        },
+        "automatic_same_request_retry_endpoint_ids": {
+          "const": [
+            "auth_revoke",
+            "sync_push",
+            "sync_bootstrap",
+            "sync_pull"
+          ]
+        },
+        "automatic_same_request_retry_forbidden_endpoint_ids": {
+          "const": [
+            "auth_enroll",
+            "auth_refresh"
+          ]
+        },
+        "forbidden_endpoint_action": {
+          "const": "AUTH_OUTCOME_UNKNOWN"
+        },
+        "auth_fail_closed_transition": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "auth_enroll",
+            "auth_refresh"
+          ],
+          "properties": {
+            "auth_enroll": {
+              "const": "discard_presented_code_and_request_new_enrollment_code"
+            },
+            "auth_refresh": {
+              "const": "quarantine_old_family_stop_coalesced_refresh_workers_and_require_explicit_authorized_replacement_enrollment"
+            }
+          }
+        },
+        "status_503_precondition": {
+          "const": "applies_only_when_response_is_not_a_valid_route_correlated_endpoint_allowed_api_error"
+        },
+        "endpoint_policy_precedence": {
+          "const": "auth_enroll_and_auth_refresh_fail_closed_overrides_global_backoff_and_retryable_flags"
+        },
+        "retry": {
+          "$ref": "#/$defs/boundedBackoff"
+        }
+      }
+    },
+    "syncUnauthorizedRecovery": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "endpoint_ids",
+        "http_status",
+        "max_refresh_attempts",
+        "max_original_request_retries",
+        "original_request_retry_bytes",
+        "authorization_header_on_retry",
+        "idempotency_key_on_retry",
+        "failed_access_generation_comparison",
+        "stale_generation_action",
+        "current_generation_action",
+        "future_generation_action",
+        "refresh_coordination_scope",
+        "max_in_flight_refreshes",
+        "concurrent_401_waiters",
+        "trusted_response_requirements",
+        "refresh_failure_action",
+        "second_current_generation_401_action",
+        "if_still_unauthorized"
+      ],
+      "properties": {
+        "endpoint_ids": {
+          "const": [
+            "sync_push",
+            "sync_bootstrap",
+            "sync_pull"
+          ]
+        },
+        "http_status": {
+          "const": 401
+        },
+        "max_refresh_attempts": {
+          "const": 1
+        },
+        "max_original_request_retries": {
+          "const": 1
+        },
+        "original_request_retry_bytes": {
+          "const": "exact_original_raw_body_bytes"
+        },
+        "authorization_header_on_retry": {
+          "const": "replace_with_current_access_token"
+        },
+        "idempotency_key_on_retry": {
+          "const": "preserve_exact_original_value_when_present"
+        },
+        "failed_access_generation_comparison": {
+          "const": "compare_request_generation_to_current_installed_generation_before_refresh"
+        },
+        "stale_generation_action": {
+          "const": "retry_once_with_current_access_token_without_another_refresh"
+        },
+        "current_generation_action": {
+          "const": "may_start_or_join_single_coalesced_refresh"
+        },
+        "future_generation_action": {
+          "const": "quarantine_inconsistent_credential_store_never_refresh"
+        },
+        "refresh_coordination_scope": {
+          "const": "process_wide_per_device_token_family"
+        },
+        "max_in_flight_refreshes": {
+          "const": 1
+        },
+        "concurrent_401_waiters": {
+          "const": "coalesce_on_single_refresh_result"
+        },
+        "trusted_response_requirements": {
+          "const": "route_correlated_schema_valid_endpoint_allowed_credential_unavailable_api_error"
+        },
+        "refresh_failure_action": {
+          "const": "quarantine_old_family_stop_coalesced_refresh_workers_and_require_explicit_authorized_replacement_enrollment"
+        },
+        "second_current_generation_401_action": {
+          "const": "quarantine_credential_family_and_require_explicit_authorized_replacement_enrollment"
+        },
+        "if_still_unauthorized": {
+          "const": "quarantine_and_require_explicit_authorized_replacement_enrollment"
+        }
+      }
+    },
+    "endpointOutcomeActions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "auth_fail_closed",
+        "durable_retryable_api_errors",
+        "local_request_or_response_integrity",
+        "terminal_integrity_codes",
+        "quarantine_and_reenroll"
+      ],
+      "properties": {
+        "auth_fail_closed": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "endpoint_ids",
+            "automatic_retry",
+            "ambiguous_outcome",
+            "retryable_flag_override"
+          ],
+          "properties": {
+            "endpoint_ids": {
+              "const": [
+                "auth_enroll",
+                "auth_refresh"
+              ]
+            },
+            "automatic_retry": {
+              "const": false
+            },
+            "ambiguous_outcome": {
+              "const": "AUTH_OUTCOME_UNKNOWN"
+            },
+            "retryable_flag_override": {
+              "const": "forbidden"
+            }
+          }
+        },
+        "durable_retryable_api_errors": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "endpoint_ids",
+            "exact_errors",
+            "action"
+          ],
+          "properties": {
+            "endpoint_ids": {
+              "const": [
+                "auth_revoke",
+                "sync_push",
+                "sync_bootstrap",
+                "sync_pull"
+              ]
+            },
+            "exact_errors": {
+              "const": [
+                {
+                  "http_status": 429,
+                  "error_code": "rate_limited",
+                  "retryable": true
+                },
+                {
+                  "http_status": 503,
+                  "error_code": "temporarily_unavailable",
+                  "retryable": true
+                }
+              ]
+            },
+            "action": {
+              "const": "bounded_retry_exact_original_raw_body"
+            }
+          }
+        },
+        "local_request_or_response_integrity": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "http_statuses",
+            "retryable",
+            "automatic_retry",
+            "action"
+          ],
+          "properties": {
+            "http_statuses": {
+              "const": [
+                400,
+                413,
+                415,
+                422
+              ]
+            },
+            "retryable": {
+              "const": false
+            },
+            "automatic_retry": {
+              "const": false
+            },
+            "action": {
+              "const": "terminal_local_parsing_or_integrity_halt"
+            }
+          }
+        },
+        "terminal_integrity_codes": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "api_error_codes",
+            "per_item_error_codes",
+            "retryable",
+            "action"
+          ],
+          "properties": {
+            "api_error_codes": {
+              "const": [
+                "idempotency_key_mismatch",
+                "request_id_collision",
+                "batch_id_collision",
+                "batch_hash_mismatch",
+                "request_schema_invalid",
+                "cursor_invalid"
+              ]
+            },
+            "per_item_error_codes": {
+              "const": [
+                "schema_invalid",
+                "operation_hash_mismatch",
+                "operation_id_collision",
+                "client_sequence_collision",
+                "capture_id_collision",
+                "revision_id_collision",
+                "event_id_collision",
+                "invalid_parent",
+                "ownership_violation"
+              ]
+            },
+            "retryable": {
+              "const": false
+            },
+            "action": {
+              "const": "terminal_integrity_halt_no_automatic_retry"
+            }
+          }
+        },
+        "quarantine_and_reenroll": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "triggers",
+            "action"
+          ],
+          "properties": {
+            "triggers": {
+              "const": [
+                "device_mismatch",
+                "second_current_generation_401"
+              ]
+            },
+            "action": {
+              "const": "quarantine_credential_family_and_require_explicit_authorized_replacement_enrollment"
+            }
+          }
+        }
+      }
+    },
+    "replacementEnrollmentPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "expected_continuity",
+        "person_mismatch_action",
+        "automatic_merge",
+        "only_override"
+      ],
+      "properties": {
+        "expected_continuity": {
+          "const": "server_person_id_matches_existing_local_person_binding"
+        },
+        "person_mismatch_action": {
+          "const": "integrity_halt_no_merge"
+        },
+        "automatic_merge": {
+          "const": false
+        },
+        "only_override": {
+          "const": "explicit_user_confirmed_destructive_local_reset_purges_database_keys_outbox_and_replay_state"
+        }
+      }
+    },
+    "androidExecution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contract_source",
+        "request_serialization",
+        "request_identity_persistence",
+        "durable_request_endpoint_ids",
+        "durable_retry_storage",
+        "retry_body_source",
+        "raw_body_fingerprint_verification",
+        "raw_body_fingerprint_contract",
+        "push_header_binding",
+        "response_validation_order",
+        "terminal_state_persistence",
+        "conflict_current_revision_handling",
+        "push_server_high_watermark",
+        "applied_cursor_advancement",
+        "ambiguous_auth_outcome",
+        "durable_retry",
+        "sync_401",
+        "credential_storage",
+        "payload_logging"
+      ],
+      "properties": {
+        "contract_source": {
+          "const": "this_manifest_and_referenced_json_schemas"
+        },
+        "request_serialization": {
+          "const": "serialize_once_to_immutable_utf8_raw_body_bytes"
+        },
+        "request_identity_persistence": {
+          "const": "persist_request_id_or_batch_id_before_first_network_send"
+        },
+        "durable_request_endpoint_ids": {
+          "const": [
+            "auth_revoke",
+            "sync_push",
+            "sync_bootstrap",
+            "sync_pull"
+          ]
+        },
+        "durable_retry_storage": {
+          "const": "encrypted_local_storage_of_exact_raw_body_bytes_before_first_network_send"
+        },
+        "retry_body_source": {
+          "const": "reuse_exact_original_raw_body_bytes_never_reserialize"
+        },
+        "raw_body_fingerprint_verification": {
+          "const": "HMAC-SHA-256_with_Android_Keystore_key_generation_and_life-agent/android-http-retry-body/v1_domain_matches_before_every_send"
+        },
+        "raw_body_fingerprint_contract": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "algorithm",
+            "domain",
+            "local_credential_epoch_id",
+            "input_order",
+            "length_prefix_encoding",
+            "field_encoding",
+            "key_epoch_encoding",
+            "verification",
+            "key_lifetime",
+            "missing_key_action",
+            "hmac_mismatch_action"
+          ],
+          "properties": {
+            "algorithm": {
+              "const": "HMAC-SHA-256"
+            },
+            "domain": {
+              "const": "life-agent/android-http-retry-body/v1"
+            },
+            "local_credential_epoch_id": {
+              "const": "client_generated_canonical_uuid_created_atomically_with_each_installed_credential_family_stable_across_refresh_replaced_whenever_a_new_family_is_installed_persisted_with_each_durable_request_and_never_sent"
+            },
+            "input_order": {
+              "const": [
+                "domain",
+                "endpoint_id",
+                "protocol_version",
+                "local_credential_epoch_id",
+                "device_id",
+                "key_epoch_uint64_be",
+                "exact_raw_body_octets"
+              ]
+            },
+            "length_prefix_encoding": {
+              "const": "unsigned_uint64_big_endian_octet_length_before_every_input_component"
+            },
+            "field_encoding": {
+              "const": "domain_endpoint_protocol_local_credential_epoch_id_and_device_id_canonical_ascii"
+            },
+            "key_epoch_encoding": {
+              "const": "exactly_8_octets_unsigned_uint64_big_endian"
+            },
+            "verification": {
+              "const": "recompute_from_stored_exact_raw_body_before_every_send_and_constant_time_compare"
+            },
+            "key_lifetime": {
+              "const": "keystore_epoch_key_retained_until_every_local_durable_request_that_references_it_is_terminal_and_purged"
+            },
+            "missing_key_action": {
+              "const": "never_send_mark_terminal_retry_state_integrity_failure_and_require_explicit_local_recovery"
+            },
+            "hmac_mismatch_action": {
+              "const": "never_send_mark_terminal_retry_state_integrity_failure_and_require_explicit_local_recovery"
+            }
+          }
+        },
+        "push_header_binding": {
+          "const": "Idempotency-Key_equals_batch_id"
+        },
+        "response_validation_order": {
+          "const": [
+            "transport_headers_encoding_and_byte_limits",
+            "matched_route_context",
+            "http_status",
+            "strict_json_and_referenced_schema",
+            "message_type_and_correlation",
+            "endpoint_error_allowlist",
+            "recovery_policy"
+          ]
+        },
+        "terminal_state_persistence": {
+          "const": "persist_validated_terminal_receipt_and_exact_response_body_before_state_transition"
+        },
+        "conflict_current_revision_handling": {
+          "const": "store_remote_uuid_without_requiring_local_foreign_key_and_resolve_from_later_validated_pull"
+        },
+        "push_server_high_watermark": {
+          "const": "hint_only_never_advances_applied_sync_cursor"
+        },
+        "applied_cursor_advancement": {
+          "const": "only_validated_committed_bootstrap_or_pull_response_advances_cursor"
+        },
+        "ambiguous_auth_outcome": {
+          "const": "AUTH_OUTCOME_UNKNOWN_auth_enroll_or_refresh_never_automatically_retry"
+        },
+        "durable_retry": {
+          "const": "auth_revoke_and_sync_reuse_exact_original_raw_body_bytes"
+        },
+        "sync_401": {
+          "const": "one_coalesced_refresh_then_one_exact_original_request_retry"
+        },
+        "credential_storage": {
+          "const": "encrypted_android_keystore_backed_storage"
+        },
+        "payload_logging": {
+          "const": "forbidden"
+        }
+      }
+    },
+    "apiErrorActions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "cursor_recovery",
+        "sync_push_bootstrap_required",
+        "cursor_integrity",
+        "bounded_backoff"
+      ],
+      "properties": {
+        "cursor_recovery": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "error_codes",
+            "action"
+          ],
+          "properties": {
+            "error_codes": {
+              "const": [
+                "cursor_expired",
+                "bootstrap_required"
+              ]
+            },
+            "action": {
+              "const": "explicit_bootstrap"
+            }
+          }
+        },
+        "cursor_integrity": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "error_codes",
+            "action"
+          ],
+          "properties": {
+            "error_codes": {
+              "const": [
+                "cursor_invalid"
+              ]
+            },
+            "action": {
+              "const": "halt_in_integrity_state"
+            }
+          }
+        },
+        "sync_push_bootstrap_required": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "error_code",
+            "action"
+          ],
+          "properties": {
+            "error_code": {
+              "const": "bootstrap_required"
+            },
+            "action": {
+              "const": "close_old_batch_keep_operations_byte_unchanged_run_bootstrap_then_reissue_under_new_batch_id"
+            }
+          }
+        },
+        "bounded_backoff": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "http_statuses",
+            "error_codes",
+            "eligible_endpoint_ids",
+            "excluded_endpoint_ids",
+            "action",
+            "retry"
+          ],
+          "properties": {
+            "http_statuses": {
+              "const": [
+                429,
+                503
+              ]
+            },
+            "error_codes": {
+              "const": [
+                "rate_limited",
+                "temporarily_unavailable"
+              ]
+            },
+            "eligible_endpoint_ids": {
+              "const": [
+                "auth_revoke",
+                "sync_push",
+                "sync_bootstrap",
+                "sync_pull"
+              ]
+            },
+            "excluded_endpoint_ids": {
+              "const": [
+                "auth_enroll",
+                "auth_refresh"
+              ]
+            },
+            "action": {
+              "const": "bounded_backoff"
+            },
+            "retry": {
+              "$ref": "#/$defs/boundedBackoff"
+            }
+          }
+        }
+      }
+    },
+    "endpointErrorPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "allowed_status_code_map",
+        "unlisted_api_error",
+        "classification_precedence",
+        "ambiguous_delivery_http_statuses",
+        "network_failures",
+        "ambiguous_delivery_action",
+        "auth_outcome_unknown_transition",
+        "invalid_response_classes",
+        "invalid_response_action",
+        "retry_override_rule",
+        "trusted_401_action",
+        "trusted_retryable_action",
+        "trusted_retryable_commit_guarantee",
+        "other_trusted_error_action"
+      ],
+      "properties": {
+        "allowed_status_code_map": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 10,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/statusCodeMapEntry"
+          }
+        },
+        "unlisted_api_error": {
+          "const": "protocol_integrity_failure"
+        },
+        "classification_precedence": {
+          "const": [
+            "transport_headers_encoding_and_byte_limits",
+            "matched_route_context",
+            "strict_api_error_schema_and_http_status_match",
+            "endpoint_status_and_error_code_allowlist",
+            "recovery_action"
+          ]
+        },
+        "ambiguous_delivery_http_statuses": {
+          "const": [
+            408,
+            500,
+            502,
+            503,
+            504
+          ]
+        },
+        "network_failures": {
+          "const": [
+            "io_error",
+            "timeout"
+          ]
+        },
+        "ambiguous_delivery_action": {
+          "type": "string",
+          "enum": [
+            "AUTH_OUTCOME_UNKNOWN",
+            "durable_exact_raw_body_retry"
+          ]
+        },
+        "auth_outcome_unknown_transition": {
+          "type": "string",
+          "enum": [
+            "discard_presented_code_and_request_new_enrollment_code",
+            "quarantine_old_family_stop_coalesced_refresh_workers_and_require_explicit_authorized_replacement_enrollment",
+            "not_applicable"
+          ]
+        },
+        "invalid_response_classes": {
+          "const": [
+            "malformed_success",
+            "schema_invalid_success",
+            "wrong_message_type_success",
+            "wrong_route_or_correlation_success",
+            "malformed_or_wrong_correlation_api_error",
+            "untrusted_408_500_502_503_504"
+          ]
+        },
+        "invalid_response_action": {
+          "type": "string",
+          "enum": [
+            "AUTH_OUTCOME_UNKNOWN",
+            "durable_exact_raw_body_retry"
+          ]
+        },
+        "retry_override_rule": {
+          "type": "string",
+          "enum": [
+            "no_http_status_retry_after_or_retryable_flag_overrides_auth_fail_closed",
+            "durable_endpoint_may_follow_bounded_retry_policy"
+          ]
+        },
+        "trusted_401_action": {
+          "type": "string",
+          "enum": [
+            "request_new_enrollment_code",
+            "discard_family_and_reenroll",
+            "clear_local_credentials_treat_revoke_as_complete",
+            "one_coalesced_refresh_then_one_exact_original_request_retry"
+          ]
+        },
+        "trusted_retryable_action": {
+          "type": "string",
+          "enum": [
+            "AUTH_OUTCOME_UNKNOWN_NO_AUTOMATIC_RETRY",
+            "bounded_retry_exact_raw_body"
+          ]
+        },
+        "trusted_retryable_commit_guarantee": {
+          "type": "string",
+          "enum": [
+            "not_relied_upon_for_auth_enroll_or_refresh_fail_closed",
+            "rate_limited_or_temporarily_unavailable_is_emitted_only_when_no_endpoint_mutation_committed"
+          ]
+        },
+        "other_trusted_error_action": {
+          "type": "string",
+          "enum": [
+            "correct_request_or_require_user_action",
+            "correct_request_or_bootstrap_or_require_user_action"
+          ]
+        }
+      }
+    },
+    "statusCodeMapEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "http_status",
+        "error_codes",
+        "retryable"
+      ],
+      "properties": {
+        "http_status": {
+          "type": "integer",
+          "enum": [
+            400,
+            401,
+            403,
+            409,
+            410,
+            413,
+            415,
+            422,
+            429,
+            503
+          ]
+        },
+        "error_codes": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 8,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "enum": [
+              "malformed_json",
+              "unsupported_protocol_version",
+              "request_schema_invalid",
+              "request_too_large",
+              "unsupported_media_type",
+              "rate_limited",
+              "temporarily_unavailable",
+              "enrollment_unavailable",
+              "active_device_exists",
+              "credential_unavailable",
+              "device_mismatch",
+              "idempotency_key_mismatch",
+              "request_id_collision",
+              "batch_hash_mismatch",
+              "batch_id_collision",
+              "cursor_invalid",
+              "cursor_expired",
+              "bootstrap_required"
+            ]
+          }
+        },
+        "retryable": {
+          "type": "boolean"
+        }
+      }
+    },
+    "authEnrollErrorPolicy": {
+      "properties": {
+        "allowed_status_code_map": {
+          "const": [
+            {
+              "http_status": 400,
+              "error_codes": [
+                "malformed_json",
+                "unsupported_protocol_version"
+              ],
+              "retryable": false
+            },
+            {
+              "http_status": 401,
+              "error_codes": [
+                "enrollment_unavailable"
+              ],
+              "retryable": false
+            },
+            {
+              "http_status": 409,
+              "error_codes": [
+                "active_device_exists"
+              ],
+              "retryable": false
+            },
+            {
+              "http_status": 413,
+              "error_codes": [
+                "request_too_large"
+              ],
+              "retryable": false
+            },
+            {
+              "http_status": 415,
+              "error_codes": [
+                "unsupported_media_type"
+              ],
+              "retryable": false
+            },
+            {
+              "http_status": 422,
+              "error_codes": [
+                "request_schema_invalid"
+              ],
+              "retryable": false
+            },
+            {
+              "http_status": 429,
+              "error_codes": [
+                "rate_limited"
+              ],
+              "retryable": false
+            },
+            {
+              "http_status": 503,
+              "error_codes": [
+                "temporarily_unavailable"
+              ],
+              "retryable": false
+            }
+          ]
+        },
+        "ambiguous_delivery_action": {
+          "const": "AUTH_OUTCOME_UNKNOWN"
+        },
+        "auth_outcome_unknown_transition": {
+          "const": "discard_presented_code_and_request_new_enrollment_code"
+        },
+        "invalid_response_action": {
+          "const": "AUTH_OUTCOME_UNKNOWN"
+        },
+        "retry_override_rule": {
+          "const": "no_http_status_retry_after_or_retryable_flag_overrides_auth_fail_closed"
+        },
+        "trusted_401_action": {
+          "const": "request_new_enrollment_code"
+        },
+        "trusted_retryable_action": {
+          "const": "AUTH_OUTCOME_UNKNOWN_NO_AUTOMATIC_RETRY"
+        },
+        "trusted_retryable_commit_guarantee": {
+          "const": "not_relied_upon_for_auth_enroll_or_refresh_fail_closed"
+        },
+        "other_trusted_error_action": {
+          "const": "correct_request_or_require_user_action"
+        }
+      }
+    },
+    "authRefreshErrorPolicy": {
+      "properties": {
+        "allowed_status_code_map": {
+          "const": [
+            {
+              "http_status": 400,
+              "error_codes": [
+                "malformed_json",
+                "unsupported_protocol_version"
+              ],
+              "retryable": false
+            },
+            {
+              "http_status": 401,
+              "error_codes": [
+                "credential_unavailable"
+              ],
+              "retryable": false
+            },
+            {
+              "http_status": 413,
+              "error_codes": [
+                "request_too_large"
+              ],
+              "retryable": false
+            },
+            {
+              "http_status": 415,
+              "error_codes": [
+                "unsupported_media_type"
+              ],
+              "retryable": false
+            },
+            {
+              "http_status": 422,
+              "error_codes": [
+                "request_schema_invalid"
+              ],
+              "retryable": false
+            },
+            {
+              "http_status": 429,
+              "error_codes": [
+                "rate_limited"
+              ],
+              "retryable": false
+            },
+            {
+              "http_status": 503,
+              "error_codes": [
+                "temporarily_unavailable"
+              ],
+              "retryable": false
+            }
+          ]
+        },
+        "ambiguous_delivery_action": {
+          "const": "AUTH_OUTCOME_UNKNOWN"
+        },
+        "auth_outcome_unknown_transition": {
+          "const": "quarantine_old_family_stop_coalesced_refresh_workers_and_require_explicit_authorized_replacement_enrollment"
+        },
+        "invalid_response_action": {
+          "const": "AUTH_OUTCOME_UNKNOWN"
+        },
+        "retry_override_rule": {
+          "const": "no_http_status_retry_after_or_retryable_flag_overrides_auth_fail_closed"
+        },
+        "trusted_401_action": {
+          "const": "discard_family_and_reenroll"
+        },
+        "trusted_retryable_action": {
+          "const": "AUTH_OUTCOME_UNKNOWN_NO_AUTOMATIC_RETRY"
+        },
+        "trusted_retryable_commit_guarantee": {
+          "const": "not_relied_upon_for_auth_enroll_or_refresh_fail_closed"
+        },
+        "other_trusted_error_action": {
+          "const": "correct_request_or_require_user_action"
+        }
+      }
+    },
+    "authRevokeErrorPolicy": {
+      "properties": {
+        "allowed_status_code_map": {
+          "const": [
+            {
+              "http_status": 400,
+              "error_codes": [
+                "malformed_json",
+                "unsupported_protocol_version"
+              ],
+              "retryable": false
+            },
+            {
+              "http_status": 401,
+              "error_codes": [
+                "credential_unavailable"
+              ],
+              "retryable": false
+            },
+            {
+              "http_status": 409,
+              "error_codes": [
+                "request_id_collision"
+              ],
+              "retryable": false
+            },
+            {
+              "http_status": 413,
+              "error_codes": [
+                "request_too_large"
+              ],
+              "retryable": false
+            },
+            {
+              "http_status": 415,
+              "error_codes": [
+                "unsupported_media_type"
+              ],
+              "retryable": false
+            },
+            {
+              "http_status": 422,
+              "error_codes": [
+                "request_schema_invalid"
+              ],
+              "retryable": false
+            },
+            {
+              "http_status": 429,
+              "error_codes": [
+                "rate_limited"
+              ],
+              "retryable": true
+            },
+            {
+              "http_status": 503,
+              "error_codes": [
+                "temporarily_unavailable"
+              ],
+              "retryable": true
+            }
+          ]
+        },
+        "ambiguous_delivery_action": {
+          "const": "durable_exact_raw_body_retry"
+        },
+        "auth_outcome_unknown_transition": {
+          "const": "not_applicable"
+        },
+        "invalid_response_action": {
+          "const": "durable_exact_raw_body_retry"
+        },
+        "retry_override_rule": {
+          "const": "durable_endpoint_may_follow_bounded_retry_policy"
+        },
+        "trusted_401_action": {
+          "const": "clear_local_credentials_treat_revoke_as_complete"
+        },
+        "other_trusted_error_action": {
+          "const": "correct_request_or_require_user_action"
+        }
+      }
+    },
+    "syncPushErrorPolicy": {
+      "properties": {
+        "allowed_status_code_map": {
+          "const": [
+            {
+              "http_status": 400,
+              "error_codes": [
+                "malformed_json",
+                "unsupported_protocol_version",
+                "idempotency_key_mismatch"
+              ],
+              "retryable": false
+            },
+            {
+              "http_status": 401,
+              "error_codes": [
+                "credential_unavailable"
+              ],
+              "retryable": false
+            },
+            {
+              "http_status": 403,
+              "error_codes": [
+                "device_mismatch"
+              ],
+              "retryable": false
+            },
+            {
+              "http_status": 409,
+              "error_codes": [
+                "batch_id_collision",
+                "bootstrap_required"
+              ],
+              "retryable": false
+            },
+            {
+              "http_status": 413,
+              "error_codes": [
+                "request_too_large"
+              ],
+              "retryable": false
+            },
+            {
+              "http_status": 415,
+              "error_codes": [
+                "unsupported_media_type"
+              ],
+              "retryable": false
+            },
+            {
+              "http_status": 422,
+              "error_codes": [
+                "request_schema_invalid",
+                "batch_hash_mismatch"
+              ],
+              "retryable": false
+            },
+            {
+              "http_status": 429,
+              "error_codes": [
+                "rate_limited"
+              ],
+              "retryable": true
+            },
+            {
+              "http_status": 503,
+              "error_codes": [
+                "temporarily_unavailable"
+              ],
+              "retryable": true
+            }
+          ]
+        },
+        "ambiguous_delivery_action": {
+          "const": "durable_exact_raw_body_retry"
+        },
+        "auth_outcome_unknown_transition": {
+          "const": "not_applicable"
+        },
+        "invalid_response_action": {
+          "const": "durable_exact_raw_body_retry"
+        },
+        "retry_override_rule": {
+          "const": "durable_endpoint_may_follow_bounded_retry_policy"
+        },
+        "trusted_401_action": {
+          "const": "one_coalesced_refresh_then_one_exact_original_request_retry"
+        },
+        "other_trusted_error_action": {
+          "const": "correct_request_or_bootstrap_or_require_user_action"
+        }
+      }
+    },
+    "syncPageErrorPolicy": {
+      "properties": {
+        "allowed_status_code_map": {
+          "const": [
+            {
+              "http_status": 400,
+              "error_codes": [
+                "malformed_json",
+                "unsupported_protocol_version",
+                "cursor_invalid"
+              ],
+              "retryable": false
+            },
+            {
+              "http_status": 401,
+              "error_codes": [
+                "credential_unavailable"
+              ],
+              "retryable": false
+            },
+            {
+              "http_status": 403,
+              "error_codes": [
+                "device_mismatch"
+              ],
+              "retryable": false
+            },
+            {
+              "http_status": 409,
+              "error_codes": [
+                "request_id_collision",
+                "bootstrap_required"
+              ],
+              "retryable": false
+            },
+            {
+              "http_status": 410,
+              "error_codes": [
+                "cursor_expired"
+              ],
+              "retryable": false
+            },
+            {
+              "http_status": 413,
+              "error_codes": [
+                "request_too_large"
+              ],
+              "retryable": false
+            },
+            {
+              "http_status": 415,
+              "error_codes": [
+                "unsupported_media_type"
+              ],
+              "retryable": false
+            },
+            {
+              "http_status": 422,
+              "error_codes": [
+                "request_schema_invalid"
+              ],
+              "retryable": false
+            },
+            {
+              "http_status": 429,
+              "error_codes": [
+                "rate_limited"
+              ],
+              "retryable": true
+            },
+            {
+              "http_status": 503,
+              "error_codes": [
+                "temporarily_unavailable"
+              ],
+              "retryable": true
+            }
+          ]
+        },
+        "ambiguous_delivery_action": {
+          "const": "durable_exact_raw_body_retry"
+        },
+        "auth_outcome_unknown_transition": {
+          "const": "not_applicable"
+        },
+        "invalid_response_action": {
+          "const": "durable_exact_raw_body_retry"
+        },
+        "retry_override_rule": {
+          "const": "durable_endpoint_may_follow_bounded_retry_policy"
+        },
+        "trusted_401_action": {
+          "const": "one_coalesced_refresh_then_one_exact_original_request_retry"
+        },
+        "other_trusted_error_action": {
+          "const": "correct_request_or_bootstrap_or_require_user_action"
+        }
+      }
+    },
+    "syncPullErrorPolicy": {
+      "properties": {
+        "allowed_status_code_map": {
+          "const": [
+            {
+              "http_status": 400,
+              "error_codes": [
+                "malformed_json",
+                "unsupported_protocol_version",
+                "cursor_invalid"
+              ],
+              "retryable": false
+            },
+            {
+              "http_status": 401,
+              "error_codes": [
+                "credential_unavailable"
+              ],
+              "retryable": false
+            },
+            {
+              "http_status": 403,
+              "error_codes": [
+                "device_mismatch"
+              ],
+              "retryable": false
+            },
+            {
+              "http_status": 409,
+              "error_codes": [
+                "request_id_collision",
+                "bootstrap_required"
+              ],
+              "retryable": false
+            },
+            {
+              "http_status": 413,
+              "error_codes": [
+                "request_too_large"
+              ],
+              "retryable": false
+            },
+            {
+              "http_status": 415,
+              "error_codes": [
+                "unsupported_media_type"
+              ],
+              "retryable": false
+            },
+            {
+              "http_status": 422,
+              "error_codes": [
+                "request_schema_invalid"
+              ],
+              "retryable": false
+            },
+            {
+              "http_status": 429,
+              "error_codes": [
+                "rate_limited"
+              ],
+              "retryable": true
+            },
+            {
+              "http_status": 503,
+              "error_codes": [
+                "temporarily_unavailable"
+              ],
+              "retryable": true
+            }
+          ]
+        },
+        "ambiguous_delivery_action": {
+          "const": "durable_exact_raw_body_retry"
+        },
+        "auth_outcome_unknown_transition": {
+          "const": "not_applicable"
+        },
+        "invalid_response_action": {
+          "const": "durable_exact_raw_body_retry"
+        },
+        "retry_override_rule": {
+          "const": "durable_endpoint_may_follow_bounded_retry_policy"
+        },
+        "trusted_401_action": {
+          "const": "one_coalesced_refresh_then_one_exact_original_request_retry"
+        },
+        "other_trusted_error_action": {
+          "const": "correct_request_or_bootstrap_or_require_user_action"
+        }
+      }
+    },
+    "authentication": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/nonePlusOneTimeCode"
+        },
+        {
+          "$ref": "#/$defs/refreshTokenBody"
+        },
+        {
+          "$ref": "#/$defs/bearerAccess"
+        }
+      ]
+    },
+    "nonePlusOneTimeCode": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "http_authorization",
+        "credential",
+        "location",
+        "field"
+      ],
+      "properties": {
+        "mode": {
+          "const": "none_plus_one_time_code"
+        },
+        "http_authorization": {
+          "const": "none"
+        },
+        "credential": {
+          "const": "one_time_enrollment_code"
+        },
+        "location": {
+          "const": "request_body"
+        },
+        "field": {
+          "const": "enrollment_code"
+        }
+      }
+    },
+    "refreshTokenBody": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "http_authorization",
+        "credential",
+        "location",
+        "field"
+      ],
+      "properties": {
+        "mode": {
+          "const": "refresh_token_body"
+        },
+        "http_authorization": {
+          "const": "none"
+        },
+        "credential": {
+          "const": "refresh_token"
+        },
+        "location": {
+          "const": "request_body"
+        },
+        "field": {
+          "const": "refresh_token"
+        }
+      }
+    },
+    "bearerAccess": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "http_authorization",
+        "credential",
+        "location",
+        "field",
+        "scheme"
+      ],
+      "properties": {
+        "mode": {
+          "const": "bearer_access"
+        },
+        "http_authorization": {
+          "const": "required"
+        },
+        "credential": {
+          "const": "access_token"
+        },
+        "location": {
+          "const": "authorization_header"
+        },
+        "field": {
+          "const": "Authorization"
+        },
+        "scheme": {
+          "const": "Bearer"
+        }
+      }
+    },
+    "byteLimits": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "request_raw_max_bytes",
+        "request_decompressed_max_bytes",
+        "success_raw_max_bytes",
+        "success_decompressed_max_bytes"
+      ],
+      "properties": {
+        "request_raw_max_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2097152
+        },
+        "request_decompressed_max_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2097152
+        },
+        "success_raw_max_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4194304
+        },
+        "success_decompressed_max_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4194304
+        }
+      }
+    },
+    "correlation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "request_body_field",
+        "success_response_field",
+        "error_response_field",
+        "comparison",
+        "route_context",
+        "error_identifier_source",
+        "before_identifier_extracted"
+      ],
+      "properties": {
+        "request_body_field": {
+          "type": "string",
+          "enum": [
+            "request_id",
+            "batch_id"
+          ]
+        },
+        "error_response_field": {
+          "const": "request_id"
+        },
+        "success_response_field": {
+          "type": "string",
+          "enum": [
+            "request_id",
+            "batch_id"
+          ]
+        },
+        "comparison": {
+          "const": "exact_string"
+        },
+        "route_context": {
+          "const": "matched_endpoint_id_and_method"
+        },
+        "error_identifier_source": {
+          "const": "same_endpoint_request_body_field"
+        },
+        "before_identifier_extracted": {
+          "const": "error_request_id_null"
+        }
+      }
+    },
+    "syncPageIngressCorrelation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "request_id_field",
+        "request_id_schema_ref",
+        "raw_body_max_bytes",
+        "decoded_body_max_bytes",
+        "parse_policy",
+        "extraction_order",
+        "trusted_401_correlation",
+        "null_allowed_only_when",
+        "null_with_valid_bounded_request_id"
+      ],
+      "properties": {
+        "request_id_field": {
+          "const": "request_id"
+        },
+        "request_id_schema_ref": {
+          "const": "sync-wire.schema.json#/$defs/uuid"
+        },
+        "raw_body_max_bytes": {
+          "const": 4096
+        },
+        "decoded_body_max_bytes": {
+          "const": 4096
+        },
+        "parse_policy": {
+          "const": "strict_utf8_duplicate_key_rejecting_json"
+        },
+        "extraction_order": {
+          "const": "after_transport_media_encoding_and_byte_limits_before_credential_authentication"
+        },
+        "trusted_401_correlation": {
+          "const": "syntactically_valid_bounded_request_id_must_echo_exactly"
+        },
+        "null_allowed_only_when": {
+          "const": [
+            "body_unavailable",
+            "raw_or_decoded_body_over_limit",
+            "malformed_json_or_duplicate_key",
+            "missing_or_syntactically_invalid_request_id"
+          ]
+        },
+        "null_with_valid_bounded_request_id": {
+          "const": "forbidden"
+        }
+      }
+    },
+    "requestIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source",
+        "durable_exact_replay",
+        "successful_response_replay",
+        "byte_comparison",
+        "raw_body_fingerprint",
+        "replay_body_semantics",
+        "same_identity_changed_bytes_error",
+        "namespace_binding"
+      ],
+      "properties": {
+        "source": {
+          "type": "string",
+          "enum": [
+            "body_request_id",
+            "idempotency_key_and_batch_id"
+          ]
+        },
+        "durable_exact_replay": {
+          "type": "boolean"
+        },
+        "successful_response_replay": {
+          "type": "string",
+          "enum": [
+            "none",
+            "exact_response_bytes"
+          ]
+        },
+        "byte_comparison": {
+          "const": "exact_raw_http_entity_body_bytes"
+        },
+        "raw_body_fingerprint": {
+          "$ref": "#/$defs/rawBodyFingerprint"
+        },
+        "replay_body_semantics": {
+          "type": "string",
+          "enum": [
+            "none",
+            "exact_original_http_response_body_octets_for_stored_terminal_outcomes_only"
+          ]
+        },
+        "same_identity_changed_bytes_error": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string",
+              "enum": [
+                "batch_id_collision",
+                "request_id_collision"
+              ]
+            }
+          ]
+        },
+        "namespace_binding": {
+          "$ref": "#/$defs/requestIdentityNamespace"
+        }
+      }
+    },
+    "rawBodyFingerprint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "algorithm",
+        "input",
+        "capture_point",
+        "key_source",
+        "key_generation",
+        "domain_separation",
+        "namespace_input_order",
+        "mac_input_framing",
+        "encoding",
+        "persisted_material"
+      ],
+      "properties": {
+        "algorithm": {
+          "const": "HMAC-SHA-256"
+        },
+        "input": {
+          "const": "exact_raw_http_entity_body_octets"
+        },
+        "capture_point": {
+          "const": "after_raw_byte_limit_before_utf8_decode_json_parse_or_normalization"
+        },
+        "key_source": {
+          "const": "dedicated_server_secret_replay_fingerprint_key"
+        },
+        "key_generation": {
+          "const": "required_and_persisted_with_request_identity_and_replay_record_when_durable"
+        },
+        "domain_separation": {
+          "const": "life-agent/http-request-body-fingerprint/v1"
+        },
+        "namespace_input_order": {
+          "const": [
+            "endpoint_id",
+            "protocol_version",
+            "internal_credential_family_id",
+            "internal_device_id"
+          ]
+        },
+        "mac_input_framing": {
+          "const": "every_component_including_key_epoch_and_raw_body_is_uint64_be_length_prefixed"
+        },
+        "encoding": {
+          "const": "lowercase_hex"
+        },
+        "persisted_material": {
+          "const": "digest_only"
+        }
+      }
+    },
+    "requestIdentityNamespace": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/enrollmentContextNamespace"
+        },
+        {
+          "$ref": "#/$defs/authenticatedPrincipalNamespace"
+        }
+      ]
+    },
+    "enrollmentContextNamespace": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "components",
+        "family_source",
+        "device_source",
+        "identifier_visibility",
+        "raw_credentials",
+        "cross_namespace_replay"
+      ],
+      "properties": {
+        "components": {
+          "const": [
+            "endpoint_id",
+            "protocol_version",
+            "internal_credential_family_id",
+            "internal_device_id"
+          ]
+        },
+        "family_source": {
+          "const": "validated_enrollment_grant_internal_family"
+        },
+        "device_source": {
+          "const": "resolved_internal_device_identity"
+        },
+        "identifier_visibility": {
+          "const": "server_internal_only"
+        },
+        "raw_credentials": {
+          "const": "forbidden"
+        },
+        "cross_namespace_replay": {
+          "const": "forbidden"
+        }
+      }
+    },
+    "authenticatedPrincipalNamespace": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "components",
+        "family_source",
+        "device_source",
+        "identifier_visibility",
+        "raw_credentials",
+        "cross_namespace_replay"
+      ],
+      "properties": {
+        "components": {
+          "const": [
+            "endpoint_id",
+            "protocol_version",
+            "internal_credential_family_id",
+            "internal_device_id"
+          ]
+        },
+        "family_source": {
+          "const": "authenticated_token_internal_family"
+        },
+        "device_source": {
+          "const": "authenticated_internal_device_identity"
+        },
+        "identifier_visibility": {
+          "const": "server_internal_only"
+        },
+        "raw_credentials": {
+          "const": "forbidden"
+        },
+        "cross_namespace_replay": {
+          "const": "forbidden"
+        }
+      }
+    },
+    "idempotency": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "header_name",
+        "body_field",
+        "comparison",
+        "required",
+        "mismatch_error_code",
+        "same_batch_exact_retry",
+        "operation_replayed_result_scope"
+      ],
+      "properties": {
+        "header_name": {
+          "const": "Idempotency-Key"
+        },
+        "body_field": {
+          "const": "batch_id"
+        },
+        "comparison": {
+          "const": "exact_string"
+        },
+        "required": {
+          "const": true
+        },
+        "mismatch_error_code": {
+          "const": "idempotency_key_mismatch"
+        },
+        "same_batch_exact_retry": {
+          "const": "return_frozen_original_response_bytes"
+        },
+        "operation_replayed_result_scope": {
+          "const": "different_first_seen_batch_only"
+        }
+      }
+    },
+    "revokeReplayAuthentication": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "lookup_namespace",
+        "exact_keyed_fingerprint_match",
+        "changed_body_active_credential",
+        "changed_body_inactive_credential",
+        "existence_disclosure"
+      ],
+      "properties": {
+        "lookup_namespace": {
+          "const": "endpoint_protocol_internal_credential_family_and_internal_device_from_keyed_token_tombstone"
+        },
+        "exact_keyed_fingerprint_match": {
+          "const": "return_frozen_original_response_body_even_after_revoke"
+        },
+        "changed_body_active_credential": {
+          "const": "request_id_collision"
+        },
+        "changed_body_inactive_credential": {
+          "const": "credential_unavailable"
+        },
+        "existence_disclosure": {
+          "const": "forbidden_outside_exact_namespace_and_fingerprint_match"
+        }
+      }
+    },
+    "pagination": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "request_page_size_field",
+        "response_items_field",
+        "requested_page_size_is_maximum",
+        "short_page_allowed",
+        "short_page_may_enforce_response_byte_cap",
+        "short_page_does_not_imply_completion",
+        "continuation_indicator_field",
+        "continuation_indicator_value",
+        "continuation_cursor_field",
+        "continuation_cursor_requirement"
+      ],
+      "properties": {
+        "request_page_size_field": {
+          "const": "page_size"
+        },
+        "response_items_field": {
+          "const": "changes"
+        },
+        "requested_page_size_is_maximum": {
+          "const": true
+        },
+        "short_page_allowed": {
+          "const": true
+        },
+        "short_page_may_enforce_response_byte_cap": {
+          "const": true
+        },
+        "short_page_does_not_imply_completion": {
+          "const": true
+        },
+        "continuation_indicator_field": {
+          "type": "string",
+          "enum": [
+            "complete",
+            "has_more"
+          ]
+        },
+        "continuation_indicator_value": {
+          "type": "boolean"
+        },
+        "continuation_cursor_field": {
+          "type": "string",
+          "enum": [
+            "next_page_cursor",
+            "next_cursor"
+          ]
+        },
+        "continuation_cursor_requirement": {
+          "const": "present_and_non_null"
+        }
+      }
+    },
+    "semanticValidation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "stage",
+        "bindings",
+        "failure_action"
+      ],
+      "properties": {
+        "stage": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "bindings": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 32,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          }
+        },
+        "failure_action": {
+          "type": "string",
+          "enum": [
+            "closed_endpoint_api_error_before_mutation",
+            "closed_top_level_or_per_item_error_before_item_mutation",
+            "protocol_integrity_failure_no_state_commit"
+          ]
+        }
+      }
+    },
+    "endpoint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "method",
+        "path",
+        "request_message_type",
+        "success_message_type",
+        "request_schema_ref",
+        "success_schema_ref",
+        "request_semantic_validation",
+        "response_semantic_validation",
+        "authentication",
+        "byte_limits",
+        "correlation",
+        "request_identity",
+        "error_policy",
+        "sync_401_recovery_eligible"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "enum": [
+            "auth_enroll",
+            "auth_refresh",
+            "auth_revoke",
+            "sync_push",
+            "sync_bootstrap",
+            "sync_pull"
+          ]
+        },
+        "method": {
+          "const": "POST"
+        },
+        "path": {
+          "type": "string",
+          "enum": [
+            "/api/v1/auth/enroll",
+            "/api/v1/auth/refresh",
+            "/api/v1/auth/revoke",
+            "/api/v1/sync/push",
+            "/api/v1/sync/bootstrap",
+            "/api/v1/sync/pull"
+          ]
+        },
+        "request_message_type": {
+          "type": "string",
+          "enum": [
+            "enrollment_claim_request",
+            "refresh_request",
+            "revoke_request",
+            "push_batch_request",
+            "bootstrap_request",
+            "pull_request"
+          ]
+        },
+        "success_message_type": {
+          "type": "string",
+          "enum": [
+            "enrollment_claim_response",
+            "refresh_response",
+            "revoke_response",
+            "push_batch_response",
+            "bootstrap_response",
+            "pull_response"
+          ]
+        },
+        "request_schema_ref": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "success_schema_ref": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "request_semantic_validation": {
+          "$ref": "#/$defs/semanticValidation"
+        },
+        "response_semantic_validation": {
+          "$ref": "#/$defs/semanticValidation"
+        },
+        "per_item_schema_ref": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "validation_order": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 16,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "maxLength": 96
+          }
+        },
+        "per_item_validation_order": {
+          "type": "array",
+          "minItems": 18,
+          "maxItems": 18,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "maxLength": 128
+          }
+        },
+        "authentication": {
+          "$ref": "#/$defs/authentication"
+        },
+        "byte_limits": {
+          "$ref": "#/$defs/byteLimits"
+        },
+        "correlation": {
+          "$ref": "#/$defs/correlation"
+        },
+        "ingress_correlation_policy": {
+          "$ref": "#/$defs/syncPageIngressCorrelation"
+        },
+        "request_identity": {
+          "$ref": "#/$defs/requestIdentity"
+        },
+        "error_policy": {
+          "$ref": "#/$defs/endpointErrorPolicy"
+        },
+        "idempotency": {
+          "$ref": "#/$defs/idempotency"
+        },
+        "revoke_replay_authentication": {
+          "$ref": "#/$defs/revokeReplayAuthentication"
+        },
+        "pagination": {
+          "$ref": "#/$defs/pagination"
+        },
+        "cursor_policy_ref": {
+          "const": "#/cursor_policy"
+        },
+        "sync_401_recovery_eligible": {
+          "type": "boolean"
+        }
+      },
+      "allOf": [
+        {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/authEnrollEndpoint"
+            },
+            {
+              "$ref": "#/$defs/authRefreshEndpoint"
+            },
+            {
+              "$ref": "#/$defs/authRevokeEndpoint"
+            },
+            {
+              "$ref": "#/$defs/syncPushEndpoint"
+            },
+            {
+              "$ref": "#/$defs/syncBootstrapEndpoint"
+            },
+            {
+              "$ref": "#/$defs/syncPullEndpoint"
+            }
+          ]
+        },
+        {
+          "if": {
+            "properties": {
+              "id": {
+                "const": "auth_revoke"
+              }
+            },
+            "required": [
+              "id"
+            ]
+          },
+          "then": {
+            "required": [
+              "revoke_replay_authentication"
+            ]
+          },
+          "else": {
+            "not": {
+              "required": [
+                "revoke_replay_authentication"
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "id": {
+                "const": "sync_push"
+              }
+            },
+            "required": [
+              "id"
+            ]
+          },
+          "then": {
+            "required": [
+              "idempotency",
+              "per_item_schema_ref",
+              "validation_order",
+              "per_item_validation_order"
+            ],
+            "not": {
+              "required": [
+                "pagination"
+              ]
+            }
+          },
+          "else": {
+            "allOf": [
+              {
+                "not": {
+                  "required": [
+                    "idempotency"
+                  ]
+                }
+              },
+              {
+                "not": {
+                  "required": [
+                    "per_item_schema_ref"
+                  ]
+                }
+              },
+              {
+                "not": {
+                  "required": [
+                    "validation_order"
+                  ]
+                }
+              },
+              {
+                "not": {
+                  "required": [
+                    "per_item_validation_order"
+                  ]
+                }
+              }
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "id": {
+                "enum": [
+                  "sync_bootstrap",
+                  "sync_pull"
+                ]
+              }
+            },
+            "required": [
+              "id"
+            ]
+          },
+          "then": {
+            "required": [
+              "pagination",
+              "cursor_policy_ref",
+              "ingress_correlation_policy"
+            ]
+          },
+          "else": {
+            "allOf": [
+              {
+                "not": {
+                  "required": [
+                    "pagination"
+                  ]
+                }
+              },
+              {
+                "not": {
+                  "required": [
+                    "cursor_policy_ref"
+                  ]
+                }
+              },
+              {
+                "not": {
+                  "required": [
+                    "ingress_correlation_policy"
+                  ]
+                }
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "authEndpointLimits": {
+      "properties": {
+        "request_raw_max_bytes": {
+          "const": 4096
+        },
+        "request_decompressed_max_bytes": {
+          "const": 4096
+        },
+        "success_raw_max_bytes": {
+          "const": 16384
+        },
+        "success_decompressed_max_bytes": {
+          "const": 16384
+        }
+      }
+    },
+    "correlationByRequestId": {
+      "properties": {
+        "request_body_field": {
+          "const": "request_id"
+        },
+        "success_response_field": {
+          "const": "request_id"
+        },
+        "error_response_field": {
+          "const": "request_id"
+        },
+        "comparison": {
+          "const": "exact_string"
+        }
+      }
+    },
+    "correlationByBatchId": {
+      "properties": {
+        "request_body_field": {
+          "const": "batch_id"
+        },
+        "success_response_field": {
+          "const": "batch_id"
+        },
+        "error_response_field": {
+          "const": "request_id"
+        },
+        "comparison": {
+          "const": "exact_string"
+        }
+      }
+    },
+    "correlationOnlyIdentity": {
+      "properties": {
+        "source": {
+          "const": "body_request_id"
+        },
+        "durable_exact_replay": {
+          "const": false
+        },
+        "successful_response_replay": {
+          "const": "none"
+        },
+        "byte_comparison": {
+          "const": "exact_raw_http_entity_body_bytes"
+        },
+        "replay_body_semantics": {
+          "const": "none"
+        },
+        "same_identity_changed_bytes_error": {
+          "type": "null"
+        }
+      }
+    },
+    "enrollmentCorrelationOnlyIdentity": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/correlationOnlyIdentity"
+        },
+        {
+          "properties": {
+            "namespace_binding": {
+              "$ref": "#/$defs/enrollmentContextNamespace"
+            }
+          }
+        }
+      ]
+    },
+    "authenticatedCorrelationOnlyIdentity": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/correlationOnlyIdentity"
+        },
+        {
+          "properties": {
+            "namespace_binding": {
+              "$ref": "#/$defs/authenticatedPrincipalNamespace"
+            }
+          }
+        }
+      ]
+    },
+    "requestIdReplayIdentity": {
+      "properties": {
+        "source": {
+          "const": "body_request_id"
+        },
+        "durable_exact_replay": {
+          "const": true
+        },
+        "successful_response_replay": {
+          "const": "exact_response_bytes"
+        },
+        "byte_comparison": {
+          "const": "exact_raw_http_entity_body_bytes"
+        },
+        "replay_body_semantics": {
+          "const": "exact_original_http_response_body_octets_for_stored_terminal_outcomes_only"
+        },
+        "same_identity_changed_bytes_error": {
+          "const": "request_id_collision"
+        },
+        "namespace_binding": {
+          "$ref": "#/$defs/authenticatedPrincipalNamespace"
+        }
+      }
+    },
+    "authEnrollEndpoint": {
+      "properties": {
+        "id": {
+          "const": "auth_enroll"
+        },
+        "path": {
+          "const": "/api/v1/auth/enroll"
+        },
+        "request_message_type": {
+          "const": "enrollment_claim_request"
+        },
+        "success_message_type": {
+          "const": "enrollment_claim_response"
+        },
+        "request_schema_ref": {
+          "const": "auth-wire.schema.json#/$defs/enrollmentClaimRequest"
+        },
+        "success_schema_ref": {
+          "const": "auth-wire.schema.json#/$defs/enrollmentClaimResponse"
+        },
+        "authentication": {
+          "$ref": "#/$defs/nonePlusOneTimeCode"
+        },
+        "byte_limits": {
+          "$ref": "#/$defs/authEndpointLimits"
+        },
+        "correlation": {
+          "$ref": "#/$defs/correlationByRequestId"
+        },
+        "request_identity": {
+          "$ref": "#/$defs/enrollmentCorrelationOnlyIdentity"
+        },
+        "error_policy": {
+          "$ref": "#/$defs/authEnrollErrorPolicy"
+        },
+        "sync_401_recovery_eligible": {
+          "const": false
+        }
+      }
+    },
+    "authRefreshEndpoint": {
+      "properties": {
+        "id": {
+          "const": "auth_refresh"
+        },
+        "path": {
+          "const": "/api/v1/auth/refresh"
+        },
+        "request_message_type": {
+          "const": "refresh_request"
+        },
+        "success_message_type": {
+          "const": "refresh_response"
+        },
+        "request_schema_ref": {
+          "const": "auth-wire.schema.json#/$defs/refreshRequest"
+        },
+        "success_schema_ref": {
+          "const": "auth-wire.schema.json#/$defs/refreshResponse"
+        },
+        "authentication": {
+          "$ref": "#/$defs/refreshTokenBody"
+        },
+        "byte_limits": {
+          "$ref": "#/$defs/authEndpointLimits"
+        },
+        "correlation": {
+          "$ref": "#/$defs/correlationByRequestId"
+        },
+        "request_identity": {
+          "$ref": "#/$defs/authenticatedCorrelationOnlyIdentity"
+        },
+        "error_policy": {
+          "$ref": "#/$defs/authRefreshErrorPolicy"
+        },
+        "sync_401_recovery_eligible": {
+          "const": false
+        }
+      }
+    },
+    "authRevokeEndpoint": {
+      "properties": {
+        "id": {
+          "const": "auth_revoke"
+        },
+        "path": {
+          "const": "/api/v1/auth/revoke"
+        },
+        "request_message_type": {
+          "const": "revoke_request"
+        },
+        "success_message_type": {
+          "const": "revoke_response"
+        },
+        "request_schema_ref": {
+          "const": "auth-wire.schema.json#/$defs/revokeRequest"
+        },
+        "success_schema_ref": {
+          "const": "auth-wire.schema.json#/$defs/revokeResponse"
+        },
+        "authentication": {
+          "$ref": "#/$defs/refreshTokenBody"
+        },
+        "byte_limits": {
+          "$ref": "#/$defs/authEndpointLimits"
+        },
+        "correlation": {
+          "$ref": "#/$defs/correlationByRequestId"
+        },
+        "request_identity": {
+          "$ref": "#/$defs/requestIdReplayIdentity"
+        },
+        "revoke_replay_authentication": {
+          "$ref": "#/$defs/revokeReplayAuthentication"
+        },
+        "error_policy": {
+          "$ref": "#/$defs/authRevokeErrorPolicy"
+        },
+        "sync_401_recovery_eligible": {
+          "const": false
+        }
+      }
+    },
+    "syncPushEndpoint": {
+      "properties": {
+        "id": {
+          "const": "sync_push"
+        },
+        "path": {
+          "const": "/api/v1/sync/push"
+        },
+        "request_message_type": {
+          "const": "push_batch_request"
+        },
+        "success_message_type": {
+          "const": "push_batch_response"
+        },
+        "request_schema_ref": {
+          "const": "sync-wire.schema.json#/$defs/pushBatchEnvelope"
+        },
+        "success_schema_ref": {
+          "const": "sync-wire.schema.json#/$defs/pushBatchResponse"
+        },
+        "per_item_schema_ref": {
+          "const": "sync-wire.schema.json#/$defs/pushOperation"
+        },
+        "validation_order": {
+          "const": [
+            "transport_headers_encoding_and_raw_byte_limit",
+            "strict_utf8_and_duplicate_key_rejecting_json_parse",
+            "push_batch_envelope_schema",
+            "authenticate_and_resolve_internal_family_and_device_namespace",
+            "capture_keyed_raw_body_hmac_sha256",
+            "idempotency_key_matches_batch_id",
+            "durable_batch_identity_exact_replay_or_collision",
+            "request_device_id_matches_authenticated_internal_device_else_device_mismatch",
+            "batch_content_sha256",
+            "process_operations_in_ordinal_order_using_per_item_validation_order",
+            "atomic_commit_with_durable_replay_record"
+          ]
+        },
+        "per_item_validation_order": {
+          "const": [
+            "safe_discriminator_event_schema_version",
+            "safe_discriminator_operation_kind",
+            "safe_discriminator_event_kind",
+            "safe_discriminator_source_channel",
+            "strict_pushOperation_schema_else_schema_invalid",
+            "physical_ordinal_equals_array_index_else_schema_invalid",
+            "normative_wrapper_capture_event_semantic_consistency_else_schema_invalid",
+            "operation_content_sha256_else_operation_hash_mismatch",
+            "authenticated_enrollment_person_and_device_ownership_else_ownership_violation",
+            "immutable_registry_operation_id_else_operation_id_collision",
+            "immutable_registry_client_sequence_else_client_sequence_collision",
+            "immutable_registry_capture_id_else_capture_id_collision",
+            "immutable_registry_revision_id_else_revision_id_collision",
+            "inspect_immutable_registry_event_id_else_event_id_collision_defer_claim_until_dependency_succeeds",
+            "persist_operation_client_sequence_capture_and_revision_claims_before_dependency_result",
+            "resolve_parent_and_revision_no_else_missing_parent_or_invalid_parent",
+            "compare_and_set_expected_current_revision_id_emit_applied_or_terminal_conflict_ack",
+            "first_failure_wins_stop_evaluating_item"
+          ]
+        },
+        "authentication": {
+          "$ref": "#/$defs/bearerAccess"
+        },
+        "byte_limits": {
+          "properties": {
+            "request_raw_max_bytes": {
+              "const": 2097152
+            },
+            "request_decompressed_max_bytes": {
+              "const": 2097152
+            },
+            "success_raw_max_bytes": {
+              "const": 524288
+            },
+            "success_decompressed_max_bytes": {
+              "const": 524288
+            }
+          }
+        },
+        "correlation": {
+          "$ref": "#/$defs/correlationByBatchId"
+        },
+        "request_identity": {
+          "properties": {
+            "source": {
+              "const": "idempotency_key_and_batch_id"
+            },
+            "durable_exact_replay": {
+              "const": true
+            },
+            "successful_response_replay": {
+              "const": "exact_response_bytes"
+            },
+            "byte_comparison": {
+              "const": "exact_raw_http_entity_body_bytes"
+            },
+            "replay_body_semantics": {
+              "const": "exact_original_http_response_body_octets_for_stored_terminal_outcomes_only"
+            },
+            "same_identity_changed_bytes_error": {
+              "const": "batch_id_collision"
+            },
+            "namespace_binding": {
+              "$ref": "#/$defs/authenticatedPrincipalNamespace"
+            }
+          }
+        },
+        "error_policy": {
+          "$ref": "#/$defs/syncPushErrorPolicy"
+        },
+        "sync_401_recovery_eligible": {
+          "const": true
+        }
+      }
+    },
+    "syncPageLimits": {
+      "properties": {
+        "request_raw_max_bytes": {
+          "const": 4096
+        },
+        "request_decompressed_max_bytes": {
+          "const": 4096
+        },
+        "success_raw_max_bytes": {
+          "const": 4194304
+        },
+        "success_decompressed_max_bytes": {
+          "const": 4194304
+        }
+      }
+    },
+    "bootstrapPagination": {
+      "properties": {
+        "request_page_size_field": {
+          "const": "page_size"
+        },
+        "response_items_field": {
+          "const": "changes"
+        },
+        "requested_page_size_is_maximum": {
+          "const": true
+        },
+        "short_page_allowed": {
+          "const": true
+        },
+        "short_page_may_enforce_response_byte_cap": {
+          "const": true
+        },
+        "short_page_does_not_imply_completion": {
+          "const": true
+        },
+        "continuation_indicator_field": {
+          "const": "complete"
+        },
+        "continuation_indicator_value": {
+          "const": false
+        },
+        "continuation_cursor_field": {
+          "const": "next_page_cursor"
+        },
+        "continuation_cursor_requirement": {
+          "const": "present_and_non_null"
+        }
+      }
+    },
+    "pullPagination": {
+      "properties": {
+        "request_page_size_field": {
+          "const": "page_size"
+        },
+        "response_items_field": {
+          "const": "changes"
+        },
+        "requested_page_size_is_maximum": {
+          "const": true
+        },
+        "short_page_allowed": {
+          "const": true
+        },
+        "short_page_may_enforce_response_byte_cap": {
+          "const": true
+        },
+        "short_page_does_not_imply_completion": {
+          "const": true
+        },
+        "continuation_indicator_field": {
+          "const": "has_more"
+        },
+        "continuation_indicator_value": {
+          "const": true
+        },
+        "continuation_cursor_field": {
+          "const": "next_cursor"
+        },
+        "continuation_cursor_requirement": {
+          "const": "present_and_non_null"
+        }
+      }
+    },
+    "syncBootstrapEndpoint": {
+      "properties": {
+        "id": {
+          "const": "sync_bootstrap"
+        },
+        "path": {
+          "const": "/api/v1/sync/bootstrap"
+        },
+        "request_message_type": {
+          "const": "bootstrap_request"
+        },
+        "success_message_type": {
+          "const": "bootstrap_response"
+        },
+        "request_schema_ref": {
+          "const": "sync-wire.schema.json#/$defs/bootstrapRequest"
+        },
+        "success_schema_ref": {
+          "const": "sync-wire.schema.json#/$defs/bootstrapResponse"
+        },
+        "authentication": {
+          "$ref": "#/$defs/bearerAccess"
+        },
+        "byte_limits": {
+          "$ref": "#/$defs/syncPageLimits"
+        },
+        "correlation": {
+          "$ref": "#/$defs/correlationByRequestId"
+        },
+        "request_identity": {
+          "$ref": "#/$defs/requestIdReplayIdentity"
+        },
+        "error_policy": {
+          "$ref": "#/$defs/syncPageErrorPolicy"
+        },
+        "pagination": {
+          "$ref": "#/$defs/bootstrapPagination"
+        },
+        "cursor_policy_ref": {
+          "const": "#/cursor_policy"
+        },
+        "sync_401_recovery_eligible": {
+          "const": true
+        }
+      }
+    },
+    "syncPullEndpoint": {
+      "properties": {
+        "id": {
+          "const": "sync_pull"
+        },
+        "path": {
+          "const": "/api/v1/sync/pull"
+        },
+        "request_message_type": {
+          "const": "pull_request"
+        },
+        "success_message_type": {
+          "const": "pull_response"
+        },
+        "request_schema_ref": {
+          "const": "sync-wire.schema.json#/$defs/pullRequest"
+        },
+        "success_schema_ref": {
+          "const": "sync-wire.schema.json#/$defs/pullResponse"
+        },
+        "authentication": {
+          "$ref": "#/$defs/bearerAccess"
+        },
+        "byte_limits": {
+          "$ref": "#/$defs/syncPageLimits"
+        },
+        "correlation": {
+          "$ref": "#/$defs/correlationByRequestId"
+        },
+        "request_identity": {
+          "$ref": "#/$defs/requestIdReplayIdentity"
+        },
+        "error_policy": {
+          "$ref": "#/$defs/syncPullErrorPolicy"
+        },
+        "pagination": {
+          "$ref": "#/$defs/pullPagination"
+        },
+        "cursor_policy_ref": {
+          "const": "#/cursor_policy"
+        },
+        "sync_401_recovery_eligible": {
+          "const": true
+        }
+      }
+    },
+    "endpoints": {
+      "type": "array",
+      "minItems": 6,
+      "maxItems": 6,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/endpoint"
+      },
+      "allOf": [
+        {
+          "contains": {
+            "properties": {
+              "id": {
+                "const": "auth_enroll"
+              }
+            },
+            "required": [
+              "id"
+            ]
+          },
+          "minContains": 1,
+          "maxContains": 1
+        },
+        {
+          "contains": {
+            "properties": {
+              "id": {
+                "const": "auth_refresh"
+              }
+            },
+            "required": [
+              "id"
+            ]
+          },
+          "minContains": 1,
+          "maxContains": 1
+        },
+        {
+          "contains": {
+            "properties": {
+              "id": {
+                "const": "auth_revoke"
+              }
+            },
+            "required": [
+              "id"
+            ]
+          },
+          "minContains": 1,
+          "maxContains": 1
+        },
+        {
+          "contains": {
+            "properties": {
+              "id": {
+                "const": "sync_push"
+              }
+            },
+            "required": [
+              "id"
+            ]
+          },
+          "minContains": 1,
+          "maxContains": 1
+        },
+        {
+          "contains": {
+            "properties": {
+              "id": {
+                "const": "sync_bootstrap"
+              }
+            },
+            "required": [
+              "id"
+            ]
+          },
+          "minContains": 1,
+          "maxContains": 1
+        },
+        {
+          "contains": {
+            "properties": {
+              "id": {
+                "const": "sync_pull"
+              }
+            },
+            "required": [
+              "id"
+            ]
+          },
+          "minContains": 1,
+          "maxContains": 1
+        }
+      ]
+    }
+  }
+}

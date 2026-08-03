@@ -1,0 +1,37 @@
+FROM gradle:8.13.0-jdk17-jammy@sha256:89714e9f944041519118be289f3b36015349fc16116084d00ec674090d1f5db8
+
+ARG ANDROID_COMMAND_LINE_TOOLS=15859902
+ARG ANDROID_COMMAND_LINE_TOOLS_SHA256=4e4c464f145a7512b57d088ac6c278c03c9eea610886b35a5e0804e74eedf583
+
+ENV ANDROID_HOME=/opt/android-sdk
+ENV ANDROID_SDK_ROOT=/opt/android-sdk
+ENV PATH=/opt/android-sdk/cmdline-tools/latest/bin:/opt/android-sdk/platform-tools:${PATH}
+
+USER root
+
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends ca-certificates curl unzip \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN mkdir -p "${ANDROID_HOME}/cmdline-tools" \
+    && curl --fail --location --retry 3 \
+        "https://dl.google.com/android/repository/commandlinetools-linux-${ANDROID_COMMAND_LINE_TOOLS}_latest.zip" \
+        --output /tmp/android-command-line-tools.zip \
+    && echo "${ANDROID_COMMAND_LINE_TOOLS_SHA256}  /tmp/android-command-line-tools.zip" \
+        | sha256sum --check --strict \
+    && unzip -q /tmp/android-command-line-tools.zip -d /tmp/android-command-line-tools \
+    && mv /tmp/android-command-line-tools/cmdline-tools \
+        "${ANDROID_HOME}/cmdline-tools/latest" \
+    && rm -rf /tmp/android-command-line-tools /tmp/android-command-line-tools.zip
+
+RUN yes | sdkmanager --sdk_root="${ANDROID_HOME}" --licenses >/dev/null \
+    && sdkmanager --sdk_root="${ANDROID_HOME}" \
+        "platforms;android-36" \
+        "build-tools;36.0.0" \
+        "platform-tools" \
+    && chown -R gradle:gradle "${ANDROID_HOME}"
+
+USER gradle
+WORKDIR /workspace
+
+CMD ["gradle", "--no-daemon", "--stacktrace", ":app:assembleDebug"]

@@ -1,0 +1,328 @@
+name: android-dev-distribution
+
+on:
+  workflow_run:
+    workflows:
+      - ci
+    types:
+      - completed
+    branches:
+      - develop
+
+permissions:
+  actions: read
+  contents: write
+
+concurrency:
+  group: android-dev-distribution
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: publish-dev-apk
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'develop' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    environment: dev-distribution
+    env:
+      SOURCE_SHA: ${{ github.event.workflow_run.head_sha }}
+      SOURCE_RUN_NUMBER: ${{ github.event.workflow_run.run_number }}
+      LIFE_AGENT_API_ORIGIN: ${{ vars.LIFE_AGENT_API_ORIGIN }}
+      LIFE_AGENT_API_SPKI_PINS: ${{ vars.LIFE_AGENT_API_SPKI_PINS }}
+    steps:
+      - name: Require trusted Android deployment configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          is_non_blank() {
+            case "$1" in
+              *[![:space:]]*) return 0 ;;
+              *) return 1 ;;
+            esac
+          }
+
+          if ! is_non_blank "$LIFE_AGENT_API_ORIGIN" ||
+            ! is_non_blank "$LIFE_AGENT_API_SPKI_PINS"; then
+            echo "Android dev distribution deployment configuration is unavailable."
+            exit 1
+          fi
+
+      - name: Check out the verified develop revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+          persist-credentials: false
+
+      - name: Build pinned Android toolchain image
+        run: |
+          docker build \
+            --file android/life-agent/Dockerfile.build \
+            --tag life-agent-product-builder:distribution \
+            android/life-agent
+
+      - name: Build configured unsigned internal APK
+        run: |
+          set -euo pipefail
+
+          version_code=$((100000 + SOURCE_RUN_NUMBER))
+          short_sha="${SOURCE_SHA:0:7}"
+          install -d -m 0700 \
+            "$RUNNER_TEMP/life-agent-distribution-android-user-home" \
+            "$RUNNER_TEMP/life-agent-distribution-home" \
+            "$RUNNER_TEMP/life-agent-distribution-gradle-home" \
+            "$RUNNER_TEMP/unsigned"
+
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            --env ANDROID_USER_HOME=/tmp/android-user-home \
+            --env GRADLE_USER_HOME=/tmp/gradle-home \
+            --env LIFE_AGENT_API_ORIGIN \
+            --env LIFE_AGENT_API_SPKI_PINS \
+            --env LIFE_AGENT_VERSION_CODE="$version_code" \
+            --env LIFE_AGENT_VERSION_NAME="0.1.0.$SOURCE_RUN_NUMBER+$short_sha" \
+            --volume \
+              "$RUNNER_TEMP/life-agent-distribution-android-user-home:/tmp/android-user-home" \
+            --volume \
+              "$RUNNER_TEMP/life-agent-distribution-home:/home/gradle" \
+            --volume \
+              "$RUNNER_TEMP/life-agent-distribution-gradle-home:/tmp/gradle-home" \
+            --volume "$GITHUB_WORKSPACE:/repo" \
+            --workdir /repo/android/life-agent \
+            life-agent-product-builder:distribution \
+            ./gradlew --no-daemon --stacktrace :app:assembleInternal
+
+          install -m 0600 \
+            android/life-agent/app/build/outputs/apk/internal/app-internal-unsigned.apk \
+            "$RUNNER_TEMP/unsigned/app-internal-unsigned.apk"
+
+      - name: Prepare signing material
+        env:
+          KEYSTORE_BASE64: ${{ secrets.LIFE_AGENT_DEV_KEYSTORE_BASE64 }}
+          LIFE_AGENT_KEYSTORE_PASSWORD: ${{ secrets.LIFE_AGENT_DEV_KEYSTORE_PASSWORD }}
+        run: |
+          if [ -z "$KEYSTORE_BASE64" ] || [ -z "$LIFE_AGENT_KEYSTORE_PASSWORD" ]; then
+            echo "Dev distribution signing secrets are not configured."
+            exit 1
+          fi
+
+          echo \
+            "LIFE_AGENT_KEYSTORE_PATH=/tmp/life-agent-signing/life-agent-dev.p12" \
+            >> "$GITHUB_ENV"
+
+          install -d -m 0700 "$RUNNER_TEMP/life-agent-signing"
+          printf '%s' "$KEYSTORE_BASE64" |
+            base64 --decode > "$RUNNER_TEMP/life-agent-signing/life-agent-dev.p12"
+          chmod 0600 "$RUNNER_TEMP/life-agent-signing/life-agent-dev.p12"
+
+      - name: Sign and verify APK
+        env:
+          LIFE_AGENT_KEYSTORE_PASSWORD: ${{ secrets.LIFE_AGENT_DEV_KEYSTORE_PASSWORD }}
+          LIFE_AGENT_KEY_PASSWORD: ${{ secrets.LIFE_AGENT_DEV_KEYSTORE_PASSWORD }}
+          LIFE_AGENT_KEY_ALIAS: life-agent-dev
+        run: |
+          install -d -m 0700 "$RUNNER_TEMP/distribution"
+
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            --env LIFE_AGENT_KEYSTORE_PATH \
+            --env LIFE_AGENT_KEYSTORE_PASSWORD \
+            --env LIFE_AGENT_KEY_ALIAS \
+            --env LIFE_AGENT_KEY_PASSWORD \
+            --volume \
+              "$RUNNER_TEMP/life-agent-signing:/tmp/life-agent-signing:ro" \
+            --volume "$RUNNER_TEMP/unsigned:/unsigned:ro" \
+            --volume "$RUNNER_TEMP/distribution:/distribution" \
+            life-agent-product-builder:distribution \
+            /opt/android-sdk/build-tools/36.0.0/apksigner \
+              sign \
+              --ks "$LIFE_AGENT_KEYSTORE_PATH" \
+              --ks-key-alias "$LIFE_AGENT_KEY_ALIAS" \
+              --ks-pass env:LIFE_AGENT_KEYSTORE_PASSWORD \
+              --key-pass env:LIFE_AGENT_KEY_PASSWORD \
+              --out /distribution/life-agent-dev.apk \
+              /unsigned/app-internal-unsigned.apk
+
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            --volume "$RUNNER_TEMP/distribution:/distribution:ro" \
+            life-agent-product-builder:distribution \
+            /opt/android-sdk/build-tools/36.0.0/apksigner \
+              verify \
+              --verbose \
+              /distribution/life-agent-dev.apk
+
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            --volume "$RUNNER_TEMP/distribution:/distribution:ro" \
+            life-agent-product-builder:distribution \
+            /opt/android-sdk/build-tools/36.0.0/zipalign \
+              -c \
+              -P 16 \
+              -v \
+              4 \
+              /distribution/life-agent-dev.apk
+
+          package_line="$(
+            docker run --rm \
+              --user "$(id -u):$(id -g)" \
+              --volume "$RUNNER_TEMP/distribution:/distribution:ro" \
+              life-agent-product-builder:distribution \
+              /opt/android-sdk/build-tools/36.0.0/aapt \
+                dump \
+                badging \
+                /distribution/life-agent-dev.apk |
+              sed -n '1p'
+          )"
+          LIFE_AGENT_PACKAGE_NAME="$(
+            printf '%s\n' "$package_line" |
+              sed -n "s/^package: name='\\([^']*\\)'.*/\\1/p"
+          )"
+          LIFE_AGENT_VERSION_NAME="$(
+            printf '%s\n' "$package_line" |
+              sed -n "s/^package: .*versionName='\\([^']*\\)'.*/\\1/p"
+          )"
+
+          if [ "$LIFE_AGENT_PACKAGE_NAME" != "ru.andriyshkoy.lifeagent.dev" ]; then
+            echo "Unexpected APK package: ${LIFE_AGENT_PACKAGE_NAME:-missing}."
+            exit 1
+          fi
+          if [ -z "$LIFE_AGENT_VERSION_NAME" ] ||
+            [[ "$LIFE_AGENT_VERSION_NAME" != *-dev ]]; then
+            echo "Unexpected APK versionName: ${LIFE_AGENT_VERSION_NAME:-missing}."
+            exit 1
+          fi
+          echo "LIFE_AGENT_VERSION_NAME=$LIFE_AGENT_VERSION_NAME" >> "$GITHUB_ENV"
+          sha256sum "$RUNNER_TEMP/distribution/life-agent-dev.apk"
+
+      - name: Publish rolling prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          current_develop_sha="$(
+            gh api \
+              "repos/$GITHUB_REPOSITORY/git/ref/heads/develop" \
+              --jq '.object.sha'
+          )"
+          if [ "$current_develop_sha" != "$SOURCE_SHA" ]; then
+            echo \
+              "Skipping stale distribution run: source=$SOURCE_SHA, develop=$current_develop_sha."
+            exit 0
+          fi
+
+          release_exists=false
+          release_id="$(
+            gh api \
+              --paginate \
+              "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+              --jq '.[] | select(.tag_name == "dev-latest") | .id'
+          )"
+          if [ -n "$release_id" ]; then
+            release_exists=true
+            gh release edit dev-latest \
+              --repo "$GITHUB_REPOSITORY" \
+              --draft
+          fi
+
+          tag_sha="$(
+            gh api \
+              "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/dev-latest" \
+              --jq \
+                '.[] | select(.ref == "refs/tags/dev-latest") | .object.sha'
+          )"
+          if [ -n "$tag_sha" ]; then
+            if [ "$tag_sha" != "$SOURCE_SHA" ]; then
+              gh api \
+                --method PATCH \
+                "repos/$GITHUB_REPOSITORY/git/refs/tags/dev-latest" \
+                --field sha="$SOURCE_SHA" \
+                --field force=false
+            fi
+          else
+            gh api \
+              --method POST \
+              "repos/$GITHUB_REPOSITORY/git/refs" \
+              --field ref='refs/tags/dev-latest' \
+              --field sha="$SOURCE_SHA"
+          fi
+
+          if [ "$release_exists" = true ]; then
+            gh release upload dev-latest \
+              "$RUNNER_TEMP/distribution/life-agent-dev.apk#Life Agent Dev APK" \
+              --repo "$GITHUB_REPOSITORY" \
+              --clobber
+          else
+            gh release create dev-latest \
+              "$RUNNER_TEMP/distribution/life-agent-dev.apk#Life Agent Dev APK" \
+              --repo "$GITHUB_REPOSITORY" \
+              --verify-tag \
+              --title "Life Agent Dev · $LIFE_AGENT_VERSION_NAME" \
+              --notes "Автоматическая тестовая сборка из проверенной ветки develop." \
+              --prerelease \
+              --draft
+          fi
+
+          gh release edit dev-latest \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$SOURCE_SHA" \
+            --title "Life Agent Dev · $LIFE_AGENT_VERSION_NAME" \
+            --notes "Автоматическая тестовая сборка из проверенной ветки develop." \
+            --prerelease \
+            --draft
+
+          tag_sha="$(
+            gh api \
+              "repos/$GITHUB_REPOSITORY/git/ref/tags/dev-latest" \
+              --jq '.object.sha'
+          )"
+          if [ "$tag_sha" != "$SOURCE_SHA" ]; then
+            echo "Unexpected dev-latest tag target: ${tag_sha:-missing}."
+            exit 1
+          fi
+
+          release_target="$(
+            gh release view dev-latest \
+              --repo "$GITHUB_REPOSITORY" \
+              --json targetCommitish \
+              --jq '.targetCommitish'
+          )"
+          if [ "$release_target" != "$SOURCE_SHA" ]; then
+            echo "Unexpected release target: ${release_target:-missing}."
+            exit 1
+          fi
+
+          expected_digest="sha256:$(
+            sha256sum "$RUNNER_TEMP/distribution/life-agent-dev.apk" |
+              awk '{ print $1 }'
+          )"
+          asset_digest="$(
+            gh release view dev-latest \
+              --repo "$GITHUB_REPOSITORY" \
+              --json assets \
+              --jq \
+                '.assets[] | select(.name == "life-agent-dev.apk") | .digest'
+          )"
+          if [ "$asset_digest" != "$expected_digest" ]; then
+            echo "Unexpected release asset digest: ${asset_digest:-missing}."
+            exit 1
+          fi
+
+          gh release edit dev-latest \
+            --repo "$GITHUB_REPOSITORY" \
+            --prerelease \
+            --draft=false
+
+          is_draft="$(
+            gh release view dev-latest \
+              --repo "$GITHUB_REPOSITORY" \
+              --json isDraft \
+              --jq '.isDraft'
+          )"
+          if [ "$is_draft" != "false" ]; then
+            echo "dev-latest was not published."
+            exit 1
+          fi

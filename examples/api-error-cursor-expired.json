@@ -1,0 +1,10 @@
+{
+  "protocol_version": "1.0.0",
+  "message_type": "api_error",
+  "request_id": "82000000-0000-4000-8000-000000000002",
+  "error_code": "cursor_expired",
+  "http_status": 410,
+  "retryable": false,
+  "field_errors": [],
+  "server_time": "2030-01-01T01:00:00Z"
+}

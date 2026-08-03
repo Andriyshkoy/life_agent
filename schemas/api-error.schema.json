@@ -1,0 +1,293 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://life-agent.local/schemas/api-error.schema.json",
+  "title": "Life Agent API error",
+  "description": "Closed, content-free v1 error response shared by authentication and synchronization endpoints. request_schema_invalid lexical credential handling applies to enrollment_code and refresh_token fields inside strict JSON auth bodies. Bearer Authorization is neutral: a missing or duplicate header, wrong scheme/spacing, or access token outside exact grammar returns 401 credential_unavailable with fixed WWW-Authenticate: Bearer and performs no credential lookup; a well-formed unavailable access token returns the same response after keyed lookup. Well-formed unavailable enrollment codes collapse to enrollment_unavailable and well-formed unavailable refresh credentials collapse to credential_unavailable. Exact causes remain internal. Durable replay is scoped by endpoint, protocol, retained internal family, internal device and request identity; unresolved namespaces and collision/idempotency errors are never frozen or allowed to overwrite replay state.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "protocol_version",
+    "message_type",
+    "request_id",
+    "error_code",
+    "http_status",
+    "retryable",
+    "field_errors",
+    "server_time"
+  ],
+  "properties": {
+    "protocol_version": {
+      "const": "1.0.0"
+    },
+    "message_type": {
+      "const": "api_error"
+    },
+    "request_id": {
+      "oneOf": [
+        {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$(?![\\s\\S])"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Valid auth/bootstrap/pull errors echo request_id; push errors echo batch_id in this field. Null is allowed only when the applicable correlation identifier is absent or syntactically unparseable."
+    },
+    "error_code": {
+      "type": "string",
+      "enum": [
+        "malformed_json",
+        "unsupported_protocol_version",
+        "request_schema_invalid",
+        "request_too_large",
+        "unsupported_media_type",
+        "rate_limited",
+        "temporarily_unavailable",
+        "enrollment_unavailable",
+        "active_device_exists",
+        "credential_unavailable",
+        "device_mismatch",
+        "idempotency_key_mismatch",
+        "request_id_collision",
+        "batch_hash_mismatch",
+        "batch_id_collision",
+        "cursor_invalid",
+        "cursor_expired",
+        "bootstrap_required"
+      ]
+    },
+    "http_status": {
+      "type": "integer",
+      "enum": [
+        400,
+        401,
+        403,
+        409,
+        410,
+        413,
+        415,
+        422,
+        429,
+        503
+      ],
+      "description": "Exact HTTP response status. The closed code-to-status mapping below prevents backend and Android recovery behavior from drifting."
+    },
+    "retryable": {
+      "type": "boolean",
+      "description": "True only when the endpoint-specific transport policy permits retrying the exact same request with bounded backoff. rate_limited and temporarily_unavailable are merely the only error classes eligible to be true; non-replay-safe enrollment and refresh flows still set false. Token recovery, replacement enrollment and bootstrap restart are explicit new flows, not retries."
+    },
+    "field_errors": {
+      "type": "array",
+      "maxItems": 8,
+      "uniqueItems": true,
+      "description": "At most eight controlled entries. A path identifies only the request root or a bounded push-operation ordinal; a code comes from the closed vocabulary below. Raw property names, values and parser diagnostics are never copied into the response.",
+      "items": {
+        "$ref": "#/$defs/fieldError"
+      }
+    },
+    "server_time": {
+      "$ref": "#/$defs/canonicalServerInstant"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "error_code": {
+            "const": "request_schema_invalid"
+          }
+        },
+        "required": [
+          "error_code"
+        ]
+      },
+      "else": {
+        "properties": {
+          "field_errors": {
+            "maxItems": 0
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "error_code": {
+            "enum": [
+              "rate_limited",
+              "temporarily_unavailable"
+            ]
+          }
+        },
+        "required": [
+          "error_code"
+        ]
+      },
+      "else": {
+        "properties": {
+          "retryable": {
+            "const": false
+          }
+        }
+      }
+    },
+    {
+      "oneOf": [
+        {
+          "properties": {
+            "error_code": {
+              "enum": [
+                "malformed_json",
+                "unsupported_protocol_version",
+                "idempotency_key_mismatch",
+                "cursor_invalid"
+              ]
+            },
+            "http_status": {
+              "const": 400
+            }
+          }
+        },
+        {
+          "properties": {
+            "error_code": {
+              "enum": [
+                "enrollment_unavailable",
+                "credential_unavailable"
+              ]
+            },
+            "http_status": {
+              "const": 401
+            }
+          }
+        },
+        {
+          "properties": {
+            "error_code": {
+              "const": "device_mismatch"
+            },
+            "http_status": {
+              "const": 403
+            }
+          }
+        },
+        {
+          "properties": {
+            "error_code": {
+              "enum": [
+                "active_device_exists",
+                "batch_id_collision",
+                "request_id_collision",
+                "bootstrap_required"
+              ]
+            },
+            "http_status": {
+              "const": 409
+            }
+          }
+        },
+        {
+          "properties": {
+            "error_code": {
+              "const": "cursor_expired"
+            },
+            "http_status": {
+              "const": 410
+            }
+          }
+        },
+        {
+          "properties": {
+            "error_code": {
+              "const": "request_too_large"
+            },
+            "http_status": {
+              "const": 413
+            }
+          }
+        },
+        {
+          "properties": {
+            "error_code": {
+              "const": "unsupported_media_type"
+            },
+            "http_status": {
+              "const": 415
+            }
+          }
+        },
+        {
+          "properties": {
+            "error_code": {
+              "enum": [
+                "request_schema_invalid",
+                "batch_hash_mismatch"
+              ]
+            },
+            "http_status": {
+              "const": 422
+            }
+          }
+        },
+        {
+          "properties": {
+            "error_code": {
+              "const": "rate_limited"
+            },
+            "http_status": {
+              "const": 429
+            }
+          }
+        },
+        {
+          "properties": {
+            "error_code": {
+              "const": "temporarily_unavailable"
+            },
+            "http_status": {
+              "const": 503
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "$defs": {
+    "canonicalServerInstant": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^(?!0000)[0-9]{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12][0-9]|3[01])T(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](?:\\.[0-9]{3})?Z(?![\\s\\S])",
+      "description": "Canonical server instant in UTC only: uppercase T and Z, valid 24-hour hh:mm:ss, and either no fractional seconds or exactly three decimal digits. Calendar validity is additionally enforced by date-time format validation."
+    },
+    "fieldError": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "code"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "maxLength": 14,
+          "pattern": "^(?:|/operations/(?:0|[1-9][0-9]?))(?![\\s\\S])",
+          "description": "Closed location vocabulary: the empty string means the request root; /operations/0 through /operations/99 identifies a bounded raw push item. No attacker-controlled property name is represented."
+        },
+        "code": {
+          "type": "string",
+          "enum": [
+            "missing_required_field",
+            "invalid_type",
+            "invalid_format",
+            "invalid_value",
+            "unsupported_value",
+            "unexpected_field"
+          ],
+          "description": "Static parser/schema classification only; it never contains a raw field name, value or implementation exception."
+        }
+      }
+    }
+  }
+}

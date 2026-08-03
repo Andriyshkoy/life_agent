@@ -1,0 +1,96 @@
+name: android-m1-instrumented
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - develop
+  pull_request:
+    branches:
+      - main
+      - develop
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-m1-instrumented-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  android-m1-instrumented:
+    name: android-m1-instrumented
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Validate Gradle Wrapper
+        uses: gradle/actions/wrapper-validation@3f131e8634966bd73d06cc69884922b02e6faf92 # v6.2.0
+
+      - name: Require KVM acceleration
+        run: |
+          if [ ! -c /dev/kvm ]; then
+            echo "This test job requires a GitHub runner with /dev/kvm."
+            exit 1
+          fi
+          kvm_group="$(stat --format='%g' /dev/kvm)"
+          echo "KVM_GROUP=$kvm_group" >> "$GITHUB_ENV"
+
+      - name: Build pinned Android toolchain images
+        run: |
+          docker build \
+            --file android/life-agent/Dockerfile.build \
+            --tag life-agent-product-builder:ci \
+            android/life-agent
+          docker build \
+            --file android/life-agent/Dockerfile.instrumented \
+            --tag life-agent-product-instrumented:ci \
+            android/life-agent
+
+      - name: Run full M1 suite and cold-start acceptance on standalone API 35
+        run: |
+          mkdir -p \
+            "$RUNNER_TEMP/life-agent-cold-android-user-home" \
+            "$RUNNER_TEMP/life-agent-gradle-home" \
+            "$GITHUB_WORKSPACE/android/life-agent/app/build/outputs/m1-cold-start"
+
+          docker run --rm \
+            --device=/dev/kvm \
+            --group-add "$KVM_GROUP" \
+            --shm-size=2g \
+            --user "$(id -u):$(id -g)" \
+            --env HOME=/tmp/android-user-home \
+            --env ANDROID_SERIAL=emulator-5554 \
+            --env ANDROID_USER_HOME=/tmp/android-user-home \
+            --env ANDROID_EMULATOR_HOME=/tmp/android-user-home \
+            --env ANDROID_AVD_HOME=/tmp/android-user-home/avd \
+            --env GRADLE_USER_HOME=/tmp/gradle-home \
+            --volume \
+              "$RUNNER_TEMP/life-agent-cold-android-user-home:/tmp/android-user-home" \
+            --volume "$RUNNER_TEMP/life-agent-gradle-home:/tmp/gradle-home" \
+            --volume "$GITHUB_WORKSPACE/android/life-agent:/workspace" \
+            --mount \
+              "type=bind,source=$GITHUB_WORKSPACE/scripts/run_android_m1_cold_start_smoke.sh,target=/runner/run-cold-smoke.sh,readonly" \
+            --mount \
+              "type=bind,source=$GITHUB_WORKSPACE/scripts/run_android_m1_instrumented_ci.sh,target=/runner/run-instrumented-ci.sh,readonly" \
+            --workdir /workspace \
+            life-agent-product-instrumented:ci \
+            bash /runner/run-instrumented-ci.sh
+
+      - name: Preserve instrumented diagnostics on failure
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: android-m1-instrumented-diagnostics-${{ github.run_id }}
+          path: |
+            android/life-agent/app/build/outputs/androidTest-results/
+            android/life-agent/app/build/outputs/managed_device_android_test_additional_output/
+            android/life-agent/app/build/outputs/m1-cold-start/
+            android/life-agent/app/build/reports/androidTests/
+          if-no-files-found: ignore
+          retention-days: 7

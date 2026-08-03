@@ -10,6 +10,9 @@ on:
       - main
       - develop
 
+# Keep this workflow free of path filters so every protected branch receives
+# the same required checks, including when shared CI or dependency files change.
+
 permissions:
   contents: read
 
@@ -24,13 +27,104 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 2
     steps:
-      - name: Require develop as the production release source
+      - name: Require a verified production release source
         env:
+          GH_TOKEN: ${{ github.token }}
           RELEASE_HEAD: ${{ github.head_ref }}
+          RELEASE_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          RELEASE_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          RELEASE_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+          RELEASE_HEAD_REPOSITORY_ID: ${{ github.event.pull_request.head.repo.id }}
+          CURRENT_REPOSITORY: ${{ github.repository }}
+          CURRENT_REPOSITORY_ID: ${{ github.repository_id }}
         run: |
-          if [ "$RELEASE_HEAD" != "develop" ]; then
-            echo "Pull requests into main must come from develop."
+          set -Eeuo pipefail
+
+          release_source_error() {
+            echo "Production release source verification failed."
             exit 1
+          }
+
+          read_branch_sha() {
+            local branch_name="$1"
+            gh api \
+              --method GET \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "repos/$CURRENT_REPOSITORY/git/ref/heads/$branch_name" \
+              --jq '.object.sha'
+          }
+
+          read_tree_sha() {
+            local commit_sha="$1"
+            gh api \
+              --method GET \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "repos/$CURRENT_REPOSITORY/git/commits/$commit_sha" \
+              --jq '.tree.sha'
+          }
+
+          if [ "$RELEASE_HEAD_REPOSITORY" != "$CURRENT_REPOSITORY" ] ||
+            [ "$RELEASE_HEAD_REPOSITORY_ID" != "$CURRENT_REPOSITORY_ID" ] ||
+            [[ ! "$CURRENT_REPOSITORY_ID" =~ ^[1-9][0-9]*$ ]]; then
+            release_source_error
+          fi
+
+          if [[ ! "$RELEASE_HEAD" =~ ^release/[a-z0-9][a-z0-9._/-]{0,119}$ ]]; then
+            release_source_error
+          fi
+          if [[ ! "$RELEASE_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]] ||
+            [[ ! "$RELEASE_BASE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            release_source_error
+          fi
+
+          current_main_sha="$(read_branch_sha main)"
+          current_develop_sha="$(read_branch_sha develop)"
+          current_release_sha="$(read_branch_sha "$RELEASE_HEAD")"
+          for observed_sha in \
+            "$current_main_sha" \
+            "$current_develop_sha" \
+            "$current_release_sha"; do
+            if [[ ! "$observed_sha" =~ ^[0-9a-f]{40}$ ]]; then
+              release_source_error
+            fi
+          done
+          if [ "$RELEASE_BASE_SHA" != "$current_main_sha" ] ||
+            [ "$RELEASE_HEAD_SHA" != "$current_release_sha" ]; then
+            release_source_error
+          fi
+
+          compare_record="$(
+            gh api \
+              --method GET \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "repos/$CURRENT_REPOSITORY/compare/$current_main_sha...$RELEASE_HEAD_SHA" \
+              --jq '[.status, (.behind_by | tostring), .base_commit.sha, .merge_base_commit.sha] | @tsv'
+          )"
+          IFS=$'\t' read -r \
+            compare_status \
+            compare_behind_by \
+            compare_base_sha \
+            compare_merge_base_sha \
+            <<<"$compare_record"
+          if [[ ! "$compare_status" =~ ^(ahead|identical)$ ]] ||
+            [ "$compare_behind_by" != "0" ] ||
+            [ "$compare_base_sha" != "$current_main_sha" ] ||
+            [ "$compare_merge_base_sha" != "$current_main_sha" ]; then
+            release_source_error
+          fi
+
+          release_tree_sha="$(read_tree_sha "$RELEASE_HEAD_SHA")"
+          develop_tree_sha="$(read_tree_sha "$current_develop_sha")"
+          if [[ ! "$release_tree_sha" =~ ^[0-9a-f]{40}$ ]] ||
+            [[ ! "$develop_tree_sha" =~ ^[0-9a-f]{40}$ ]] ||
+            [ "$release_tree_sha" != "$develop_tree_sha" ]; then
+            release_source_error
+          fi
+
+          if [ "$(read_branch_sha main)" != "$current_main_sha" ] ||
+            [ "$(read_branch_sha develop)" != "$current_develop_sha" ] ||
+            [ "$(read_branch_sha "$RELEASE_HEAD")" != "$RELEASE_HEAD_SHA" ]; then
+            release_source_error
           fi
 
   contracts:
@@ -42,6 +136,9 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
+      - name: Validate Gradle Wrapper
+        uses: gradle/actions/wrapper-validation@3f131e8634966bd73d06cc69884922b02e6faf92 # v6.2.0
 
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -57,11 +154,253 @@ jobs:
         run: |
           python scripts/validate_schemas.py
           python scripts/validate_repository.py
+          python scripts/validate_android_security.py
+          python scripts/validate_android_distribution_workflow.py
+          python scripts/validate_backend_production_workflow.py
+          python scripts/validate_production_infra.py
+          python -m unittest scripts.test_validate_android_security
+          python -m unittest scripts.test_validate_android_distribution_workflow
+          python -m unittest scripts.test_validate_backend_production_workflow
+          python -m unittest scripts.test_validate_production_infra
+          bash -n scripts/run_android_m1_instrumented_ci.sh
+          bash -n scripts/run_android_m1_cold_start_smoke.sh
+          bash -n backend/scripts/verify-runtime-image.sh
           bash -n infra/nginx/install-life-vhost.sh
+          bash -n infra/nginx/update-life-vhost.sh
           (
             cd android/health-probe/dist
             sha256sum --check SHA256SUMS
           )
+
+  backend-quality:
+    name: backend-quality
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: backend
+    env:
+      UV_LOCKED: "true"
+      UV_NO_PROGRESS: "true"
+      UV_PYTHON_DOWNLOADS: "never"
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Set up locked Python dependency manager
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: "0.11.26"
+          python-version: "3.12"
+          working-directory: backend
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Synchronize locked backend environment
+        run: uv sync --locked --all-groups
+
+      - name: Check backend formatting
+        run: uv run --locked ruff format --check .
+
+      - name: Lint backend
+        run: uv run --locked ruff check .
+
+      - name: Type-check backend
+        run: uv run --locked mypy
+
+      - name: Run backend tests without PostgreSQL
+        run: uv run --locked pytest -q -m "not postgres"
+
+      - name: Compile backend Python sources
+        run: uv run --locked python -m compileall -q src tests migrations
+
+  backend-postgres:
+    name: backend-postgres
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      UV_LOCKED: "true"
+      UV_NO_PROGRESS: "true"
+      UV_PYTHON_DOWNLOADS: "never"
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Set up locked Python dependency manager
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: "0.11.26"
+          python-version: "3.12"
+          working-directory: backend
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Synchronize locked backend environment
+        working-directory: backend
+        run: uv sync --locked --all-groups
+
+      - name: Run hermetic PostgreSQL 17 integration
+        run: backend/scripts/run_postgres_integration.sh
+
+  backend-container:
+    name: backend-container
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Build pinned backend runtime image
+        run: |
+          docker build \
+            --file backend/Dockerfile \
+            --tag life-agent-backend:ci \
+            backend
+
+      - name: Smoke-test liveness and pre-migration readiness
+        run: |
+          set -euo pipefail
+
+          container_name=life-agent-backend-ci
+          ready_body="$RUNNER_TEMP/life-agent-backend-ready.json"
+          admin_stdout="$RUNNER_TEMP/life-agent-admin.stdout"
+          admin_stderr="$RUNNER_TEMP/life-agent-admin.stderr"
+
+          derive_ci_hmac_key() {
+            printf 'life-agent-ci-only-%s' "$1" |
+              openssl dgst -sha256 -binary |
+              openssl base64 -A |
+              tr '+/' '-_' |
+              tr -d '='
+          }
+          access_token_hmac_key="$(derive_ci_hmac_key access-token)"
+          refresh_token_hmac_key="$(derive_ci_hmac_key refresh-token)"
+          enrollment_code_hmac_key="$(derive_ci_hmac_key enrollment-code)"
+          replay_fingerprint_hmac_key="$(derive_ci_hmac_key replay-fingerprint)"
+          replay_response_encryption_key="$(derive_ci_hmac_key replay-encryption)"
+          cursor_hmac_key="$(derive_ci_hmac_key cursor)"
+
+          cleanup() {
+            status=$?
+            trap - EXIT
+            if [ "$status" -ne 0 ]; then
+              docker logs "$container_name" || true
+            fi
+            docker rm --force "$container_name" >/dev/null 2>&1 || true
+            exit "$status"
+          }
+          trap cleanup EXIT
+
+          docker run \
+            --detach \
+            --name "$container_name" \
+            --read-only \
+            --tmpfs /tmp:rw,noexec,nosuid,nodev,size=16m \
+            --cap-drop ALL \
+            --security-opt no-new-privileges:true \
+            --publish 127.0.0.1::8080 \
+            --env LIFE_AGENT_ENVIRONMENT=test \
+            --env LIFE_AGENT_DATABASE_URL=postgresql+asyncpg://life_agent_ci:ci-only@127.0.0.1:9/life_agent_ci \
+            --env LIFE_AGENT_ACCESS_TOKEN_HMAC_KEY="$access_token_hmac_key" \
+            --env LIFE_AGENT_ACCESS_TOKEN_HMAC_KEY_GENERATION=1 \
+            --env LIFE_AGENT_REFRESH_TOKEN_HMAC_KEY="$refresh_token_hmac_key" \
+            --env LIFE_AGENT_REFRESH_TOKEN_HMAC_KEY_GENERATION=1 \
+            --env LIFE_AGENT_ENROLLMENT_CODE_HMAC_KEY="$enrollment_code_hmac_key" \
+            --env LIFE_AGENT_ENROLLMENT_CODE_HMAC_KEY_GENERATION=1 \
+            --env LIFE_AGENT_REPLAY_FINGERPRINT_HMAC_KEY="$replay_fingerprint_hmac_key" \
+            --env LIFE_AGENT_REPLAY_FINGERPRINT_HMAC_KEY_GENERATION=1 \
+            --env LIFE_AGENT_REPLAY_RESPONSE_ENCRYPTION_KEY="$replay_response_encryption_key" \
+            --env LIFE_AGENT_REPLAY_RESPONSE_ENCRYPTION_KEY_GENERATION=1 \
+            --env LIFE_AGENT_CURSOR_HMAC_KEY="$cursor_hmac_key" \
+            --env LIFE_AGENT_CURSOR_HMAC_KEY_GENERATION=1 \
+            life-agent-backend:ci
+
+          published_endpoint="$(docker port "$container_name" 8080/tcp)"
+          backend_port="${published_endpoint##*:}"
+          if [[ ! "$backend_port" =~ ^[0-9]{1,5}$ ]]; then
+            echo "Failed to resolve the backend smoke-test port."
+            exit 1
+          fi
+
+          health_body=
+          for _ in $(seq 1 30); do
+            if health_body="$(
+              curl \
+                --fail \
+                --silent \
+                --max-time 2 \
+                "http://127.0.0.1:${backend_port}/healthz"
+            )"; then
+              break
+            fi
+            if [ "$(docker inspect --format '{{.State.Running}}' "$container_name")" != true ]; then
+              echo "Backend container exited during startup."
+              exit 1
+            fi
+            sleep 1
+          done
+
+          if [ "$health_body" != '{"status":"ok"}' ]; then
+            echo "Unexpected liveness response."
+            exit 1
+          fi
+          if [ "$(docker inspect --format '{{.Config.User}}' "$container_name")" != 10001:10001 ]; then
+            echo "Backend runtime image is not configured for its unprivileged user."
+            exit 1
+          fi
+          docker exec "$container_name" life-agent-admin --help >/dev/null
+          if docker exec "$container_name" life-agent-admin issue-enrollment-code \
+            --allow-non-tty-output \
+            >"$admin_stdout" 2>"$admin_stderr"; then
+            echo "Admin CLI unexpectedly succeeded without its database."
+            exit 1
+          fi
+          if [ -s "$admin_stdout" ]; then
+            echo "Admin CLI emitted a code for an unavailable database."
+            exit 1
+          fi
+          if [ "$(tr -d '\r\n' < "$admin_stderr")" != \
+            'life-agent-admin: database is not ready at the expected migration' ]; then
+            echo "Admin CLI did not fail with its bounded readiness error."
+            exit 1
+          fi
+
+          ready_status="$(
+            curl \
+              --silent \
+              --show-error \
+              --max-time 3 \
+              --output "$ready_body" \
+              --write-out '%{http_code}' \
+              "http://127.0.0.1:${backend_port}/readyz"
+          )"
+          if [ "$ready_status" != 503 ]; then
+            echo "Backend reported ready without its database or migrations."
+            exit 1
+          fi
+          if [ "$(tr -d '\r\n' < "$ready_body")" != '{"status":"not_ready"}' ]; then
+            echo "Unexpected pre-migration readiness response."
+            exit 1
+          fi
+
+      - name: Exercise the reusable backend image verifier
+        run: backend/scripts/verify-runtime-image.sh life-agent-backend:ci
 
   android-probe:
     name: android-probe
@@ -82,10 +421,18 @@ jobs:
 
       - name: Lint, test, and assemble the Day-0 probe
         run: |
+          mkdir -p \
+            "$RUNNER_TEMP/life-agent-probe-android-user-home" \
+            "$RUNNER_TEMP/life-agent-probe-user-home" \
+            "$RUNNER_TEMP/life-agent-probe-gradle-home"
+
           docker run --rm \
             --user "$(id -u):$(id -g)" \
-            --env HOME=/tmp \
+            --env ANDROID_USER_HOME=/tmp/android-user-home \
             --env GRADLE_USER_HOME=/tmp/gradle-home \
+            --volume "$RUNNER_TEMP/life-agent-probe-android-user-home:/tmp/android-user-home" \
+            --volume "$RUNNER_TEMP/life-agent-probe-user-home:/home/gradle" \
+            --volume "$RUNNER_TEMP/life-agent-probe-gradle-home:/tmp/gradle-home" \
             --volume "$GITHUB_WORKSPACE/android/health-probe:/workspace" \
             life-agent-health-probe-builder:ci \
             gradle --no-daemon --stacktrace \
@@ -98,3 +445,67 @@ jobs:
           python3 scripts/validate_apk_payload.py \
             android/health-probe/dist/life-agent-health-probe-day0-v0.2.0.apk \
             android/health-probe/app/build/outputs/apk/debug/app-debug.apk
+
+  android-product:
+    name: android-product
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Build pinned Android toolchain image
+        run: |
+          docker build \
+            --file android/life-agent/Dockerfile.build \
+            --tag life-agent-product-builder:ci \
+            android/life-agent
+
+      - name: Lint, test, assemble, and validate UI screenshots
+        run: |
+          version_code=$((100000 + GITHUB_RUN_NUMBER))
+          short_sha="${GITHUB_SHA:0:7}"
+          mkdir -p \
+            "$RUNNER_TEMP/life-agent-product-android-user-home" \
+            "$RUNNER_TEMP/life-agent-product-home" \
+            "$RUNNER_TEMP/life-agent-product-gradle-home"
+
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            --env ANDROID_USER_HOME=/tmp/android-user-home \
+            --env GRADLE_USER_HOME=/tmp/gradle-home \
+            --volume "$RUNNER_TEMP/life-agent-product-android-user-home:/tmp/android-user-home" \
+            --volume "$RUNNER_TEMP/life-agent-product-home:/home/gradle" \
+            --volume "$RUNNER_TEMP/life-agent-product-gradle-home:/tmp/gradle-home" \
+            --env LIFE_AGENT_VERSION_CODE="$version_code" \
+            --env LIFE_AGENT_VERSION_NAME="0.1.0.$GITHUB_RUN_NUMBER+$short_sha" \
+            --volume "$GITHUB_WORKSPACE:/repo" \
+            --workdir /repo/android/life-agent \
+            life-agent-product-builder:ci \
+            ./gradlew --no-daemon --stacktrace \
+              :app:lintDebug \
+              :app:testDebugUnitTest \
+              :app:assembleDebug \
+              :app:assembleDebugAndroidTest \
+              :app:assembleInternal \
+              :app:validateDebugScreenshotTest
+
+      - name: Validate merged Android security declarations
+        run: |
+          python3 scripts/validate_android_security.py \
+            --merged-manifest \
+              android/life-agent/app/build/intermediates/merged_manifests/debug/processDebugManifest/AndroidManifest.xml \
+            --merged-manifest \
+              android/life-agent/app/build/intermediates/merged_manifests/internal/processInternalManifest/AndroidManifest.xml
+
+      - name: Preserve verified unsigned internal APK
+        if: github.event_name == 'push' && github.ref == 'refs/heads/develop'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: life-agent-internal-unsigned
+          path: android/life-agent/app/build/outputs/apk/internal/app-internal-unsigned.apk
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0

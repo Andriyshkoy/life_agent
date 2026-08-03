@@ -1,0 +1,19 @@
+{
+  "protocol_version": "1.0.0",
+  "message_type": "push_batch_response",
+  "batch_id": "96000000-0000-4000-8000-000000000003",
+  "device_id": "91000000-0000-4000-8000-000000000003",
+  "results": [
+    {
+      "ordinal": 0,
+      "operation_id": "95000000-0000-4000-8000-000000000003",
+      "status": "error",
+      "operation_content_sha256": "0bbdad12596b1978ce90408369cc181a287173e877f33e35629cebdd6b419270",
+      "error_code": "operation_id_collision",
+      "retryable": false,
+      "field_errors": []
+    }
+  ],
+  "server_high_watermark": "GGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGI",
+  "server_time": "2030-01-01T01:06:00Z"
+}
