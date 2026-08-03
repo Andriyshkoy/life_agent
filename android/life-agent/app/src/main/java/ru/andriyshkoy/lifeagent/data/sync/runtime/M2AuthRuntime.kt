@@ -124,8 +124,16 @@ internal sealed interface RefreshExchangeOutcome : AutoCloseable {
     }
 }
 
+/** Content-free readiness result checked before a durable refresh attempt. */
+internal enum class M2AuthRefreshTransportReadiness {
+    READY,
+    LOCAL_UNAVAILABLE,
+}
+
 /** Implementations take ownership of every secret argument on entry. */
 internal interface M2AuthExchangeBoundary {
+    suspend fun prepareRefreshTransport(): M2AuthRefreshTransportReadiness
+
     suspend fun enroll(
         binding: EnrollmentAttemptBinding,
         ownedEnrollmentCode: WipeableSecret,
@@ -418,7 +426,6 @@ internal class M2AuthRuntime internal constructor(
                     source = AuthAccessSource.VAULT,
                 )
             }
-            vault.revoke(currentKey)
             refresh(observed, now, currentKey)
         } finally {
             operationMutex.unlock()
@@ -432,6 +439,17 @@ internal class M2AuthRuntime internal constructor(
         now: Instant,
         predecessorKey: AccessTokenKey,
     ): M2AuthRuntimeResult {
+        val readiness = try {
+            exchange.prepareRefreshTransport()
+        } catch (error: CancellationException) {
+            throw error
+        } catch (_: Exception) {
+            return M2AuthRuntimeResult.LocalUnavailable
+        }
+        if (readiness == M2AuthRefreshTransportReadiness.LOCAL_UNAVAILABLE) {
+            return M2AuthRuntimeResult.LocalUnavailable
+        }
+        vault.revoke(predecessorKey)
         val requestId = uuidGenerator.next().toString()
         val binding = try {
             persistence.beginRefresh(

@@ -177,6 +177,20 @@ internal class RoomM2AuthPersistenceBoundary(
 internal class ProductionM2AuthExchangeBoundary(
     private val transportProvider: M2AuthHttpsTransportProvider,
 ) : M2AuthExchangeBoundary {
+    private val transport: OneShotAuthHttpsTransport by lazy(
+        LazyThreadSafetyMode.SYNCHRONIZED,
+        transportProvider::open,
+    )
+
+    override suspend fun prepareRefreshTransport(): M2AuthRefreshTransportReadiness = try {
+        transport
+        M2AuthRefreshTransportReadiness.READY
+    } catch (error: CancellationException) {
+        throw error
+    } catch (_: Exception) {
+        M2AuthRefreshTransportReadiness.LOCAL_UNAVAILABLE
+    }
+
     override suspend fun enroll(
         binding: EnrollmentAttemptBinding,
         ownedEnrollmentCode: WipeableSecret,
@@ -264,7 +278,7 @@ internal class ProductionM2AuthExchangeBoundary(
     private suspend fun execute(
         materialized: ru.andriyshkoy.lifeagent.data.sync.wire.MaterializedWireRequest,
     ): OneShotAuthHttpsOutcome? = try {
-        transportProvider.open().execute(materialized)
+        transport.execute(materialized)
     } catch (error: CancellationException) {
         throw error
     } catch (_: Exception) {

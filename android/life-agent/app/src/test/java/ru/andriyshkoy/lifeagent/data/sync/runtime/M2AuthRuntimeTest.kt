@@ -284,6 +284,61 @@ class M2AuthRuntimeTest {
     }
 
     @Test
+    fun productionRefreshConfigurationFailureStopsBeforeDurableClaim() = runTest {
+        val events = mutableListOf<String>()
+        val persistence = FakePersistence(events).apply {
+            access = activeAccess()
+            refreshFactory = { requestId, expected -> refreshBinding(requestId, expected) }
+        }
+        val credentials = FakeCredentials()
+        val vault = FakeVault(events)
+        var transportOpenCount = 0
+        val exchange = ProductionM2AuthExchangeBoundary(
+            M2AuthHttpsTransportProvider {
+                transportOpenCount += 1
+                throw IllegalArgumentException("synthetic malformed HTTPS configuration")
+            },
+        )
+
+        val result = runtime(persistence, credentials, exchange, vault).ensureAccess()
+
+        assertSame(M2AuthRuntimeResult.LocalUnavailable, result)
+        assertEquals(1, transportOpenCount)
+        assertEquals(0, persistence.beginRefreshCalls)
+        assertTrue(persistence.refreshUnknowns.isEmpty())
+        assertTrue(persistence.committedRefreshes.isEmpty())
+        assertTrue(vault.revokedKeys.isEmpty())
+        assertTrue(vault.revokedEpochs.isEmpty())
+        assertTrue(credentials.lastOpenedRefreshToken == null)
+    }
+
+    @Test
+    fun productionRefreshReadinessCancellationPrecedesDurableClaim() = runTest {
+        val events = mutableListOf<String>()
+        val persistence = FakePersistence(events).apply {
+            access = activeAccess()
+            refreshFactory = { requestId, expected -> refreshBinding(requestId, expected) }
+        }
+        val credentials = FakeCredentials()
+        val vault = FakeVault(events)
+        val cancellation = CancellationException("synthetic readiness cancellation")
+        val exchange = ProductionM2AuthExchangeBoundary(
+            M2AuthHttpsTransportProvider { throw cancellation },
+        )
+
+        val failure = runCatching {
+            runtime(persistence, credentials, exchange, vault).ensureAccess()
+        }.exceptionOrNull()
+
+        assertTrue(failure === cancellation)
+        assertEquals(0, persistence.beginRefreshCalls)
+        assertTrue(persistence.refreshUnknowns.isEmpty())
+        assertTrue(vault.revokedKeys.isEmpty())
+        assertTrue(vault.revokedEpochs.isEmpty())
+        assertTrue(credentials.lastOpenedRefreshToken == null)
+    }
+
+    @Test
     fun ambiguousRefreshIsQuarantinedWithoutAutomaticReplay() = runTest {
         val events = mutableListOf<String>()
         val observed = activeAccess()
@@ -768,6 +823,7 @@ class M2AuthRuntimeTest {
     }
 
     private class FakeExchange : M2AuthExchangeBoundary {
+        var refreshReadinessCalls = 0
         var enrollCalls = 0
         var refreshCalls = 0
         var lastRefreshResponse: RefreshSuccess? = null
@@ -783,6 +839,11 @@ class M2AuthRuntimeTest {
                 refreshToken.close()
                 RefreshExchangeOutcome.LocalFailure
             }
+
+        override suspend fun prepareRefreshTransport(): M2AuthRefreshTransportReadiness {
+            refreshReadinessCalls += 1
+            return M2AuthRefreshTransportReadiness.READY
+        }
 
         override suspend fun enroll(
             binding: EnrollmentAttemptBinding,
