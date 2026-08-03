@@ -55,7 +55,7 @@ class TokenGatedClaimApi35InstrumentedTest {
     }
 
     @Test
-    fun onlyExactCurrentGenerationTokenCanConsumeAnAttempt() = runBlocking {
+    fun onlyExactCurrentGenerationTokenCanConsumeAnAttempt() = runBlocking<Unit> {
         fixture.seedIdentity(
             deviceId = SyncM2PersistenceFixture.DEVICE_ID,
             personId = SyncM2PersistenceFixture.PERSON_ID,
