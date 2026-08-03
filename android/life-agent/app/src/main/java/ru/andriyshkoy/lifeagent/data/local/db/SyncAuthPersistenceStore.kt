@@ -1101,42 +1101,100 @@ class SyncAuthPersistenceStore(
                 )
                 recovered += 1
             }
-            transportDao.findWaitingRefreshRequests()
-                .groupBy {
+            val waitingSnapshots = transportDao.findWaitingRefreshAuthoritySnapshots()
+            check(waitingSnapshots.all { it.hasCanonicalWaitingShape }) {
+                "Waiting-refresh recovery found ambiguous body-free metadata"
+            }
+            val recoveredAtEpochMs = Instant.parse(updatedAtUtc).toEpochMilli()
+            waitingSnapshots
+                .groupBy { snapshot ->
                     Triple(
-                        it.credentialEpochId,
-                        it.deviceId,
-                        checkNotNull(it.accessGenerationUsed),
+                        checkNotNull(snapshot.credentialEpochId),
+                        checkNotNull(snapshot.deviceId),
+                        checkNotNull(snapshot.accessGenerationUsed),
                     )
                 }
-                .forEach { (binding, _) ->
+                .forEach { (binding, snapshots) ->
                     val (epoch, device, generation) = binding
                     val installed = authDao.findState()
-                    if (
-                        installed?.credentialEpochId == epoch &&
-                        installed.deviceId == device &&
-                        installed.generation == generation &&
-                        installed.state in setOf(ACTIVE, REFRESH_IN_FLIGHT)
-                    ) {
-                        check(
-                            authDao.quarantine(
+                    val identity = identityDao.findIdentity()
+                    val exactIdentity = installed != null &&
+                        identity != null &&
+                        installed.installationId == identity.installationId &&
+                        installed.localOwnerId == identity.localOwnerId &&
+                        identity.serverDeviceId == installed.deviceId &&
+                        identity.serverPersonId == installed.personId
+                    val sameInstalledFamily = exactIdentity &&
+                        installed.credentialEpochId == epoch &&
+                        installed.deviceId == device
+                    val activeRefreshAuthority = sameInstalledFamily &&
+                        installed.state == ACTIVE &&
+                        installed.refreshExpiresAtEpochMs > recoveredAtEpochMs &&
+                        installed.familyExpiresAtEpochMs > recoveredAtEpochMs
+                    val installedGeneration = installed?.generation
+
+                    when {
+                        activeRefreshAuthority && installedGeneration == generation -> {
+                            // A trusted 401 committed before any refresh claim is
+                            // replay-safe durable evidence, not an ambiguous auth
+                            // attempt. Leave it for the planner to call ensureAccess.
+                        }
+
+                        activeRefreshAuthority &&
+                            installedGeneration == generation + 1 -> {
+                            val released =
+                                transportDao.releaseExactWaitingRefreshRequests(
+                                    credentialEpochId = epoch,
+                                    deviceId = device,
+                                    failedAccessGeneration = generation,
+                                    successorGeneration =
+                                        checkNotNull(installedGeneration),
+                                    nextAttemptAtEpochMs = recoveredAtEpochMs,
+                                    updatedAtUtc = updatedAtUtc,
+                                )
+                            val expired = transportDao.failExactWaitingRefreshRequests(
                                 credentialEpochId = epoch,
-                                generation = generation,
-                                expectedState = installed.state,
-                                newState = QUARANTINED,
-                                updatedAtUtc = updatedAtUtc,
+                                deviceId = device,
+                                failedAccessGeneration = generation,
+                                terminalAtUtc = updatedAtUtc,
+                                failureCode = "credential_recovery_expired",
+                            )
+                            check(released + expired == snapshots.size) {
+                                "Advanced credential recovery lost waiting-row authority"
+                            }
+                            recovered += 1
+                        }
+
+                        else -> {
+                            if (
+                                sameInstalledFamily &&
+                                installedGeneration == generation &&
+                                installed.state in setOf(ACTIVE, REFRESH_IN_FLIGHT)
+                            ) {
+                                check(
+                                    authDao.quarantine(
+                                        credentialEpochId = epoch,
+                                        generation = generation,
+                                        expectedState = installed.state,
+                                        newState = QUARANTINED,
+                                        updatedAtUtc = updatedAtUtc,
+                                        failureCode = "orphan_waiting_refresh",
+                                    ) == 1,
+                                )
+                            }
+                            val failed = transportDao.failExactWaitingRefreshRequests(
+                                credentialEpochId = epoch,
+                                deviceId = device,
+                                failedAccessGeneration = generation,
+                                terminalAtUtc = updatedAtUtc,
                                 failureCode = "orphan_waiting_refresh",
-                            ) == 1,
-                        )
+                            )
+                            check(failed == snapshots.size) {
+                                "Orphan waiting-refresh recovery lost exact row authority"
+                            }
+                            recovered += 1
+                        }
                     }
-                    transportDao.failExactWaitingRefreshRequests(
-                        credentialEpochId = epoch,
-                        deviceId = device,
-                        failedAccessGeneration = generation,
-                        terminalAtUtc = updatedAtUtc,
-                        failureCode = "orphan_waiting_refresh",
-                    )
-                    recovered += 1
                 }
             InterruptedAuthRecoveryResult(
                 recoveredCount = recovered,

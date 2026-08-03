@@ -6,6 +6,7 @@ import java.time.Instant
 import ru.andriyshkoy.lifeagent.core.id.RandomUuidGenerator
 import ru.andriyshkoy.lifeagent.core.id.UuidGenerator
 import ru.andriyshkoy.lifeagent.data.local.db.dao.SyncRunnableRequestCandidate
+import ru.andriyshkoy.lifeagent.data.local.db.dao.SyncWaitingRefreshAuthoritySnapshot
 import ru.andriyshkoy.lifeagent.data.local.db.entity.SyncAuthStateEntity
 import ru.andriyshkoy.lifeagent.data.local.db.entity.SyncBootstrapSessionEntity
 import ru.andriyshkoy.lifeagent.data.local.db.entity.SyncHttpRequestEntity
@@ -152,6 +153,12 @@ internal class ProtectedSyncRequestPlanningFacade(
             val activeSession = replicaDao.findBootstrapSessionWithActiveSlot()
             val authClass = classifyAuth(auth, nowEpochMs)
             val streamClass = classifyStream(auth, stream)
+            val waitingRefresh = classifyWaitingRefreshAuthority(
+                auth = auth,
+                authClass = authClass,
+                snapshots = transportDao.findWaitingRefreshAuthoritySnapshots(),
+                nowEpochMs = nowEpochMs,
+            )
             val retainedKinds = candidates.mapNotNull { candidate ->
                 candidate.endpointId.toRequestKindOrNull()
             }.toSet()
@@ -168,15 +175,22 @@ internal class ProtectedSyncRequestPlanningFacade(
                     DurableSyncPlannerStream.INCREMENTAL_WITH_CURSOR,
                     DurableSyncPlannerStream.INCREMENTAL_WITHOUT_CURSOR,
                 ) &&
-                outboxDao.actionableForBatch(1).isNotEmpty()
+                (
+                    outboxDao.actionableForBatch(1).isNotEmpty() ||
+                        outboxDao.awaitingWireMaterialization(1).isNotEmpty()
+                )
             val snapshot = DurableSyncRequestPlanningSnapshot(
                 auth = authClass,
                 stream = streamClass,
                 activeBootstrapSessionPresent = activeSession != null,
                 actionableOutboxPresent = actionableOutboxPresent,
                 retainedExistingRequests = retainedKinds,
+                currentAuthorityWaitingRefreshPresent =
+                    waitingRefresh.exactCurrentAuthorityPresent,
+                waitingRefreshMetadataAmbiguous = waitingRefresh.ambiguous,
                 otherOpenRequestBlocksCreation =
-                    openRequestCount > candidates.size.toLong() ||
+                    openRequestCount >
+                    candidates.size.toLong() + waitingRefresh.coveredOpenRowCount ||
                     enrollmentBlocksCreation,
             )
             val plan = DurableSyncRequestPlanningPolicy.decide(snapshot)
@@ -363,6 +377,45 @@ internal class ProtectedSyncRequestPlanningFacade(
         }
     }
 
+    private fun classifyWaitingRefreshAuthority(
+        auth: SyncAuthStateEntity?,
+        authClass: DurableSyncPlannerAuth,
+        snapshots: List<SyncWaitingRefreshAuthoritySnapshot>,
+        nowEpochMs: Long,
+    ): WaitingRefreshPlanningClassification {
+        if (snapshots.isEmpty()) return WaitingRefreshPlanningClassification.NONE
+        val exactCurrent = auth != null &&
+            auth.state == "active" &&
+            authClass in setOf(
+                DurableSyncPlannerAuth.ACTIVE_CURRENT,
+                DurableSyncPlannerAuth.REFRESH_REQUIRED,
+            ) &&
+            auth.refreshExpiresAtEpochMs > nowEpochMs &&
+            auth.familyExpiresAtEpochMs > nowEpochMs &&
+            snapshots.all { snapshot ->
+                snapshot.hasCanonicalWaitingShape &&
+                    snapshot.credentialEpochId == auth.credentialEpochId &&
+                    snapshot.deviceId == auth.deviceId &&
+                    snapshot.accessGenerationUsed == auth.generation &&
+                    checkNotNull(snapshot.attemptCount) <
+                    checkNotNull(snapshot.attemptBudget) &&
+                    checkNotNull(snapshot.deadlineAtEpochMs) > nowEpochMs
+            }
+        return if (exactCurrent) {
+            WaitingRefreshPlanningClassification(
+                exactCurrentAuthorityPresent = true,
+                ambiguous = false,
+                coveredOpenRowCount = snapshots.size.toLong(),
+            )
+        } else {
+            WaitingRefreshPlanningClassification(
+                exactCurrentAuthorityPresent = false,
+                ambiguous = true,
+                coveredOpenRowCount = 0,
+            )
+        }
+    }
+
     private suspend fun hasConflictingEnrollment(auth: SyncAuthStateEntity): Boolean =
         authDao.findAttempts(
             endpointId = M2Endpoint.AUTH_ENROLL.endpointId,
@@ -419,6 +472,26 @@ internal class ProtectedSyncRequestPlanningFacade(
 
     private companion object {
         const val MAX_PLANNING_CANDIDATES = 8
+    }
+}
+
+private data class WaitingRefreshPlanningClassification(
+    val exactCurrentAuthorityPresent: Boolean,
+    val ambiguous: Boolean,
+    val coveredOpenRowCount: Long,
+) {
+    init {
+        require(coveredOpenRowCount >= 0)
+        require(!exactCurrentAuthorityPresent || !ambiguous)
+        require(exactCurrentAuthorityPresent || coveredOpenRowCount == 0L)
+    }
+
+    companion object {
+        val NONE = WaitingRefreshPlanningClassification(
+            exactCurrentAuthorityPresent = false,
+            ambiguous = false,
+            coveredOpenRowCount = 0,
+        )
     }
 }
 

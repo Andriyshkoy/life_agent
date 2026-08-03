@@ -39,6 +39,14 @@ class DurableRequestBoundaryArchitectureTest {
             allowedPaths = setOf(TRANSPORT_DAO),
         )
         assertOnlyAllowedMainCallSites(
+            token = "verifyAndClaimForDispatch(",
+            allowedPaths = setOf(PROTECTED_STORE, PROTECTED_RESPONSE_STORE),
+        )
+        assertOnlyAllowedMainMatches(
+            pattern = Regex("""\bProtectedDispatchRequestClaim\b"""),
+            allowedPaths = setOf(PROTECTED_STORE, PROTECTED_RESPONSE_STORE),
+        )
+        assertOnlyAllowedMainCallSites(
             token = "findRunnableRequests(",
             allowedPaths = setOf(TRANSPORT_DAO),
         )
@@ -55,8 +63,12 @@ class DurableRequestBoundaryArchitectureTest {
             allowedPaths = setOf(PROTECTED_STORE, TRANSPORT_DAO),
         )
         assertOnlyAllowedMainCallSites(
-            token = "findWaitingRefreshRequests(",
-            allowedPaths = setOf(AUTH_STORE, TRANSPORT_DAO),
+            token = "findWaitingRefreshAuthoritySnapshots(",
+            allowedPaths = setOf(
+                AUTH_STORE,
+                PROTECTED_PLANNING_FACADE,
+                TRANSPORT_DAO,
+            ),
         )
         assertOnlyAllowedMainCallSites(
             token = "findRequestsNeedingLocalTerminalization(",
@@ -196,10 +208,7 @@ class DurableRequestBoundaryArchitectureTest {
         )
         assertOnlyAllowedMainMatches(
             pattern = Regex("""\bProductionM2HttpsTransportFactory\b"""),
-            allowedPaths = setOf(
-                EXACT_HTTPS_CONFIGURATION,
-                M2_AUTH_RUNTIME_PRODUCTION,
-            ),
+            allowedPaths = setOf(EXACT_HTTPS_CONFIGURATION),
         )
         assertOnlyAllowedMainMatches(
             pattern = Regex("""\bM2HttpsConfiguration\b"""),
@@ -223,6 +232,7 @@ class DurableRequestBoundaryArchitectureTest {
         )
 
         val factorySource = File(mainSourceRoot(), EXACT_HTTPS_CONFIGURATION).readText()
+        assertFalse(factorySource.contains("fun createAuth("))
         assertSourceTokenCount(
             source = factorySource,
             token = "createPinnedTransport { configuration, client ->",

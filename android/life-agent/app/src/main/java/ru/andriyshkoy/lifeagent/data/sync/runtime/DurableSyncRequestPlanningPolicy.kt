@@ -41,6 +41,10 @@ internal enum class DurableSyncRequestKind {
  * route classes, never request rows or identifiers. A scheduled retry, active
  * lease or waiting-refresh request that cannot yet be selected is represented
  * by [otherOpenRequestBlocksCreation], preventing duplicate durable intents.
+ * [currentAuthorityWaitingRefreshPresent] is narrower: every projected waiter
+ * must be canonical, live, and bound to the exact active credential family.
+ * Any malformed or mixed waiting-refresh projection is represented by
+ * [waitingRefreshMetadataAmbiguous] and fails closed before auth or network.
  */
 internal class DurableSyncRequestPlanningSnapshot(
     val auth: DurableSyncPlannerAuth,
@@ -48,10 +52,30 @@ internal class DurableSyncRequestPlanningSnapshot(
     val activeBootstrapSessionPresent: Boolean,
     val actionableOutboxPresent: Boolean,
     retainedExistingRequests: Set<DurableSyncRequestKind> = emptySet(),
+    val currentAuthorityWaitingRefreshPresent: Boolean = false,
+    val waitingRefreshMetadataAmbiguous: Boolean = false,
     val otherOpenRequestBlocksCreation: Boolean = false,
 ) {
     val retainedExistingRequests: Set<DurableSyncRequestKind> =
         retainedExistingRequests.toSet()
+
+    init {
+        require(
+            !currentAuthorityWaitingRefreshPresent ||
+                !waitingRefreshMetadataAmbiguous,
+        ) {
+            "Waiting-refresh authority cannot be both exact and ambiguous"
+        }
+        require(
+            !currentAuthorityWaitingRefreshPresent ||
+                auth in setOf(
+                    DurableSyncPlannerAuth.ACTIVE_CURRENT,
+                    DurableSyncPlannerAuth.REFRESH_REQUIRED,
+                ),
+        ) {
+            "Waiting-refresh evidence must bind usable current auth"
+        }
+    }
 
     override fun toString(): String =
         "DurableSyncRequestPlanningSnapshot(" +
@@ -114,24 +138,40 @@ internal sealed interface DurableSyncRequestPlan {
 /**
  * Pure ordering policy used by the synchronous M2 coordinator.
  *
- * Existing durable authority always wins, in revoke -> bootstrap -> push ->
- * pull order. New work is planned only with current active credentials and no
- * unresolved open request. Bootstrap blocks incremental work. In incremental
- * mode actionable outbox work precedes pull; an in-progress pull is continued
- * before starting a new push batch.
+ * Existing durable authority wins in revoke -> refresh -> bootstrap -> push ->
+ * pull order. A refresh can be authorized either by expired current access or
+ * by exact body-free waiting-refresh evidence. Ambiguous waiting metadata
+ * fails closed before any auth attempt or network work. New work is planned
+ * only with current active credentials and no unresolved open request.
  */
 internal object DurableSyncRequestPlanningPolicy {
-    private val retainedPriority = listOf(
-        DurableSyncRequestKind.REVOKE,
+    private val retainedSyncPriority = listOf(
         DurableSyncRequestKind.BOOTSTRAP,
         DurableSyncRequestKind.PUSH,
         DurableSyncRequestKind.PULL,
     )
 
     fun decide(snapshot: DurableSyncRequestPlanningSnapshot): DurableSyncRequestPlan {
-        retainedPriority.firstOrNull(snapshot.retainedExistingRequests::contains)?.let {
-            return DurableSyncRequestPlan.RetainExisting(it)
+        if (DurableSyncRequestKind.REVOKE in snapshot.retainedExistingRequests) {
+            return DurableSyncRequestPlan.RetainExisting(DurableSyncRequestKind.REVOKE)
         }
+        if (snapshot.waitingRefreshMetadataAmbiguous) {
+            return noRequest(DurableSyncNoRequestReason.OPEN_REQUEST_REQUIRES_RECOVERY)
+        }
+        if (
+            snapshot.auth == DurableSyncPlannerAuth.REFRESH_REQUIRED ||
+            (
+                snapshot.auth == DurableSyncPlannerAuth.ACTIVE_CURRENT &&
+                    snapshot.currentAuthorityWaitingRefreshPresent
+                )
+        ) {
+            return noRequest(DurableSyncNoRequestReason.REFRESH_REQUIRED)
+        }
+        retainedSyncPriority
+            .firstOrNull(snapshot.retainedExistingRequests::contains)
+            ?.let {
+                return DurableSyncRequestPlan.RetainExisting(it)
+            }
         if (snapshot.otherOpenRequestBlocksCreation) {
             return noRequest(DurableSyncNoRequestReason.OPEN_REQUEST_REQUIRES_RECOVERY)
         }

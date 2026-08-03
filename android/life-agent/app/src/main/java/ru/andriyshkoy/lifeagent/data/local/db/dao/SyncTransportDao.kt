@@ -132,6 +132,34 @@ data class SyncRunnableRequestCandidate(
 }
 
 /**
+ * Body-free durable evidence that one sync request is waiting for credential
+ * recovery. Every value is projected through a SQLite storage-class guard so
+ * malformed rows cannot hydrate request bodies or authorize network work.
+ */
+data class SyncWaitingRefreshAuthoritySnapshot(
+    @ColumnInfo(name = "endpoint_id_safe")
+    val endpointId: String?,
+    @ColumnInfo(name = "credential_epoch_id_safe")
+    val credentialEpochId: String?,
+    @ColumnInfo(name = "device_id_safe")
+    val deviceId: String?,
+    @ColumnInfo(name = "access_generation_used_safe")
+    val accessGenerationUsed: Long?,
+    @ColumnInfo(name = "attempt_count_safe")
+    val attemptCount: Long?,
+    @ColumnInfo(name = "attempt_budget_safe")
+    val attemptBudget: Long?,
+    @ColumnInfo(name = "deadline_at_epoch_ms_safe")
+    val deadlineAtEpochMs: Long?,
+    @ColumnInfo(name = "has_canonical_waiting_shape")
+    val hasCanonicalWaitingShape: Boolean,
+) {
+    override fun toString(): String =
+        "SyncWaitingRefreshAuthoritySnapshot(" +
+            "canonical=$hasCanonicalWaitingShape,redacted=true)"
+}
+
+/**
  * Body-blind response-routing metadata projected without trusting SQLite's
  * dynamic storage classes.
  *
@@ -1292,12 +1320,70 @@ interface SyncTransportDao {
 
     @Query(
         """
-        SELECT * FROM sync_http_request
-        WHERE state = 'waiting_refresh'
-        ORDER BY credential_epoch_id, access_generation_used, created_at_utc
+        SELECT
+          CASE WHEN typeof(endpoint_id) = 'text'
+            THEN endpoint_id ELSE NULL END AS endpoint_id_safe,
+          CASE WHEN typeof(credential_epoch_id) = 'text'
+            THEN credential_epoch_id ELSE NULL END AS credential_epoch_id_safe,
+          CASE WHEN typeof(device_id) = 'text'
+            THEN device_id ELSE NULL END AS device_id_safe,
+          CASE WHEN typeof(access_generation_used) = 'integer'
+            THEN access_generation_used ELSE NULL END AS access_generation_used_safe,
+          CASE WHEN typeof(attempt_count) = 'integer'
+            THEN attempt_count ELSE NULL END AS attempt_count_safe,
+          CASE WHEN typeof(attempt_budget) = 'integer'
+            THEN attempt_budget ELSE NULL END AS attempt_budget_safe,
+          CASE WHEN typeof(deadline_at_epoch_ms) = 'integer'
+            THEN deadline_at_epoch_ms ELSE NULL END AS deadline_at_epoch_ms_safe,
+          CASE WHEN
+            typeof(endpoint_id) = 'text'
+            AND endpoint_id IN ('sync_push', 'sync_bootstrap', 'sync_pull')
+            AND typeof(credential_epoch_id) = 'text'
+            AND length(trim(credential_epoch_id)) > 0
+            AND typeof(device_id) = 'text'
+            AND length(trim(device_id)) > 0
+            AND typeof(state) = 'text'
+            AND state = 'waiting_refresh'
+            AND typeof(access_generation_used) = 'integer'
+            AND access_generation_used > 0
+            AND typeof(attempt_count) = 'integer'
+            AND attempt_count >= 1
+            AND attempt_count <= 2147483647
+            AND typeof(attempt_budget) = 'integer'
+            AND attempt_budget > 0
+            AND attempt_budget <= 2147483647
+            AND attempt_count < attempt_budget
+            AND typeof(deadline_at_epoch_ms) = 'integer'
+            AND deadline_at_epoch_ms > 0
+            AND typeof(refresh_attempted) = 'integer'
+            AND refresh_attempted = 1
+            AND typeof(original_retry_count) = 'integer'
+            AND original_retry_count = 0
+            AND typeof(next_attempt_at_epoch_ms) = 'null'
+            AND typeof(lease_expires_at_epoch_ms) = 'null'
+            AND typeof(active_attempt_id) = 'null'
+            AND typeof(terminal_http_status) = 'null'
+            AND typeof(exact_response_body) = 'null'
+            AND typeof(response_sha256) = 'null'
+            AND typeof(terminal_at_utc) = 'null'
+            AND typeof(terminal_error_code) = 'text'
+            AND terminal_error_code = 'credential_recovery_pending'
+            AND typeof(created_at_utc) = 'text'
+            AND typeof(updated_at_utc) = 'text'
+            THEN 1 ELSE 0
+          END AS has_canonical_waiting_shape
+        FROM sync_http_request
+        WHERE typeof(state) = 'text'
+          AND state = 'waiting_refresh'
+        ORDER BY
+          endpoint_id_safe,
+          credential_epoch_id_safe,
+          device_id_safe,
+          access_generation_used_safe
         """,
     )
-    suspend fun findWaitingRefreshRequests(): List<SyncHttpRequestEntity>
+    suspend fun findWaitingRefreshAuthoritySnapshots():
+        List<SyncWaitingRefreshAuthoritySnapshot>
 
     @Insert(onConflict = OnConflictStrategy.ABORT)
     suspend fun insertRequest(entity: SyncHttpRequestEntity)

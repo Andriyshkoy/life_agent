@@ -3,8 +3,10 @@ package ru.andriyshkoy.lifeagent.data.local.db
 import android.content.Context
 import androidx.room.withTransaction
 import java.security.MessageDigest
+import java.time.Clock
 import java.time.Instant
 import kotlinx.coroutines.CancellationException
+import ru.andriyshkoy.lifeagent.data.local.db.dao.SyncRunnableRequestCandidate
 import ru.andriyshkoy.lifeagent.data.local.db.entity.SyncBootstrapSessionEntity
 import ru.andriyshkoy.lifeagent.data.local.db.entity.SyncHttpRequestEntity
 import ru.andriyshkoy.lifeagent.data.local.db.entity.SyncPageReceiptEntity
@@ -17,10 +19,14 @@ import ru.andriyshkoy.lifeagent.data.security.RequestBodyKeyUnavailableException
 import ru.andriyshkoy.lifeagent.data.security.RequestBodyMetadataInvalidException
 import ru.andriyshkoy.lifeagent.data.security.SensitivePayloadIntegrityException
 import ru.andriyshkoy.lifeagent.data.security.VerifiedDurableRequest
+import ru.andriyshkoy.lifeagent.data.sync.runtime.AccessTokenVault
 import ru.andriyshkoy.lifeagent.data.sync.transport.ExactHttpsNetworkFailure
 import ru.andriyshkoy.lifeagent.data.sync.transport.ExactHttpsNetworkFailureKind
+import ru.andriyshkoy.lifeagent.data.sync.transport.ExactHttpsOutcome
 import ru.andriyshkoy.lifeagent.data.sync.transport.ExactHttpsProtocolFailure
 import ru.andriyshkoy.lifeagent.data.sync.transport.ExactHttpsRawResponse
+import ru.andriyshkoy.lifeagent.data.sync.transport.LazyProductionM2HttpsTransportBundle
+import ru.andriyshkoy.lifeagent.data.sync.wire.WipeableSecret
 import ru.andriyshkoy.lifeagent.data.sync.wire.ApiErrorCode
 import ru.andriyshkoy.lifeagent.data.sync.wire.BootstrapApiErrorExpectation
 import ru.andriyshkoy.lifeagent.data.sync.wire.BootstrapRequest
@@ -40,6 +46,215 @@ import ru.andriyshkoy.lifeagent.data.sync.wire.WireApiError
 import ru.andriyshkoy.lifeagent.data.sync.wire.WireReplicaPersistenceMapper
 import ru.andriyshkoy.lifeagent.data.sync.wire.WireRequestCodec
 import ru.andriyshkoy.lifeagent.data.sync.wire.WireResponseCodec
+
+/**
+ * Closed production dispatch surface for one body-free durable candidate.
+ *
+ * Callers provide scheduling metadata only. Exact request bytes, bearer
+ * authority, transport outcomes and response bodies never cross this port.
+ */
+internal fun interface ProtectedDurableDispatchPort {
+    suspend fun dispatch(
+        candidate: SyncRunnableRequestCandidate,
+        attemptId: String,
+        attemptedAtUtc: String,
+        leaseExpiresAtEpochMs: Long,
+    ): ProtectedDurableDispatchResult
+}
+
+/** Content-free coordinator disposition; no implementation carries identifiers. */
+internal enum class ProtectedDurableDispatchResult {
+    PROGRESSED,
+    PULL_CONTINUATION_READY,
+    PULL_CYCLE_COMPLETE,
+    RETRY_LATER,
+    USER_ACTION_REQUIRED,
+    NO_PROGRESS,
+}
+
+/**
+ * Creates the production bridge without opening the pinned client or touching
+ * Room/Keystore. The lazy bundle is opened only for an actual dispatch call.
+ */
+internal fun createProductionProtectedDurableDispatchPort(
+    context: Context,
+    database: LifeAgentDatabase,
+    bootstrapIntents: ProtectedBootstrapIntentBoundary,
+    accessTokenVault: AccessTokenVault,
+    transports: LazyProductionM2HttpsTransportBundle =
+        LazyProductionM2HttpsTransportBundle(),
+    responseStore: ProtectedSyncResponseStore = ProtectedSyncResponseStore(
+        context = context,
+        database = database,
+        bootstrapIntents = bootstrapIntents,
+    ),
+    completionClock: Clock = Clock.systemUTC(),
+): ProtectedDurableDispatchPort {
+    val requests = ProtectedSyncRequestStore(context, database)
+    return ProductionProtectedDurableDispatchPort(
+        exchangeProvider = {
+            val exact = transports.open().exact
+            ProtectedDurableExactExchange { claim, bearer ->
+                exact.execute(claim, bearer)
+            }
+        },
+        claims = ProtectedDurableDispatchClaimBoundary { candidate, attemptId,
+                attemptedAtEpochMs, leaseExpiresAtEpochMs, attemptedAtUtc ->
+            requests.verifyAndClaimForDispatch(
+                endpointId = candidate.endpointId,
+                requestIdentity = candidate.requestIdentity,
+                attemptId = attemptId,
+                attemptedAtEpochMs = attemptedAtEpochMs,
+                leaseExpiresAtEpochMs = leaseExpiresAtEpochMs,
+                updatedAtUtc = attemptedAtUtc,
+                accessTokenVault = accessTokenVault,
+            )
+        },
+        responses = object : ProtectedDurableDispatchResponseBoundary {
+            override suspend fun reduce(
+                outcome: ExactHttpsNetworkFailure,
+                terminalAtUtc: String,
+            ): ProtectedResponseDisposition =
+                responseStore.reduceRetryableFailure(outcome, terminalAtUtc)
+
+            override suspend fun reduce(
+                outcome: ExactHttpsProtocolFailure,
+                terminalAtUtc: String,
+            ): ProtectedResponseDisposition =
+                responseStore.reduceProtocolFailure(outcome, terminalAtUtc)
+
+            override suspend fun reduce(
+                outcome: ExactHttpsRawResponse,
+                terminalAtUtc: String,
+            ): ProtectedResponseDisposition =
+                responseStore.reduceRawResponse(outcome, terminalAtUtc)
+        },
+        accessTokenVault = accessTokenVault,
+        completionClock = completionClock,
+    )
+}
+
+/**
+ * Owns the complete exact dispatch lifecycle, including every close/wipe path.
+ * Network readiness is resolved before the protected attempt CAS so missing
+ * configuration cannot consume a durable attempt.
+ */
+internal class ProductionProtectedDurableDispatchPort internal constructor(
+    private val exchangeProvider: () -> ProtectedDurableExactExchange?,
+    private val claims: ProtectedDurableDispatchClaimBoundary,
+    private val responses: ProtectedDurableDispatchResponseBoundary,
+    private val accessTokenVault: AccessTokenVault,
+    private val completionClock: Clock,
+) : ProtectedDurableDispatchPort {
+    override suspend fun dispatch(
+        candidate: SyncRunnableRequestCandidate,
+        attemptId: String,
+        attemptedAtUtc: String,
+        leaseExpiresAtEpochMs: Long,
+    ): ProtectedDurableDispatchResult {
+        val attemptedAt = requireValidDispatchAttempt(
+            candidate = candidate,
+            attemptId = attemptId,
+            attemptedAtUtc = attemptedAtUtc,
+            leaseExpiresAtEpochMs = leaseExpiresAtEpochMs,
+        )
+        val exchange = try {
+            exchangeProvider()
+        } catch (error: CancellationException) {
+            throw error
+        } catch (_: Exception) {
+            null
+        } ?: return ProtectedDurableDispatchResult.USER_ACTION_REQUIRED
+
+        return when (
+            val claim = claims.claim(
+                candidate = candidate,
+                attemptId = attemptId,
+                attemptedAtEpochMs = attemptedAt.toEpochMilli(),
+                leaseExpiresAtEpochMs = leaseExpiresAtEpochMs,
+                attemptedAtUtc = attemptedAtUtc,
+            )
+        ) {
+            is ProtectedDispatchRequestClaim.Claimed -> claim.use {
+                exchangeClaimed(candidate, attemptedAt, exchange, claim)
+            }
+
+            is ProtectedDispatchRequestClaim.IntegrityFailure ->
+                ProtectedDurableDispatchResult.USER_ACTION_REQUIRED
+
+            ProtectedDispatchRequestClaim.NotClaimed ->
+                ProtectedDurableDispatchResult.NO_PROGRESS
+        }
+    }
+
+    private suspend fun exchangeClaimed(
+        candidate: SyncRunnableRequestCandidate,
+        attemptedAt: Instant,
+        exchange: ProtectedDurableExactExchange,
+        claim: ProtectedDispatchRequestClaim.Claimed,
+    ): ProtectedDurableDispatchResult {
+        val accessTokenKey = claim.accessTokenClaim?.key
+        val outcome = exchange.execute(
+            claim = claim.requestClaim,
+            bearerAccessToken = claim.accessTokenClaim?.bearerAccessToken,
+        )
+        val disposition = outcome.use {
+            val completedAt = completionClock.instant().let { now ->
+                if (now.isBefore(attemptedAt)) attemptedAt else now
+            }.toString()
+            when (outcome) {
+                is ExactHttpsNetworkFailure -> responses.reduce(outcome, completedAt)
+                is ExactHttpsProtocolFailure -> responses.reduce(outcome, completedAt)
+                is ExactHttpsRawResponse -> responses.reduce(outcome, completedAt)
+            }
+        }
+        if (disposition == ProtectedResponseDisposition.REFRESH_REQUIRED) {
+            accessTokenVault.revoke(
+                checkNotNull(accessTokenKey) {
+                    "Trusted unauthorized response lost exact bearer authority"
+                },
+            )
+        }
+        return disposition.toDispatchResult(candidate.endpointId)
+    }
+
+    override fun toString(): String =
+        "ProductionProtectedDurableDispatchPort(redacted=true)"
+}
+
+internal fun interface ProtectedDurableExactExchange {
+    suspend fun execute(
+        claim: ProtectedRequestClaim.Claimed,
+        bearerAccessToken: WipeableSecret?,
+    ): ExactHttpsOutcome
+}
+
+internal fun interface ProtectedDurableDispatchClaimBoundary {
+    suspend fun claim(
+        candidate: SyncRunnableRequestCandidate,
+        attemptId: String,
+        attemptedAtEpochMs: Long,
+        leaseExpiresAtEpochMs: Long,
+        attemptedAtUtc: String,
+    ): ProtectedDispatchRequestClaim
+}
+
+internal interface ProtectedDurableDispatchResponseBoundary {
+    suspend fun reduce(
+        outcome: ExactHttpsNetworkFailure,
+        terminalAtUtc: String,
+    ): ProtectedResponseDisposition
+
+    suspend fun reduce(
+        outcome: ExactHttpsProtocolFailure,
+        terminalAtUtc: String,
+    ): ProtectedResponseDisposition
+
+    suspend fun reduce(
+        outcome: ExactHttpsRawResponse,
+        terminalAtUtc: String,
+    ): ProtectedResponseDisposition
+}
 
 /**
  * The only Room boundary allowed to reduce a response for a claimed durable
@@ -385,7 +600,11 @@ internal class ProtectedSyncResponseStore(
                     command.receipt,
                     command.changes,
                 )
-                ProtectedResponseDisposition.COMMITTED
+                if (command.receipt.completeOrHasMore) {
+                    ProtectedResponseDisposition.PULL_CONTINUATION_READY
+                } else {
+                    ProtectedResponseDisposition.PULL_CYCLE_COMPLETE
+                }
             }
 
             is ProtectedResponseCommand.BootstrapCursorExpired -> {
@@ -1399,6 +1618,8 @@ internal interface ProtectedBootstrapIntentBoundary {
 
 internal enum class ProtectedResponseDisposition {
     COMMITTED,
+    PULL_CONTINUATION_READY,
+    PULL_CYCLE_COMPLETE,
     EXACT_REPLAY,
     STALE_CALLBACK,
     SUPERSEDED,
@@ -1407,6 +1628,77 @@ internal enum class ProtectedResponseDisposition {
     RETRY_EXHAUSTED,
     REFRESH_REQUIRED,
 }
+
+private fun requireValidDispatchAttempt(
+    candidate: SyncRunnableRequestCandidate,
+    attemptId: String,
+    attemptedAtUtc: String,
+    leaseExpiresAtEpochMs: Long,
+): Instant {
+    val endpoint = requireNotNull(M2Endpoint.fromId(candidate.endpointId)) {
+        "Durable dispatch endpoint is unknown"
+    }
+    require(endpoint.durableExactReplay) {
+        "Protected durable dispatch accepts exact-replay endpoints only"
+    }
+    val attemptedAt = Instant.parse(attemptedAtUtc)
+    val attemptedAtEpochMs = attemptedAt.toEpochMilli()
+    require(attemptId.isNotBlank()) { "Dispatch attempt id must not be blank" }
+    require(attemptedAtEpochMs > 0) { "Dispatch attempt time must be positive" }
+    require(leaseExpiresAtEpochMs > attemptedAtEpochMs) {
+        "Dispatch lease must end after its attempt starts"
+    }
+    require(leaseExpiresAtEpochMs <= candidate.deadlineAtEpochMs) {
+        "Dispatch lease cannot exceed the durable request deadline"
+    }
+    return attemptedAt
+}
+
+private fun ProtectedResponseDisposition.toDispatchResult(
+    endpointId: String,
+): ProtectedDurableDispatchResult = when (this) {
+    ProtectedResponseDisposition.COMMITTED ->
+        endpointId.authoritativeFollowUpResult()
+
+    ProtectedResponseDisposition.PULL_CONTINUATION_READY -> {
+        check(endpointId == M2Endpoint.SYNC_PULL.endpointId) {
+            "Pull continuation disposition belongs to a non-pull endpoint"
+        }
+        ProtectedDurableDispatchResult.PULL_CONTINUATION_READY
+    }
+
+    ProtectedResponseDisposition.PULL_CYCLE_COMPLETE -> {
+        check(endpointId == M2Endpoint.SYNC_PULL.endpointId) {
+            "Pull completion disposition belongs to a non-pull endpoint"
+        }
+        ProtectedDurableDispatchResult.PULL_CYCLE_COMPLETE
+    }
+
+    ProtectedResponseDisposition.EXACT_REPLAY,
+    ProtectedResponseDisposition.SUPERSEDED,
+    ProtectedResponseDisposition.REFRESH_REQUIRED,
+    -> endpointId.authoritativeFollowUpResult()
+
+    ProtectedResponseDisposition.RETRY_SCHEDULED ->
+        ProtectedDurableDispatchResult.RETRY_LATER
+
+    ProtectedResponseDisposition.QUARANTINED,
+    ProtectedResponseDisposition.RETRY_EXHAUSTED,
+    -> ProtectedDurableDispatchResult.USER_ACTION_REQUIRED
+
+    ProtectedResponseDisposition.STALE_CALLBACK ->
+        ProtectedDurableDispatchResult.NO_PROGRESS
+}
+
+private fun String.authoritativeFollowUpResult(): ProtectedDurableDispatchResult =
+    if (this == M2Endpoint.SYNC_PULL.endpointId) {
+        // The coordinator accepts only pull-continuation or pull-complete as a
+        // progressing pull result. A trusted 401, bootstrap requirement or
+        // superseding authority must rescan immediately for that follow-up.
+        ProtectedDurableDispatchResult.PULL_CONTINUATION_READY
+    } else {
+        ProtectedDurableDispatchResult.PROGRESSED
+    }
 
 private data class BodyBlindClassification(
     val disposition: ProtectedResponseDisposition? = null,

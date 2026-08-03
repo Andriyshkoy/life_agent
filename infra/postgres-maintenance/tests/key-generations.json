@@ -1,0 +1,8 @@
+{
+  "access": [1],
+  "cursor": [1],
+  "enrollment": [1],
+  "refresh": [1],
+  "replay_encryption": [1],
+  "replay_fingerprint": [1]
+}

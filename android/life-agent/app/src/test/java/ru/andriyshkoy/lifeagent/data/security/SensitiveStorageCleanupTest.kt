@@ -50,6 +50,47 @@ class SensitiveStorageCleanupTest {
     }
 
     @Test
+    fun processSecretsAreWipedBeforeDatabaseAndSqlCipherKey() {
+        val calls = mutableListOf<String>()
+
+        val result = closeProcessSecretsDatabaseThenKey(
+            closeProcessSecrets = { calls += "process-secrets" },
+            closeDatabase = { calls += "database" },
+            closeKey = { calls += "key" },
+        )
+
+        assertEquals(null, result)
+        assertEquals(listOf("process-secrets", "database", "key"), calls)
+    }
+
+    @Test
+    fun everyProcessCleanupStepRunsAndFailuresRetainOrder() {
+        val processFailure = IllegalStateException("process")
+        val databaseFailure = IllegalStateException("database")
+        val keyFailure = IllegalStateException("key")
+        val calls = mutableListOf<String>()
+
+        val result = closeProcessSecretsDatabaseThenKey(
+            closeProcessSecrets = {
+                calls += "process-secrets"
+                throw processFailure
+            },
+            closeDatabase = {
+                calls += "database"
+                throw databaseFailure
+            },
+            closeKey = {
+                calls += "key"
+                throw keyFailure
+            },
+        )
+
+        assertSame(processFailure, result)
+        assertEquals(listOf(databaseFailure, keyFailure), result?.suppressed?.toList())
+        assertEquals(listOf("process-secrets", "database", "key"), calls)
+    }
+
+    @Test
     fun failedCloseCanBeRetriedAndSuccessfulCloseIsIdempotent() {
         val databaseFailure = IllegalStateException("first database close")
         var databaseAttempts = 0

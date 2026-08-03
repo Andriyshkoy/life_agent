@@ -14,6 +14,7 @@ import kotlinx.serialization.json.putJsonObject
 import ru.andriyshkoy.lifeagent.core.id.MutationIds
 import ru.andriyshkoy.lifeagent.core.time.ResolvedPointTime
 import ru.andriyshkoy.lifeagent.data.local.db.dao.RevisionContextRow
+import ru.andriyshkoy.lifeagent.data.local.db.entity.LocalCaptureEntity
 import ru.andriyshkoy.lifeagent.data.local.db.entity.LocalRevisionParentEntity
 import ru.andriyshkoy.lifeagent.notes.domain.CorrectNoteCommand
 import ru.andriyshkoy.lifeagent.notes.domain.CreateNoteCommand
@@ -60,6 +61,76 @@ class CanonicalNoteCodec {
             }
         },
     )
+
+    fun encodeCanonicalPendingCapture(capture: LocalCaptureEntity): CanonicalBytes {
+        require(capture.persistenceState == "local_pending") {
+            "Pending capture has an invalid persistence state"
+        }
+        val content = requireCanonical(capture.contentJcs)
+        return try {
+            require(
+                content.sha256 == capture.contentSha256 &&
+                    content.bytes.size.toLong() == capture.byteSize,
+            ) {
+                "Pending capture integrity metadata is invalid"
+            }
+            canonical(
+                buildJsonObject {
+                    put("schema_version", capture.schemaVersion)
+                    put("persistence_state", capture.persistenceState)
+                    put("capture_id", capture.captureId)
+                    put("operation_id", capture.operationId)
+                    putJsonObject("identity") {
+                        put("installation_id", capture.installationId)
+                        put("local_owner_id", capture.localOwnerId)
+                        put("device_id", JsonNull)
+                    }
+                    putJsonObject("source") {
+                        put("channel", capture.sourceChannel)
+                        put("recorded_at", capture.recordedAtRfc3339)
+                        put("timezone_id", capture.timezoneId)
+                        put("utc_offset_minutes", capture.utcOffsetMinutes)
+                        putJsonObject("origin") {
+                            put("provider", capture.originProvider.asElement())
+                            put("app", capture.originApp.asElement())
+                            put("device", capture.originDevice.asElement())
+                            put("source_record_id", capture.originSourceRecordId.asElement())
+                            put(
+                                "source_record_version",
+                                capture.originSourceRecordVersion.asElement(),
+                            )
+                            put("user_entered", capture.originUserEntered)
+                        }
+                        putJsonObject("collector") {
+                            put("name", capture.collectorName)
+                            put("version", capture.collectorVersion)
+                        }
+                    }
+                    put("content", parse(content))
+                    putJsonObject("integrity") {
+                        put("sha256", capture.contentSha256)
+                        put("byte_size", capture.byteSize)
+                    }
+                },
+            )
+        } finally {
+            content.bytes.fill(0)
+        }
+    }
+
+    fun encodeCanonicalPendingEvent(
+        row: RevisionContextRow,
+        parents: List<LocalRevisionParentEntity>,
+    ): CanonicalBytes {
+        val revision = row.revision
+        require(revision.serverReceivedAt == null && revision.serverSequence == null) {
+            "Pending event already has server metadata"
+        }
+        requireCanonicalAndWipe(revision.payloadJcs)
+        requireCanonicalAndWipe(revision.evidenceJcs)
+        requireCanonicalAndWipe(revision.qualityFlagsJcs)
+        return encodeCanonicalEvent(row, parents)
+    }
 
     fun encodeRevision(
         ids: MutationIds,
@@ -310,6 +381,19 @@ class CanonicalNoteCodec {
 
     private fun parse(value: ByteArray): JsonElement =
         json.parseToJsonElement(value.toString(StandardCharsets.UTF_8))
+
+    private fun requireCanonical(value: ByteArray): CanonicalBytes {
+        val canonical = canonical(parse(value))
+        if (!canonical.bytes.contentEquals(value)) {
+            canonical.bytes.fill(0)
+            throw IllegalArgumentException("Persisted JSON is not canonical")
+        }
+        return canonical
+    }
+
+    private fun requireCanonicalAndWipe(value: ByteArray) {
+        requireCanonical(value).bytes.fill(0)
+    }
 
     private fun sortKeys(element: JsonElement): JsonElement = when (element) {
         is JsonObject -> JsonObject(

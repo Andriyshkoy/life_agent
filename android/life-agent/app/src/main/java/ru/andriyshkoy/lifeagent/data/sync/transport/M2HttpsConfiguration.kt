@@ -178,9 +178,6 @@ internal object ProductionM2HttpsTransportFactory {
             )
         }
 
-    /** Compatibility entry point backed by the same single-client bundle. */
-    fun createAuth(): OneShotAuthHttpsTransport = createBundle().auth
-
     private inline fun <T> createPinnedTransport(
         factory: (M2HttpsConfiguration, OkHttpClient) -> T,
     ): T {

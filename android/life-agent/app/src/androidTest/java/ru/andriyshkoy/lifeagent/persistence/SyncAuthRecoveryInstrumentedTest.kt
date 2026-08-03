@@ -23,11 +23,16 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import ru.andriyshkoy.lifeagent.data.local.db.CredentialRecoveryAction
 import ru.andriyshkoy.lifeagent.data.local.db.EnrollmentSuccessPersistence
+import ru.andriyshkoy.lifeagent.data.local.db.ProtectedActionablePushConstructionPort
+import ru.andriyshkoy.lifeagent.data.local.db.ProtectedSyncRequestConstructionSettings
+import ru.andriyshkoy.lifeagent.data.local.db.ProtectedSyncRequestPlanningFacade
+import ru.andriyshkoy.lifeagent.data.local.db.ProtectedSyncRequestPlanningOutcome
 import ru.andriyshkoy.lifeagent.data.local.db.RefreshSuccessPersistence
 import ru.andriyshkoy.lifeagent.data.local.db.SyncAuthPersistenceStore
 import ru.andriyshkoy.lifeagent.data.local.db.SyncRequestPersistenceStore
 import ru.andriyshkoy.lifeagent.data.local.db.TerminalHttpResponsePersistence
 import ru.andriyshkoy.lifeagent.data.local.db.entity.SyncHttpRequestEntity
+import ru.andriyshkoy.lifeagent.data.sync.runtime.DurableSyncNoRequestReason
 import ru.andriyshkoy.lifeagent.data.sync.wire.WireRequestCodec
 
 @RunWith(AndroidJUnit4::class)
@@ -421,7 +426,7 @@ class SyncAuthRecoveryInstrumentedTest {
     }
 
     @Test
-    fun restartQuarantinesWaiterPersistedBeforeRefreshClaim() = runBlocking {
+    fun restartPreservesExactCurrentWaiterPersistedBeforeRefreshClaim() = runBlocking {
         seedCurrentIncrementalFamily()
         val requestId = UUID.randomUUID().toString()
         prepareSendingRequest(requestId, SyncM2PersistenceFixture.DEADLINE_MS)
@@ -443,16 +448,201 @@ class SyncAuthRecoveryInstrumentedTest {
         val recovery = store.recoverInterruptedAuthFlows(
             updatedAtUtc = instant(SyncM2PersistenceFixture.NOW_MS + 300),
         )
-        assertEquals(1, recovery.recoveredCount)
-        assertTrue(recovery.currentAuthorityChanged)
+        assertEquals(0, recovery.recoveredCount)
+        assertFalse(recovery.currentAuthorityChanged)
         assertEquals(
-            "quarantined",
+            "active",
             fixture.database.syncAuthDao().findState()?.state,
         )
         val request = fixture.database.syncTransportDao()
             .findRequest("sync_pull", requestId)
-        assertEquals("terminal_local", request?.state)
-        assertEquals("orphan_waiting_refresh", request?.terminalErrorCode)
+        assertEquals("waiting_refresh", request?.state)
+        assertEquals("credential_recovery_pending", request?.terminalErrorCode)
+        val evidence = fixture.database.syncTransportDao()
+            .findWaitingRefreshAuthoritySnapshots()
+            .single()
+        assertTrue(evidence.hasCanonicalWaitingShape)
+        assertEquals(SyncM2PersistenceFixture.EPOCH_ID, evidence.credentialEpochId)
+        assertEquals(SyncM2PersistenceFixture.DEVICE_ID, evidence.deviceId)
+        assertEquals(1L, evidence.accessGenerationUsed)
+        fixture.database.syncTransportDao().insertRequest(
+            fixture.request(
+                endpointId = "sync_pull",
+                requestIdentity = UUID.randomUUID().toString(),
+            ),
+        )
+        val plan = ProtectedSyncRequestPlanningFacade(
+            context = InstrumentationRegistry.getInstrumentation().targetContext,
+            database = fixture.database,
+            settings = ProtectedSyncRequestConstructionSettings(
+                pageSize = 100,
+                attemptBudget = 8,
+                requestLifetimeMillis = 60_000,
+            ),
+            actionablePushes = ProtectedActionablePushConstructionPort {
+                error("Exact waiting-refresh evidence must not build a push")
+            },
+        ).planAndConstruct(instant(SyncM2PersistenceFixture.NOW_MS + 300))
+        assertTrue(plan is ProtectedSyncRequestPlanningOutcome.NoRequest)
+        assertEquals(
+            DurableSyncNoRequestReason.REFRESH_REQUIRED,
+            (plan as ProtectedSyncRequestPlanningOutcome.NoRequest).plan.reason,
+        )
+    }
+
+    @Test
+    fun restartReleasesExactWaiterWhenSuccessorGenerationIsAlreadyInstalled() =
+        runBlocking {
+            seedCurrentIncrementalFamily()
+            val requestId = UUID.randomUUID().toString()
+            prepareSendingRequest(requestId, SyncM2PersistenceFixture.DEADLINE_MS)
+            assertEquals(
+                CredentialRecoveryAction.WAITING_FOR_REFRESH,
+                store.handleTrustedSyncUnauthorized(
+                    endpointId = "sync_pull",
+                    requestIdentity = requestId,
+                    expectedAttemptId = attemptId(requestId),
+                    failedAccessGeneration = 1,
+                    nowEpochMs = SyncM2PersistenceFixture.NOW_MS + 200,
+                    nextAttemptAtEpochMs = SyncM2PersistenceFixture.NOW_MS + 1_000,
+                    updatedAtUtc = instant(SyncM2PersistenceFixture.NOW_MS + 200),
+                ),
+            )
+            fixture.database.openHelper.writableDatabase.execSQL(
+                """
+                UPDATE sync_auth_state
+                SET generation = 2,
+                    updated_at_utc = ?
+                WHERE singleton_id = 1
+                  AND credential_epoch_id = ?
+                  AND device_id = ?
+                  AND generation = 1
+                  AND state = 'active'
+                """.trimIndent(),
+                arrayOf<Any?>(
+                    instant(SyncM2PersistenceFixture.NOW_MS + 250),
+                    SyncM2PersistenceFixture.EPOCH_ID,
+                    SyncM2PersistenceFixture.DEVICE_ID,
+                ),
+            )
+            fixture.reopen()
+            store = SyncAuthPersistenceStore(fixture.database)
+
+            val recoveredAt = SyncM2PersistenceFixture.NOW_MS + 300
+            val recovery = store.recoverInterruptedAuthFlows(
+                updatedAtUtc = instant(recoveredAt),
+            )
+
+            assertEquals(1, recovery.recoveredCount)
+            assertFalse(recovery.currentAuthorityChanged)
+            val request = fixture.database.syncTransportDao()
+                .findRequest("sync_pull", requestId)
+            assertEquals("retry_wait", request?.state)
+            assertEquals(2L, request?.accessGenerationUsed)
+            assertEquals(1, request?.originalRetryCount)
+            assertEquals(recoveredAt, request?.nextAttemptAtEpochMs)
+            assertTrue(
+                fixture.database.syncTransportDao()
+                    .findWaitingRefreshAuthoritySnapshots()
+                    .isEmpty(),
+            )
+        }
+
+    @Test
+    fun expiredAccessOutranksReadyAndDueRetryRequests() = runBlocking {
+        fixture.seedIdentity(
+            deviceId = SyncM2PersistenceFixture.DEVICE_ID,
+            personId = SyncM2PersistenceFixture.PERSON_ID,
+        )
+        fixture.installActiveAuth(
+            accessExpiresAtEpochMs = SyncM2PersistenceFixture.NOW_MS + 100,
+        )
+        fixture.seedIncrementalStream()
+        fixture.database.syncTransportDao().insertRequest(
+            fixture.request(
+                endpointId = "sync_push",
+                requestIdentity = UUID.randomUUID().toString(),
+            ),
+        )
+        fixture.database.syncTransportDao().insertRequest(
+            fixture.request(
+                endpointId = "sync_pull",
+                requestIdentity = UUID.randomUUID().toString(),
+                state = "retry_wait",
+                attemptCount = 1,
+                nextAttemptAtEpochMs = SyncM2PersistenceFixture.NOW_MS + 150,
+            ),
+        )
+
+        val plan = ProtectedSyncRequestPlanningFacade(
+            context = InstrumentationRegistry.getInstrumentation().targetContext,
+            database = fixture.database,
+            settings = ProtectedSyncRequestConstructionSettings(
+                pageSize = 100,
+                attemptBudget = 8,
+                requestLifetimeMillis = 60_000,
+            ),
+            actionablePushes = ProtectedActionablePushConstructionPort {
+                error("Expired access must refresh before request construction")
+            },
+        ).planAndConstruct(instant(SyncM2PersistenceFixture.NOW_MS + 200))
+
+        assertTrue(plan is ProtectedSyncRequestPlanningOutcome.NoRequest)
+        assertEquals(
+            DurableSyncNoRequestReason.REFRESH_REQUIRED,
+            (plan as ProtectedSyncRequestPlanningOutcome.NoRequest).plan.reason,
+        )
+    }
+
+    @Test
+    fun mismatchedWaitingRefreshEvidenceFailsClosedWithoutConstruction() = runBlocking {
+        seedCurrentIncrementalFamily()
+        val staleEpoch = "b3000000-0000-4000-8000-000000000099"
+        val requestId = UUID.randomUUID().toString()
+        fixture.database.syncTransportDao().insertRequest(
+            fixture.request(
+                endpointId = "sync_pull",
+                requestIdentity = requestId,
+                credentialEpochId = staleEpoch,
+                state = "waiting_refresh",
+                attemptCount = 1,
+            ),
+        )
+        fixture.database.openHelper.writableDatabase.execSQL(
+            """
+            UPDATE sync_http_request
+            SET refresh_attempted = 1,
+                terminal_error_code = 'credential_recovery_pending'
+            WHERE endpoint_id = 'sync_pull'
+              AND request_identity = ?
+            """.trimIndent(),
+            arrayOf(requestId),
+        )
+        assertTrue(
+            fixture.database.syncTransportDao()
+                .findWaitingRefreshAuthoritySnapshots()
+                .single()
+                .hasCanonicalWaitingShape,
+        )
+
+        val plan = ProtectedSyncRequestPlanningFacade(
+            context = InstrumentationRegistry.getInstrumentation().targetContext,
+            database = fixture.database,
+            settings = ProtectedSyncRequestConstructionSettings(
+                pageSize = 100,
+                attemptBudget = 8,
+                requestLifetimeMillis = 60_000,
+            ),
+            actionablePushes = ProtectedActionablePushConstructionPort {
+                error("Mismatched waiting-refresh metadata cannot construct work")
+            },
+        ).planAndConstruct(instant(SyncM2PersistenceFixture.NOW_MS + 100))
+
+        assertTrue(plan is ProtectedSyncRequestPlanningOutcome.NoRequest)
+        assertEquals(
+            DurableSyncNoRequestReason.OPEN_REQUEST_REQUIRES_RECOVERY,
+            (plan as ProtectedSyncRequestPlanningOutcome.NoRequest).plan.reason,
+        )
     }
 
     @Test

@@ -14,6 +14,7 @@ import org.junit.Assert.assertSame
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import ru.andriyshkoy.lifeagent.data.sync.runtime.LazyProductionM2AuthHttpsTransportProvider
 import ru.andriyshkoy.lifeagent.data.sync.wire.M2Endpoint
 
 class M2HttpsConfigurationTest {
@@ -211,7 +212,7 @@ class M2HttpsConfigurationTest {
     }
 
     @Test
-    fun sharedTransportBundleIsLazyAndCreatedOnlyOnce() {
+    fun sharedTransportBundleIsLazyAndCachedAcrossAuthAndExactConsumers() {
         val configuration = validConfiguration()
         val client = OkHttpClient()
         val expected = ProductionM2HttpsTransportBundle(
@@ -223,15 +224,21 @@ class M2HttpsConfigurationTest {
             creationCount += 1
             expected
         }
+        val authProvider = LazyProductionM2AuthHttpsTransportProvider(lazyBundle)
 
         assertEquals(0, creationCount)
         assertEquals(
             "LazyProductionM2HttpsTransportBundle(redacted=true)",
             lazyBundle.toString(),
         )
-        assertSame(expected, lazyBundle.open())
+        assertSame(expected.auth, authProvider.open())
+        assertSame(expected.exact, lazyBundle.open().exact)
         assertSame(expected, lazyBundle.open())
         assertEquals(1, creationCount)
+        assertEquals(
+            "LazyProductionM2AuthHttpsTransportProvider(redacted=true)",
+            authProvider.toString(),
+        )
         assertEquals(
             "ProductionM2HttpsTransportBundle(redacted=true)",
             expected.toString(),

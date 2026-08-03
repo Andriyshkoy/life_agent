@@ -241,6 +241,8 @@ class BoundedSyncCoordinatorTest {
                 SyncCoordinatorStopReason.ACTION_RETRY_LATER,
             SyncCoordinatorActionDisposition.USER_ACTION_REQUIRED to
                 SyncCoordinatorStopReason.USER_ACTION_REQUIRED,
+            SyncCoordinatorActionDisposition.PROCESS_RESTART_REQUIRED to
+                SyncCoordinatorStopReason.PROCESS_RESTART_REQUIRED,
         ).forEach { (disposition, expectedReason) ->
             var calls = 0
             val coordinator = coordinator(
@@ -268,6 +270,8 @@ class BoundedSyncCoordinatorTest {
                 SyncCoordinatorStopReason.RECOVERY_RETRY_LATER,
             SyncCoordinatorRecoveryDisposition.USER_ACTION_REQUIRED to
                 SyncCoordinatorStopReason.USER_ACTION_REQUIRED,
+            SyncCoordinatorRecoveryDisposition.PROCESS_RESTART_REQUIRED to
+                SyncCoordinatorStopReason.PROCESS_RESTART_REQUIRED,
         ).forEach { (disposition, expectedReason) ->
             var sourceReads = 0
             val coordinator = BoundedSyncCoordinator(

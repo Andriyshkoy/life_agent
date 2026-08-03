@@ -6,6 +6,7 @@ import kotlinx.coroutines.CancellationException
 /** Opaque adapter result; durable bodies, credentials and identifiers stay behind the port. */
 internal enum class SyncWorkExecutionDisposition {
     COMPLETE,
+    FOLLOW_UP_REQUIRED,
     RETRY,
     PERMANENT_FAILURE,
 }
@@ -27,10 +28,18 @@ internal enum class SyncWorkerCompletion {
 }
 
 internal suspend fun executeSyncWork(
+    enqueueFollowUp: () -> Boolean = { false },
     openPort: suspend () -> SyncWorkExecutionPort,
 ): SyncWorkerCompletion = try {
     when (openPort().runOneBoundedSync()) {
         SyncWorkExecutionDisposition.COMPLETE -> SyncWorkerCompletion.SUCCESS
+        SyncWorkExecutionDisposition.FOLLOW_UP_REQUIRED ->
+            if (tryEnqueueFollowUp(enqueueFollowUp)) {
+                SyncWorkerCompletion.SUCCESS
+            } else {
+                SyncWorkerCompletion.RETRY
+            }
+
         SyncWorkExecutionDisposition.RETRY -> SyncWorkerCompletion.RETRY
         SyncWorkExecutionDisposition.PERMANENT_FAILURE -> SyncWorkerCompletion.FAILURE
     }
@@ -38,6 +47,14 @@ internal suspend fun executeSyncWork(
     throw cancelled
 } catch (_: Exception) {
     SyncWorkerCompletion.FAILURE
+}
+
+private fun tryEnqueueFollowUp(enqueueFollowUp: () -> Boolean): Boolean = try {
+    enqueueFollowUp()
+} catch (cancelled: CancellationException) {
+    throw cancelled
+} catch (_: Exception) {
+    false
 }
 
 internal fun SyncWorkerCompletion.toWorkManagerResult(): ListenableWorker.Result =

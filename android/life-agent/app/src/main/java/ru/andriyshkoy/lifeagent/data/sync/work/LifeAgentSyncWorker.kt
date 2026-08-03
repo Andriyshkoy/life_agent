@@ -8,8 +8,8 @@ import androidx.work.WorkerParameters
 /**
  * Stable WorkManager entry point for bounded sync execution.
  *
- * Until the Application implements [SyncWorkExecutionPortProvider], direct or
- * stale invocations fail closed without opening storage or constructing HTTP.
+ * Direct or stale invocations still require the application-owned opaque port;
+ * the worker never constructs storage, credentials, request bodies or HTTP.
  */
 internal class LifeAgentSyncWorker(
     appContext: Context,
@@ -18,7 +18,13 @@ internal class LifeAgentSyncWorker(
     override suspend fun doWork(): ListenableWorker.Result {
         val provider = applicationContext as? SyncWorkExecutionPortProvider
             ?: return ListenableWorker.Result.failure()
-        return executeSyncWork(provider::openSyncWorkExecutionPort)
+        return executeSyncWork(
+            enqueueFollowUp = {
+                SyncWorkScheduler(applicationContext).enqueueFollowUp() ==
+                    SyncWorkSchedulingResult.ENQUEUED
+            },
+            openPort = provider::openSyncWorkExecutionPort,
+        )
             .toWorkManagerResult()
     }
 }
