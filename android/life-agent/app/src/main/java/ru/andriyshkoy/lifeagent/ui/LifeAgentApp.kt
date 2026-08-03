@@ -57,6 +57,9 @@ import ru.andriyshkoy.lifeagent.ui.notes.LastNoteUiState
 import ru.andriyshkoy.lifeagent.ui.notes.NotesController
 import ru.andriyshkoy.lifeagent.ui.notes.NotesUiState
 import ru.andriyshkoy.lifeagent.ui.notes.PreviewNotesController
+import ru.andriyshkoy.lifeagent.ui.sync.LocalOnlySyncSetupController
+import ru.andriyshkoy.lifeagent.ui.sync.SyncSetupController
+import ru.andriyshkoy.lifeagent.ui.sync.SyncSetupUiState
 import ru.andriyshkoy.lifeagent.ui.theme.LifeAgentTheme
 import ru.andriyshkoy.lifeagent.ui.theme.ThemeMode
 import ru.andriyshkoy.lifeagent.ui.theme.resolveDarkTheme
@@ -91,6 +94,7 @@ fun LifeAgentApp(
     zoneId: ZoneId = ZoneId.systemDefault(),
     appVersion: String = BuildConfig.VERSION_NAME,
     notesController: NotesController? = null,
+    syncSetupController: SyncSetupController? = null,
     fallbackLastCommitted: LastNoteUiState = LastNoteUiState.Empty,
     onExportNotes: () -> Unit = {},
     externalMessage: AppSnackbarMessage? = null,
@@ -114,6 +118,9 @@ fun LifeAgentApp(
     }
     val activeNotesController = notesController ?: fallbackNotesController
     val notesState by activeNotesController.uiState.collectAsStateWithLifecycle()
+    val fallbackSyncSetupController = remember { LocalOnlySyncSetupController() }
+    val activeSyncSetupController = syncSetupController ?: fallbackSyncSetupController
+    val syncSetupState by activeSyncSetupController.uiState.collectAsStateWithLifecycle()
 
     LifeAgentTheme(darkTheme = darkTheme) {
         LifeAgentAppContent(
@@ -126,6 +133,8 @@ fun LifeAgentApp(
             zoneId = zoneId,
             appVersion = appVersion,
             notesState = notesState,
+            syncSetupController = activeSyncSetupController,
+            syncSetupState = syncSetupState,
             onNoteAction = activeNotesController::dispatch,
             onExportNotes = onExportNotes,
             externalMessage = externalMessage,
@@ -148,6 +157,8 @@ private fun LifeAgentAppContent(
     zoneId: ZoneId,
     appVersion: String,
     notesState: NotesUiState,
+    syncSetupController: SyncSetupController,
+    syncSetupState: SyncSetupUiState,
     onNoteAction: (NoteAction) -> Unit,
     onExportNotes: () -> Unit,
     externalMessage: AppSnackbarMessage?,
@@ -256,6 +267,8 @@ private fun LifeAgentAppContent(
                             )
                         },
                         notesState = notesState,
+                        syncSetupController = syncSetupController,
+                        syncSetupState = syncSetupState,
                         onNoteAction = onNoteAction,
                         onExportNotes = onExportNotes,
                         modifier = Modifier.padding(padding),
@@ -298,6 +311,8 @@ private fun LifeAgentAppContent(
                         )
                     },
                     notesState = notesState,
+                    syncSetupController = syncSetupController,
+                    syncSetupState = syncSetupState,
                     onNoteAction = onNoteAction,
                     onExportNotes = onExportNotes,
                     modifier = Modifier.padding(padding),
@@ -415,6 +430,8 @@ private fun AppScreen(
     appVersion: String,
     onPreviewSave: (String) -> Unit,
     notesState: NotesUiState,
+    syncSetupController: SyncSetupController,
+    syncSetupState: SyncSetupUiState,
     onNoteAction: (NoteAction) -> Unit,
     onExportNotes: () -> Unit,
     modifier: Modifier = Modifier,
@@ -456,6 +473,7 @@ private fun AppScreen(
             modifier = modifier,
             onExportNotes = onExportNotes,
             notesPersistenceAvailable = notesState.persistenceAvailable,
+            syncSetupState = syncSetupState,
             zoneId = zoneId,
             appVersion = appVersion,
         )
@@ -507,7 +525,12 @@ private fun AppScreen(
             modifier,
         )
 
-        DemoRoute.SyncSetup -> SyncSetupScreen(onBack, modifier)
+        DemoRoute.SyncSetup -> SyncSetupScreen(
+            onBack = onBack,
+            modifier = modifier,
+            controller = syncSetupController,
+            zoneId = zoneId,
+        )
         DemoRoute.HealthConnect -> HealthConnectScreen(onBack, modifier)
         DemoRoute.TimeZone -> TimeZoneScreen(
             onBack = onBack,
