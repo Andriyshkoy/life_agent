@@ -614,6 +614,65 @@ internal data class ValidatedPullPage(
         "ValidatedPullPage(changeCount=${page.changes.size},redacted=true)"
 }
 
+/**
+ * A strictly decoded fresh replica page containing only page-local facts.
+ * Cross-page cursor history, replay and replica topology remain Room-owned.
+ */
+internal sealed interface FreshReplicaPage
+
+internal data class FreshBootstrapPage(
+    val page: BootstrapPageSuccess,
+    val requestBodySha256: String,
+    val responseBodySha256: String,
+) : FreshReplicaPage {
+    override fun toString(): String =
+        "FreshBootstrapPage(changeCount=${page.changes.size},redacted=true)"
+}
+
+internal data class FreshPullPage(
+    val page: PullPageSuccess,
+    val requestBodySha256: String,
+    val responseBodySha256: String,
+) : FreshReplicaPage {
+    override fun toString(): String =
+        "FreshPullPage(changeCount=${page.changes.size},redacted=true)"
+}
+
+internal sealed interface FreshReplicaPageExpectation {
+    val request: M2WireRequest
+    val persistedRequestBodySha256: String?
+}
+
+internal data class FreshBootstrapPageExpectation(
+    override val request: BootstrapRequest,
+    override val persistedRequestBodySha256: String? = null,
+) : FreshReplicaPageExpectation {
+    override fun toString(): String = "FreshBootstrapPageExpectation(redacted=true)"
+}
+
+internal data class FreshPullPageExpectation(
+    override val request: PullRequest,
+    override val persistedRequestBodySha256: String? = null,
+) : FreshReplicaPageExpectation {
+    override fun toString(): String = "FreshPullPageExpectation(redacted=true)"
+}
+
+internal sealed interface DurableReplicaApiErrorExpectation {
+    val request: M2WireRequest
+}
+
+internal data class BootstrapApiErrorExpectation(
+    override val request: BootstrapRequest,
+) : DurableReplicaApiErrorExpectation {
+    override fun toString(): String = "BootstrapApiErrorExpectation(redacted=true)"
+}
+
+internal data class PullApiErrorExpectation(
+    override val request: PullRequest,
+) : DurableReplicaApiErrorExpectation {
+    override fun toString(): String = "PullApiErrorExpectation(redacted=true)"
+}
+
 internal sealed interface ResponseExpectation {
     val request: M2WireRequest
 }
