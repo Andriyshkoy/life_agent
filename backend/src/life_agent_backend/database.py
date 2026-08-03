@@ -24,7 +24,7 @@ NAMING_CONVENTION = {
 }
 
 metadata = MetaData(naming_convention=NAMING_CONVENTION)
-EXPECTED_DATABASE_REVISION = "20260731_0004"
+EXPECTED_DATABASE_REVISION = "20260803_0005"
 
 
 @dataclass(frozen=True, slots=True)

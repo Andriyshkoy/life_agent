@@ -49,6 +49,7 @@ from life_agent_backend.database import (
 )
 from life_agent_backend.database import metadata as declared_metadata
 from life_agent_backend.settings import Settings
+from life_agent_backend.sync_contract import BootstrapResponse
 from tests.conftest import (
     TEST_ACCESS_TOKEN_KEY,
     TEST_CURSOR_KEY,
@@ -925,6 +926,29 @@ async def exercise_local_enrollment_cli(settings: Settings) -> None:
             },
         )
         assert enrollment.status_code == 200
+        enrolled = enrollment.json()
+        bootstrap = await client.post(
+            "/api/v1/sync/bootstrap",
+            headers={
+                "Authorization": f"Bearer {enrolled['credentials']['access_token']}",
+            },
+            json={
+                "protocol_version": "1.0.0",
+                "message_type": "bootstrap_request",
+                "request_id": "11000000-0000-4000-8000-000000000092",
+                "bootstrap_id": "12000000-0000-4000-8000-000000000091",
+                "device_id": enrolled["device_id"],
+                "page_size": 500,
+                "page_cursor": None,
+            },
+        )
+        assert bootstrap.status_code == 200, bootstrap.content
+        bootstrap_page = BootstrapResponse.model_validate(bootstrap.json())
+        assert bootstrap_page.to_bytes() == bootstrap.content
+        assert bootstrap_page.complete is True
+        assert bootstrap_page.changes == ()
+        assert bootstrap_page.from_page_cursor is None
+        assert bootstrap_page.next_page_cursor is None
 
         async with engine.connect() as connection:
             state = (
@@ -953,7 +977,15 @@ async def exercise_local_enrollment_cli(settings: Settings) -> None:
                                 SELECT count(*)
                                 FROM enrollment_grant
                                 WHERE status = 'consumed'
-                            ) AS consumed_grants
+                            ) AS consumed_grants,
+                            (SELECT count(*) FROM sync_stream) AS sync_streams,
+                            (
+                                SELECT count(*)
+                                FROM sync_snapshot
+                                WHERE status = 'complete'
+                            ) AS completed_snapshots,
+                            (SELECT count(*) FROM sync_read_state) AS read_states,
+                            (SELECT count(*) FROM http_replay) AS replay_records
                         """
                     ),
                     {
@@ -962,7 +994,7 @@ async def exercise_local_enrollment_cli(settings: Settings) -> None:
                     },
                 )
             ).one()
-            assert tuple(state) == (1, 2, 2, 1, 1)
+            assert tuple(state) == (1, 2, 2, 1, 1, 1, 1, 1, 1)
 
 
 @pytest.mark.postgres
@@ -3681,6 +3713,100 @@ def test_postgres_migrations_and_readiness(
         command.upgrade(alembic_config, "head")
         assert asyncio.run(current_revisions(database_url)) == [EXPECTED_DATABASE_REVISION]
         assert asyncio.run(is_ready(settings)) is True
+    finally:
+        asyncio.run(reset_public_schema(database_url, postgres_reset_permit))
+
+
+@pytest.mark.postgres
+@pytest.mark.skipif(
+    not RUN_POSTGRES_INTEGRATION,
+    reason="ephemeral PostgreSQL integration is opt-in",
+)
+def test_postgres_owner_stream_migration_backfills_without_replacing_existing_streams(
+    monkeypatch: pytest.MonkeyPatch,
+    postgres_reset_permit: _SchemaResetPermit,
+) -> None:
+    database_url = validated_test_database_url(TEST_DATABASE_URL)
+    alembic_config = configure_migration_environment(monkeypatch, database_url)
+
+    asyncio.run(reset_public_schema(database_url, postgres_reset_permit))
+    try:
+        command.upgrade(alembic_config, "20260731_0004")
+        asyncio.run(
+            execute_sql(
+                database_url,
+                """
+                INSERT INTO person (person_id, subject_id, purge_generation)
+                VALUES
+                    (
+                        '10000000-0000-4000-8000-000000000181',
+                        '11000000-0000-4000-8000-000000000181',
+                        7
+                    ),
+                    (
+                        '10000000-0000-4000-8000-000000000182',
+                        '11000000-0000-4000-8000-000000000182',
+                        4
+                    )
+                """,
+            )
+        )
+        asyncio.run(
+            execute_sql(
+                database_url,
+                """
+                INSERT INTO sync_stream (
+                    sync_stream_id,
+                    person_id,
+                    protocol_stream,
+                    purge_generation
+                )
+                VALUES (
+                    '12000000-0000-4000-8000-000000000182',
+                    '10000000-0000-4000-8000-000000000182',
+                    'life_events',
+                    4
+                )
+                """,
+            )
+        )
+
+        command.upgrade(alembic_config, "head")
+        assert (
+            asyncio.run(
+                scalar_int(
+                    database_url,
+                    """
+                    SELECT count(*)
+                    FROM person
+                    JOIN sync_stream
+                      ON sync_stream.person_id = person.person_id
+                     AND sync_stream.protocol_stream = 'life_events'
+                    WHERE sync_stream.purge_generation = person.purge_generation
+                      AND sync_stream.last_server_sequence = 0
+                      AND sync_stream.minimum_available_sequence = 0
+                    """,
+                )
+            )
+            == 2
+        )
+        assert (
+            asyncio.run(
+                scalar_int(
+                    database_url,
+                    """
+                    SELECT count(*)
+                    FROM sync_stream
+                    WHERE sync_stream_id =
+                          '12000000-0000-4000-8000-000000000182'
+                    """,
+                )
+            )
+            == 1
+        )
+
+        command.downgrade(alembic_config, "20260731_0004")
+        assert asyncio.run(scalar_int(database_url, "SELECT count(*) FROM sync_stream")) == 2
     finally:
         asyncio.run(reset_public_schema(database_url, postgres_reset_permit))
 

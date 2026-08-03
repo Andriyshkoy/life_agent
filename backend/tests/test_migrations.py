@@ -18,6 +18,9 @@ BACKEND_ROOT = Path(__file__).resolve().parents[1]
 SYNC_PUSH_MIGRATION = (
     BACKEND_ROOT / "migrations" / "versions" / "20260730_0003_sync_push_invariants.py"
 )
+OWNER_STREAM_MIGRATION = (
+    BACKEND_ROOT / "migrations" / "versions" / "20260803_0005_owner_sync_stream.py"
+)
 EXPECTED_MODEL_TABLES = {
     "capture",
     "credential_family",
@@ -45,7 +48,18 @@ def test_migration_history_has_one_linear_head() -> None:
 
     assert scripts.get_heads() == [EXPECTED_DATABASE_REVISION]
     assert scripts.get_base() == "20260730_0001"
-    assert scripts.get_revision(EXPECTED_DATABASE_REVISION).down_revision == "20260730_0003"
+    assert scripts.get_revision(EXPECTED_DATABASE_REVISION).down_revision == "20260731_0004"
+
+
+def test_owner_stream_backfill_is_standalone_and_fails_closed_for_domain_data() -> None:
+    source = OWNER_STREAM_MIGRATION.read_text(encoding="utf-8")
+
+    assert "life_agent_backend.models" not in source
+    assert "owner data without a life-events stream prevents automatic backfill" in source
+    for table_name in ("capture", "life_event", "event_revision"):
+        assert f"FROM {table_name}" in source
+    assert "gen_random_uuid()" in source
+    assert "sync_stream.purge_generation <> person.purge_generation" in source
 
 
 def test_alembic_environment_loads_all_model_metadata_in_fresh_process() -> None:

@@ -32,6 +32,7 @@ from life_agent_backend.database import (
 )
 from life_agent_backend.ids import IdGenerator, Uuid4Generator
 from life_agent_backend.settings import Settings
+from life_agent_backend.sync_primitives import DATA_PROTOCOL_STREAM
 
 _OWNER_PROVISION_LOCK_KEY = 7_411_736_157_251_527_091
 
@@ -77,6 +78,11 @@ async def issue_local_enrollment_code(
             person_id = await _resolve_or_provision_person(
                 session,
                 requested_person_id=requested_person_id,
+                id_generator=resolved_ids,
+            )
+            await _ensure_life_events_stream(
+                session,
+                person_id=person_id,
                 id_generator=resolved_ids,
             )
             grant = await service.issue_enrollment_grant_in_session(
@@ -212,6 +218,64 @@ async def _resolve_or_provision_person(
         )
     )
     return person_id
+
+
+async def _ensure_life_events_stream(
+    session: AsyncSession,
+    *,
+    person_id: UUID,
+    id_generator: IdGenerator,
+) -> None:
+    person_purge_generation = await session.scalar(
+        sa.select(models.person.c.purge_generation)
+        .where(models.person.c.person_id == person_id)
+        .with_for_update()
+    )
+    if not isinstance(person_purge_generation, int):
+        raise AdminCliError("the requested person does not exist")
+
+    existing_stream = (
+        (
+            await session.execute(
+                sa.select(
+                    models.sync_stream.c.sync_stream_id,
+                    models.sync_stream.c.purge_generation,
+                )
+                .where(
+                    models.sync_stream.c.person_id == person_id,
+                    models.sync_stream.c.protocol_stream == DATA_PROTOCOL_STREAM,
+                )
+                .with_for_update()
+            )
+        )
+        .mappings()
+        .one_or_none()
+    )
+    if existing_stream is not None:
+        if existing_stream["purge_generation"] != person_purge_generation:
+            raise AdminCliError("the owner sync stream is incoherent")
+        return
+
+    domain_data_present = await session.scalar(
+        sa.select(
+            sa.or_(
+                sa.exists().where(models.capture.c.person_id == person_id),
+                sa.exists().where(models.life_event.c.person_id == person_id),
+                sa.exists().where(models.event_revision.c.person_id == person_id),
+            )
+        )
+    )
+    if domain_data_present is not False:
+        raise AdminCliError("owner data exists without its sync stream")
+
+    await session.execute(
+        sa.insert(models.sync_stream).values(
+            sync_stream_id=id_generator.new_id(),
+            person_id=person_id,
+            protocol_stream=DATA_PROTOCOL_STREAM,
+            purge_generation=person_purge_generation,
+        )
+    )
 
 
 def _canonical_uuid(value: str) -> UUID:
