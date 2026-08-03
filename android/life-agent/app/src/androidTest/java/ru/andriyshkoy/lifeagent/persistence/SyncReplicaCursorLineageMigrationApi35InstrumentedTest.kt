@@ -53,7 +53,7 @@ class SyncReplicaCursorLineageMigrationApi35InstrumentedTest {
         val sqlite = migrated.openHelper.writableDatabase
         val replicaDao = migrated.syncReplicaDao()
 
-        assertEquals(4, queryInt(sqlite, "PRAGMA user_version"))
+        assertEquals(LifeAgentDatabase.VERSION, queryInt(sqlite, "PRAGMA user_version"))
         val stream = requireNotNull(replicaDao.findStreamState())
         assertEquals("bootstrap_required", stream.phase)
         assertTrue(stream.bootstrapRequired)

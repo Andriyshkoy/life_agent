@@ -1643,6 +1643,7 @@ interface SyncTransportDao {
         """
         UPDATE sync_http_request
         SET state = 'sending',
+            next_attempt_at_epoch_ms = NULL,
             attempt_count = attempt_count + 1,
             last_attempt_at_epoch_ms = :attemptedAtEpochMs,
             lease_expires_at_epoch_ms = :leaseExpiresAtEpochMs,
@@ -1790,6 +1791,7 @@ interface SyncTransportDao {
         """
         UPDATE sync_http_request
         SET state = 'sending',
+            next_attempt_at_epoch_ms = NULL,
             attempt_count = attempt_count + 1,
             last_attempt_at_epoch_ms = :attemptedAtEpochMs,
             lease_expires_at_epoch_ms = :leaseExpiresAtEpochMs,
