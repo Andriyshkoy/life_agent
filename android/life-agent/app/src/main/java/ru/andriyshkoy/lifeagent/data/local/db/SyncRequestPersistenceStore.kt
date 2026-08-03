@@ -294,43 +294,63 @@ class SyncRequestPersistenceStore(
         require(response.httpStatus == 409)
         require(response.terminalErrorCode == BOOTSTRAP_REQUIRED)
         return database.withTransaction {
-            val request = checkNotNull(
-                transportDao.findRequest(response.endpointId, response.requestIdentity),
-            ) {
-                "Bootstrap-required push request is missing"
-            }
-            if (request.state == TERMINAL) {
-                requireExactTerminalResponse(request, response)
-                return@withTransaction false
-            }
-            if (
-                request.state != SENDING ||
-                request.activeAttemptId != response.expectedAttemptId
-            ) {
-                return@withTransaction false
-            }
-            val stream = replicaDao.findStreamState() ?: return@withTransaction false
-            val auth = authDao.findState() ?: return@withTransaction false
-            val identity = identityDao.findIdentity() ?: return@withTransaction false
-            if (
-                stream.credentialEpochId != request.credentialEpochId ||
-                stream.deviceId != request.deviceId ||
-                auth.credentialEpochId != request.credentialEpochId ||
-                auth.deviceId != request.deviceId ||
-                auth.installationId != identity.installationId ||
-                auth.localOwnerId != identity.localOwnerId
-            ) {
-                return@withTransaction false
-            }
-            if (!preflightFreshResponseRequestMetadata(request, response.terminalAtUtc)) {
-                return@withTransaction false
-            }
-            check(
-                stream.integrityErrorCode == null &&
-                    auth.state in setOf(ACTIVE, REFRESH_IN_FLIGHT),
-            ) {
-                "Bootstrap-required push lost its current binding"
-            }
+            commitBootstrapRequiredInCurrentTransaction(
+                response = response,
+                proposedIntentFactory = proposedIntentFactory,
+                existingCandidateVerifier = existingCandidateVerifier,
+            )
+        }
+    }
+
+    internal suspend fun commitBootstrapRequiredInCurrentTransaction(
+        response: TerminalHttpResponsePersistence,
+        proposedIntentFactory: suspend () -> BootstrapIntentPersistence,
+        existingCandidateVerifier: suspend () -> Boolean = { true },
+    ): Boolean {
+        check(database.inTransaction()) {
+            "Bootstrap-required reduction requires an outer transaction"
+        }
+        require(response.endpointId in setOf(SYNC_PUSH, SYNC_PULL))
+        require(response.httpStatus == 409)
+        require(response.terminalErrorCode == BOOTSTRAP_REQUIRED)
+        val request = checkNotNull(
+            transportDao.findRequest(response.endpointId, response.requestIdentity),
+        ) {
+            "Bootstrap-required sync request is missing"
+        }
+        if (request.state == TERMINAL) {
+            requireExactTerminalResponse(request, response)
+            return false
+        }
+        if (
+            request.state != SENDING ||
+            request.activeAttemptId != response.expectedAttemptId
+        ) {
+            return false
+        }
+        val stream = replicaDao.findStreamState() ?: return false
+        val auth = authDao.findState() ?: return false
+        val identity = identityDao.findIdentity() ?: return false
+        if (
+            stream.credentialEpochId != request.credentialEpochId ||
+            stream.deviceId != request.deviceId ||
+            auth.credentialEpochId != request.credentialEpochId ||
+            auth.deviceId != request.deviceId ||
+            auth.installationId != identity.installationId ||
+            auth.localOwnerId != identity.localOwnerId
+        ) {
+            return false
+        }
+        if (!preflightFreshResponseRequestMetadata(request, response.terminalAtUtc)) {
+            return false
+        }
+        check(
+            stream.integrityErrorCode == null &&
+                auth.state in setOf(ACTIVE, REFRESH_IN_FLIGHT),
+        ) {
+            "Bootstrap-required response lost its current binding"
+        }
+        val pushBatch = if (response.endpointId == SYNC_PUSH) {
             val batch = checkNotNull(transportDao.findBatch(response.requestIdentity)) {
                 "Bootstrap-required push batch is missing"
             }
@@ -359,77 +379,85 @@ class SyncRequestPersistenceStore(
                     "Bootstrap-required batch member drifted"
                 }
             }
+            batch
+        } else {
+            check(request.idempotencyKey == null) {
+                "Bootstrap-required pull unexpectedly owns an idempotency key"
+            }
+            null
+        }
 
-            if (!existingCandidateVerifier()) {
-                return@withTransaction false
-            }
-            val proposedIntent = proposedIntentFactory()
-            validateBootstrapIntent(proposedIntent)
-            check(
-                checkNotNull(proposedIntent.firstRequest.accessGenerationUsed) <=
-                    auth.generation,
-            ) {
-                "Bootstrap-required intent uses a future credential generation"
-            }
+        if (!existingCandidateVerifier()) {
+            return false
+        }
+        val proposedIntent = proposedIntentFactory()
+        validateBootstrapIntent(proposedIntent)
+        check(
+            checkNotNull(proposedIntent.firstRequest.accessGenerationUsed) <=
+                auth.generation,
+        ) {
+            "Bootstrap-required intent uses a future credential generation"
+        }
 
+        check(
+            transportDao.storeTerminalResponse(
+                endpointId = response.endpointId,
+                requestIdentity = response.requestIdentity,
+                expectedAttemptId = response.expectedAttemptId,
+                httpStatus = response.httpStatus,
+                exactResponseBody = response.exactResponseBody,
+                responseSha256 = response.responseSha256,
+                terminalAtUtc = response.terminalAtUtc,
+                terminalErrorCode = response.terminalErrorCode,
+            ) == 1,
+        ) {
+            "Bootstrap-required response lost its request CAS"
+        }
+        if (pushBatch != null) {
             check(
-                transportDao.storeTerminalResponse(
-                    endpointId = response.endpointId,
-                    requestIdentity = response.requestIdentity,
-                    expectedAttemptId = response.expectedAttemptId,
-                    httpStatus = response.httpStatus,
-                    exactResponseBody = response.exactResponseBody,
-                    responseSha256 = response.responseSha256,
-                    terminalAtUtc = response.terminalAtUtc,
-                    terminalErrorCode = response.terminalErrorCode,
-                ) == 1,
-            ) {
-                "Bootstrap-required response lost its request CAS"
-            }
-            check(
-                transportDao.releasePushBatchForBootstrap(batch.batchId) ==
-                    batch.operationCount,
+                transportDao.releasePushBatchForBootstrap(pushBatch.batchId) ==
+                    pushBatch.operationCount,
             ) {
                 "Bootstrap-required push did not release every batch member"
             }
-            releaseOtherOpenPushBatches(
-                credentialEpochId = request.credentialEpochId,
-                deviceId = request.deviceId,
-            )
-
-            val retainedRequestIdentity = installOrRetainBootstrapIntent(
-                expectedCredentialEpochId = request.credentialEpochId,
-                expectedDeviceId = request.deviceId,
-                proposedIntent = proposedIntent,
-                updatedAtUtc = response.terminalAtUtc,
-            )
-            transportDao.invalidateSupersededSyncRequests(
-                credentialEpochId = request.credentialEpochId,
-                deviceId = request.deviceId,
-                retainedBootstrapRequestIdentity = retainedRequestIdentity,
-                terminalAtUtc = response.terminalAtUtc,
-            )
-            check(
-                replicaDao.requireBootstrap(
-                    credentialEpochId = request.credentialEpochId,
-                    deviceId = request.deviceId,
-                    updatedAtUtc = response.terminalAtUtc,
-                ) == 1,
-            ) {
-                "Bootstrap-required push could not gate its stream"
-            }
-            check(
-                authDao.setBootstrapRequired(
-                    credentialEpochId = request.credentialEpochId,
-                    deviceId = request.deviceId,
-                    bootstrapRequired = true,
-                    updatedAtUtc = response.terminalAtUtc,
-                ) == 1,
-            ) {
-                "Bootstrap-required push could not gate its credential family"
-            }
-            true
         }
+        releaseOtherOpenPushBatches(
+            credentialEpochId = request.credentialEpochId,
+            deviceId = request.deviceId,
+        )
+
+        val retainedRequestIdentity = installOrRetainBootstrapIntent(
+            expectedCredentialEpochId = request.credentialEpochId,
+            expectedDeviceId = request.deviceId,
+            proposedIntent = proposedIntent,
+            updatedAtUtc = response.terminalAtUtc,
+        )
+        transportDao.invalidateSupersededSyncRequests(
+            credentialEpochId = request.credentialEpochId,
+            deviceId = request.deviceId,
+            retainedBootstrapRequestIdentity = retainedRequestIdentity,
+            terminalAtUtc = response.terminalAtUtc,
+        )
+        check(
+            replicaDao.requireBootstrap(
+                credentialEpochId = request.credentialEpochId,
+                deviceId = request.deviceId,
+                updatedAtUtc = response.terminalAtUtc,
+            ) == 1,
+        ) {
+            "Bootstrap-required response could not gate its stream"
+        }
+        check(
+            authDao.setBootstrapRequired(
+                credentialEpochId = request.credentialEpochId,
+                deviceId = request.deviceId,
+                bootstrapRequired = true,
+                updatedAtUtc = response.terminalAtUtc,
+            ) == 1,
+        ) {
+            "Bootstrap-required response could not gate its credential family"
+        }
+        return true
     }
 
     /**
@@ -538,6 +566,7 @@ class SyncRequestPersistenceStore(
     private companion object {
         const val AUTH_REVOKE = "auth_revoke"
         const val SYNC_PUSH = "sync_push"
+        const val SYNC_PULL = "sync_pull"
         const val ACTIVE = "active"
         const val REFRESH_IN_FLIGHT = "refresh_in_flight"
         const val REVOKE_PENDING = "revoke_pending"

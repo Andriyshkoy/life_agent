@@ -413,54 +413,77 @@ class SyncAuthPersistenceStore(
         updatedAtUtc: String,
     ): CredentialRecoveryAction =
         database.withTransaction {
-            val request = checkNotNull(
-                transportDao.findRequest(endpointId, requestIdentity),
-            ) {
-                "Unauthorized sync request is missing"
-            }
-            val storedGeneration = request.accessGenerationUsed
-            if (
-                request.state != SENDING ||
-                request.activeAttemptId != expectedAttemptId ||
-                (
-                    storedGeneration != null &&
-                        storedGeneration > 0 &&
-                        storedGeneration != failedAccessGeneration
-                    )
-            ) {
-                return@withTransaction CredentialRecoveryAction.STALE_CALLBACK
-            }
-            val current = authDao.findState()
-            val identity = identityDao.findIdentity()
-            if (
-                current != null &&
-                (
-                    identity == null ||
-                        current.credentialEpochId != request.credentialEpochId ||
-                        current.deviceId != request.deviceId ||
-                        identity.installationId != current.installationId ||
-                        identity.localOwnerId != current.localOwnerId
-                    )
-            ) {
-                return@withTransaction CredentialRecoveryAction.STALE_CALLBACK
-            }
-            if (!requestStore.preflightFreshResponseRequestMetadata(request, updatedAtUtc)) {
-                return@withTransaction CredentialRecoveryAction.QUARANTINED
-            }
-            if (current == null) {
-                check(
-                    transportDao.markCredentialFailureTerminal(
-                        endpointId = endpointId,
-                        requestIdentity = requestIdentity,
-                        credentialEpochId = request.credentialEpochId,
-                        failedAccessGeneration = failedAccessGeneration,
-                        expectedAttemptId = expectedAttemptId,
-                        terminalAtUtc = updatedAtUtc,
-                        failureCode = "credential_family_missing",
-                    ) == 1,
+            handleTrustedSyncUnauthorizedInCurrentTransaction(
+                endpointId = endpointId,
+                requestIdentity = requestIdentity,
+                expectedAttemptId = expectedAttemptId,
+                failedAccessGeneration = failedAccessGeneration,
+                nowEpochMs = nowEpochMs,
+                nextAttemptAtEpochMs = nextAttemptAtEpochMs,
+                updatedAtUtc = updatedAtUtc,
+            )
+        }
+
+    internal suspend fun handleTrustedSyncUnauthorizedInCurrentTransaction(
+        endpointId: String,
+        requestIdentity: String,
+        expectedAttemptId: String,
+        failedAccessGeneration: Long,
+        nowEpochMs: Long,
+        nextAttemptAtEpochMs: Long,
+        updatedAtUtc: String,
+    ): CredentialRecoveryAction {
+        check(database.inTransaction()) {
+            "Unauthorized response reduction requires an outer transaction"
+        }
+        val request = checkNotNull(
+            transportDao.findRequest(endpointId, requestIdentity),
+        ) {
+            "Unauthorized sync request is missing"
+        }
+        val storedGeneration = request.accessGenerationUsed
+        if (
+            request.state != SENDING ||
+            request.activeAttemptId != expectedAttemptId ||
+            (
+                storedGeneration != null &&
+                    storedGeneration > 0 &&
+                    storedGeneration != failedAccessGeneration
                 )
-                return@withTransaction CredentialRecoveryAction.QUARANTINED
-            }
+        ) {
+            return CredentialRecoveryAction.STALE_CALLBACK
+        }
+        val current = authDao.findState()
+        val identity = identityDao.findIdentity()
+        if (
+            current != null &&
+            (
+                identity == null ||
+                    current.credentialEpochId != request.credentialEpochId ||
+                    current.deviceId != request.deviceId ||
+                    identity.installationId != current.installationId ||
+                    identity.localOwnerId != current.localOwnerId
+                )
+        ) {
+            return CredentialRecoveryAction.STALE_CALLBACK
+        }
+        if (!requestStore.preflightFreshResponseRequestMetadata(request, updatedAtUtc)) {
+            return CredentialRecoveryAction.QUARANTINED
+        }
+        if (current == null) {
+            check(
+                markCredentialFailureTerminalInCurrentTransaction(
+                    endpointId = endpointId,
+                    requestIdentity = requestIdentity,
+                    credentialEpochId = request.credentialEpochId,
+                    failedAccessGeneration = failedAccessGeneration,
+                    expectedAttemptId = expectedAttemptId,
+                    terminalAtUtc = updatedAtUtc,
+                    failureCode = "credential_family_missing",
+                ) == 1,
+            )
+            return CredentialRecoveryAction.QUARANTINED
+        }
 
             val requestCanRecover =
                 request.attemptCount < request.attemptBudget &&
@@ -486,7 +509,7 @@ class SyncAuthPersistenceStore(
                     )
             ) {
                 check(
-                    transportDao.markCredentialFailureTerminal(
+                    markCredentialFailureTerminalInCurrentTransaction(
                         endpointId = endpointId,
                         requestIdentity = requestIdentity,
                         credentialEpochId = request.credentialEpochId,
@@ -508,13 +531,13 @@ class SyncAuthPersistenceStore(
                         ) == 1,
                     )
                 }
-                return@withTransaction CredentialRecoveryAction.QUARANTINED
+                return CredentialRecoveryAction.QUARANTINED
             }
 
-            when {
+            return when {
                 request.originalRetryCount == 1 -> {
                     check(
-                        transportDao.markCredentialRecoveryExhausted(
+                        markCredentialRecoveryExhaustedInCurrentTransaction(
                             endpointId = endpointId,
                             requestIdentity = requestIdentity,
                             credentialEpochId = request.credentialEpochId,
@@ -559,7 +582,7 @@ class SyncAuthPersistenceStore(
 
                 current.generation < failedAccessGeneration -> {
                     check(
-                        transportDao.markCredentialFailureTerminal(
+                        markCredentialFailureTerminalInCurrentTransaction(
                             endpointId = endpointId,
                             requestIdentity = requestIdentity,
                             credentialEpochId = request.credentialEpochId,
@@ -602,6 +625,58 @@ class SyncAuthPersistenceStore(
                 }
             }
         }
+
+    private suspend fun markCredentialFailureTerminalInCurrentTransaction(
+        endpointId: String,
+        requestIdentity: String,
+        credentialEpochId: String,
+        failedAccessGeneration: Long,
+        expectedAttemptId: String,
+        terminalAtUtc: String,
+        failureCode: String,
+    ): Int {
+        check(database.inTransaction()) {
+            "Credential failure terminalization requires an outer transaction"
+        }
+        val terminalized = transportDao.markCredentialFailureTerminalRow(
+            endpointId = endpointId,
+            requestIdentity = requestIdentity,
+            credentialEpochId = credentialEpochId,
+            failedAccessGeneration = failedAccessGeneration,
+            expectedAttemptId = expectedAttemptId,
+            terminalAtUtc = terminalAtUtc,
+            failureCode = failureCode,
+        )
+        if (terminalized == 1 && endpointId == SYNC_PUSH) {
+            transportDao.releaseTerminalPushBatch(requestIdentity)
+        }
+        return terminalized
+    }
+
+    private suspend fun markCredentialRecoveryExhaustedInCurrentTransaction(
+        endpointId: String,
+        requestIdentity: String,
+        credentialEpochId: String,
+        failedAccessGeneration: Long,
+        expectedAttemptId: String,
+        terminalAtUtc: String,
+    ): Int {
+        check(database.inTransaction()) {
+            "Credential recovery terminalization requires an outer transaction"
+        }
+        val terminalized = transportDao.markCredentialRecoveryExhaustedRow(
+            endpointId = endpointId,
+            requestIdentity = requestIdentity,
+            credentialEpochId = credentialEpochId,
+            failedAccessGeneration = failedAccessGeneration,
+            expectedAttemptId = expectedAttemptId,
+            terminalAtUtc = terminalAtUtc,
+        )
+        if (terminalized == 1 && endpointId == SYNC_PUSH) {
+            transportDao.releaseTerminalPushBatch(requestIdentity)
+        }
+        return terminalized
+    }
 
     /**
      * A process death after a non-replayable refresh was dispatched is always
@@ -794,110 +869,127 @@ class SyncAuthPersistenceStore(
             (response.httpStatus == 200 && response.terminalErrorCode == null) ||
                 (
                     response.httpStatus == 401 &&
-                        response.terminalErrorCode == "credential_unavailable"
+                    response.terminalErrorCode == "credential_unavailable"
                     ),
         )
         return database.withTransaction {
-            val request = checkNotNull(
-                transportDao.findRequest(response.endpointId, response.requestIdentity),
-            ) {
-                "Revoke request is missing"
-            }
-            if (
-                request.state != TERMINAL &&
-                (
-                    request.state != SENDING ||
-                        request.activeAttemptId != response.expectedAttemptId
-                    )
-            ) {
-                return@withTransaction false
-            }
-            val familyBefore = authDao.findState()
-            if (
-                request.state != TERMINAL &&
-                (
-                    familyBefore == null ||
-                        familyBefore.credentialEpochId != request.credentialEpochId ||
-                        familyBefore.deviceId != request.deviceId ||
-                        familyBefore.state != REVOKE_PENDING ||
-                        (
-                            request.accessGenerationUsed != null &&
-                                request.accessGenerationUsed > 0 &&
-                                request.accessGenerationUsed != familyBefore.generation
-                            )
-                    )
-            ) {
-                return@withTransaction false
-            }
-            if (
-                request.state != TERMINAL &&
-                !requestStore.preflightFreshResponseRequestMetadata(
-                    request,
-                    response.terminalAtUtc,
-                )
-            ) {
-                return@withTransaction false
-            }
-            val generation = checkNotNull(request.accessGenerationUsed) {
-                "Revoke request lost its credential generation"
-            }
-            val installed = transportDao.storeTerminalResponse(
-                endpointId = response.endpointId,
-                requestIdentity = response.requestIdentity,
-                expectedAttemptId = response.expectedAttemptId,
-                httpStatus = response.httpStatus,
-                exactResponseBody = response.exactResponseBody,
-                responseSha256 = response.responseSha256,
-                terminalAtUtc = response.terminalAtUtc,
-                terminalErrorCode = response.terminalErrorCode,
-            )
-            if (installed == 0) {
-                val retained = checkNotNull(
-                    transportDao.findRequest(
-                        response.endpointId,
-                        response.requestIdentity,
-                    ),
-                )
-                if (
-                    retained.state != TERMINAL &&
-                    (
-                        retained.state != SENDING ||
-                            retained.activeAttemptId != response.expectedAttemptId
-                        )
-                ) {
-                    return@withTransaction false
-                }
-                requireExactTerminalResponse(retained, response)
-            }
-            val revoked = authDao.markExactFamilyRevoked(
-                credentialEpochId = request.credentialEpochId,
-                deviceId = request.deviceId,
-                generation = generation,
-                updatedAtUtc = response.terminalAtUtc,
-            )
-            val exactFamilyBefore =
-                familyBefore != null &&
-                    familyBefore.credentialEpochId == request.credentialEpochId &&
-                    familyBefore.deviceId == request.deviceId &&
-                    familyBefore.generation == generation
-            when {
-                exactFamilyBefore && familyBefore.state == REVOKE_PENDING ->
-                    check(revoked == 1) {
-                        "Terminal revoke lost its exact-family CAS"
-                    }
-
-                exactFamilyBefore && familyBefore.state == REVOKED &&
-                    installed == 0 ->
-                    check(revoked == 0)
-
-                !exactFamilyBefore -> check(revoked == 0) {
-                    "Late revoke modified a replacement credential family"
-                }
-
-                else -> error("Terminal revoke found an invalid exact-family state")
-            }
-            true
+            commitRevokeTerminalInCurrentTransaction(response)
         }
+    }
+
+    internal suspend fun commitRevokeTerminalInCurrentTransaction(
+        response: TerminalHttpResponsePersistence,
+    ): Boolean {
+        check(database.inTransaction()) {
+            "Terminal revoke reduction requires an outer transaction"
+        }
+        require(response.endpointId == AUTH_REVOKE)
+        require(
+            (response.httpStatus == 200 && response.terminalErrorCode == null) ||
+                (
+                    response.httpStatus == 401 &&
+                        response.terminalErrorCode == "credential_unavailable"
+                    ),
+        )
+        val request = checkNotNull(
+            transportDao.findRequest(response.endpointId, response.requestIdentity),
+        ) {
+            "Revoke request is missing"
+        }
+        if (
+            request.state != TERMINAL &&
+            (
+                request.state != SENDING ||
+                    request.activeAttemptId != response.expectedAttemptId
+                )
+        ) {
+            return false
+        }
+        val familyBefore = authDao.findState()
+        if (
+            request.state != TERMINAL &&
+            (
+                familyBefore == null ||
+                    familyBefore.credentialEpochId != request.credentialEpochId ||
+                    familyBefore.deviceId != request.deviceId ||
+                    familyBefore.state != REVOKE_PENDING ||
+                    (
+                        request.accessGenerationUsed != null &&
+                            request.accessGenerationUsed > 0 &&
+                            request.accessGenerationUsed != familyBefore.generation
+                        )
+                )
+        ) {
+            return false
+        }
+        if (
+            request.state != TERMINAL &&
+            !requestStore.preflightFreshResponseRequestMetadata(
+                request,
+                response.terminalAtUtc,
+            )
+        ) {
+            return false
+        }
+        val generation = checkNotNull(request.accessGenerationUsed) {
+            "Revoke request lost its credential generation"
+        }
+        val installed = transportDao.storeTerminalResponse(
+            endpointId = response.endpointId,
+            requestIdentity = response.requestIdentity,
+            expectedAttemptId = response.expectedAttemptId,
+            httpStatus = response.httpStatus,
+            exactResponseBody = response.exactResponseBody,
+            responseSha256 = response.responseSha256,
+            terminalAtUtc = response.terminalAtUtc,
+            terminalErrorCode = response.terminalErrorCode,
+        )
+        if (installed == 0) {
+            val retained = checkNotNull(
+                transportDao.findRequest(
+                    response.endpointId,
+                    response.requestIdentity,
+                ),
+            )
+            if (
+                retained.state != TERMINAL &&
+                (
+                    retained.state != SENDING ||
+                        retained.activeAttemptId != response.expectedAttemptId
+                    )
+            ) {
+                return false
+            }
+            requireExactTerminalResponse(retained, response)
+        }
+        val revoked = authDao.markExactFamilyRevoked(
+            credentialEpochId = request.credentialEpochId,
+            deviceId = request.deviceId,
+            generation = generation,
+            updatedAtUtc = response.terminalAtUtc,
+        )
+        val exactFamilyBefore =
+            familyBefore != null &&
+                familyBefore.credentialEpochId == request.credentialEpochId &&
+                familyBefore.deviceId == request.deviceId &&
+                familyBefore.generation == generation
+        when {
+            exactFamilyBefore && familyBefore.state == REVOKE_PENDING ->
+                check(revoked == 1) {
+                    "Terminal revoke lost its exact-family CAS"
+                }
+
+            exactFamilyBefore && familyBefore.state == REVOKED &&
+                installed == 0 ->
+                check(revoked == 0)
+
+            !exactFamilyBefore -> check(revoked == 0) {
+                "Late revoke modified a replacement credential family"
+            }
+
+            else -> error("Terminal revoke found an invalid exact-family state")
+        }
+        return true
     }
 
     suspend fun quarantineRevokeIntegrity(
@@ -957,6 +1049,46 @@ class SyncAuthPersistenceStore(
             }
             true
         }
+
+    internal suspend fun haltVerifiedRevokeAfterRollback(
+        credentialEpochId: String,
+        accessGenerationUsed: Long,
+        errorCode: String,
+        updatedAtUtc: String,
+    ) {
+        check(!database.inTransaction()) {
+            "Verified revoke halt must run only after the response transaction rolled back"
+        }
+        require(accessGenerationUsed > 0)
+        require(errorCode.isNotBlank())
+        try {
+            database.withTransaction {
+                val current = authDao.findState()
+                if (
+                    current?.credentialEpochId == credentialEpochId &&
+                    current.generation == accessGenerationUsed &&
+                    current.state == REVOKE_PENDING
+                ) {
+                    check(
+                        authDao.quarantine(
+                            credentialEpochId = current.credentialEpochId,
+                            generation = current.generation,
+                            expectedState = REVOKE_PENDING,
+                            newState = INTEGRITY_FAILURE,
+                            updatedAtUtc = updatedAtUtc,
+                            failureCode = errorCode,
+                        ) == 1,
+                    ) {
+                        "Verified revoke halt lost its exact current-family CAS"
+                    }
+                }
+            }
+        } catch (error: kotlinx.coroutines.CancellationException) {
+            throw error
+        } catch (_: Exception) {
+            // Preserve the original response-integrity failure for the caller.
+        }
+    }
 
     private suspend fun quarantineRefreshAttempt(
         requestId: String,
@@ -1176,6 +1308,7 @@ class SyncAuthPersistenceStore(
         const val AUTH_ENROLL = "auth_enroll"
         const val AUTH_REFRESH = "auth_refresh"
         const val AUTH_REVOKE = "auth_revoke"
+        const val SYNC_PUSH = "sync_push"
         const val ACTIVE = "active"
         const val REFRESH_IN_FLIGHT = "refresh_in_flight"
         const val REVOKE_PENDING = "revoke_pending"

@@ -16,6 +16,7 @@ import ru.andriyshkoy.lifeagent.data.local.db.entity.LocalRevisionParentEntity
 import ru.andriyshkoy.lifeagent.data.local.db.entity.SyncBootstrapSessionEntity
 import ru.andriyshkoy.lifeagent.data.local.db.entity.SyncHttpRequestEntity
 import ru.andriyshkoy.lifeagent.data.local.db.entity.SyncPageReceiptEntity
+import ru.andriyshkoy.lifeagent.data.local.db.entity.SyncReplicaCursorEntity
 import ru.andriyshkoy.lifeagent.data.local.db.entity.SyncServerChangeEntity
 import ru.andriyshkoy.lifeagent.data.local.db.entity.SyncStreamStateEntity
 
@@ -72,7 +73,39 @@ class SyncPersistenceStore(
         require(response.endpointId == PUSH_ENDPOINT)
         try {
             database.withTransaction {
-                val request = requireReplicaValue(
+                commitPushResponseInCurrentTransaction(response, results)
+            }
+        } catch (error: ReplicaIntegrityException) {
+            haltPushAfterRollback(
+                response = response,
+                error = error,
+            )
+            throw error
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Exception) {
+            val integrityError = ReplicaIntegrityException(
+                errorCode = "push_reduction_failed",
+                message = "Verified push response could not reduce atomically",
+                cause = error,
+            )
+            haltPushAfterRollback(
+                response = response,
+                error = integrityError,
+            )
+            throw integrityError
+        }
+    }
+
+    internal suspend fun commitPushResponseInCurrentTransaction(
+        response: TerminalHttpResponsePersistence,
+        results: List<PushResultPersistence>,
+    ) {
+        check(database.inTransaction()) {
+            "Push response reduction requires an outer transaction"
+        }
+        require(response.endpointId == PUSH_ENDPOINT)
+        val request = requireReplicaValue(
                     transportDao.findRequest(
                         endpointId = response.endpointId,
                         requestIdentity = response.requestIdentity,
@@ -83,7 +116,7 @@ class SyncPersistenceStore(
                 if (isStaleAttemptCallback(request, response)) {
                     // A newer worker owns the request. The late response may
                     // neither install its bytes nor reduce its parsed results.
-                    return@withTransaction
+                    return
                 }
                 val currentStream = replicaDao.findStreamState()
                 if (
@@ -94,7 +127,7 @@ class SyncPersistenceStore(
                             request.deviceId != currentStream.deviceId
                         )
                 ) {
-                    return@withTransaction
+                    return
                 }
                 val stream = requireReplicaValue(
                     currentStream,
@@ -114,7 +147,7 @@ class SyncPersistenceStore(
                         response.terminalAtUtc,
                     )
                 ) {
-                    return@withTransaction
+                    return
                 }
                 val batch = requireReplicaValue(
                     transportDao.findBatch(response.requestIdentity),
@@ -232,27 +265,6 @@ class SyncPersistenceStore(
                         )
                     }
                 }
-            }
-        } catch (error: ReplicaIntegrityException) {
-            haltPushAfterRollback(
-                response = response,
-                error = error,
-            )
-            throw error
-        } catch (error: CancellationException) {
-            throw error
-        } catch (error: Exception) {
-            val integrityError = ReplicaIntegrityException(
-                errorCode = "push_reduction_failed",
-                message = "Verified push response could not reduce atomically",
-                cause = error,
-            )
-            haltPushAfterRollback(
-                response = response,
-                error = integrityError,
-            )
-            throw integrityError
-        }
     }
 
     internal suspend fun commitBootstrapPage(
@@ -264,11 +276,56 @@ class SyncPersistenceStore(
         require(receipt.completeOrHasMore == (continuationFactory == null)) {
             "Exactly one durable continuation is required for a non-final bootstrap page"
         }
-        val bootstrapId = receipt.bootstrapId
         var streamBinding: SyncStreamStateEntity? = null
         try {
             database.withTransaction {
-                requireReplica(
+                commitBootstrapPageCore(
+                    response = response,
+                    receipt = receipt,
+                    changes = changes,
+                    continuationFactory = continuationFactory,
+                    verifiedStreamObserver = { streamBinding = it },
+                )
+            }
+        } catch (error: ReplicaIntegrityException) {
+            haltStreamAfterRollback(
+                stream = streamBinding,
+                error = error,
+                updatedAtUtc = response.terminalAtUtc,
+            )
+            throw error
+        }
+    }
+
+    internal suspend fun commitBootstrapPageInCurrentTransaction(
+        response: TerminalHttpResponsePersistence,
+        receipt: SyncPageReceiptEntity,
+        changes: List<ReplicaChangePersistence>,
+        continuationFactory: (suspend (SyncBootstrapSessionEntity) -> SyncHttpRequestEntity)? = null,
+    ) {
+        check(database.inTransaction()) {
+            "Bootstrap page reduction requires an outer transaction"
+        }
+        require(receipt.completeOrHasMore == (continuationFactory == null)) {
+            "Exactly one durable continuation is required for a non-final bootstrap page"
+        }
+        commitBootstrapPageCore(
+            response = response,
+            receipt = receipt,
+            changes = changes,
+            continuationFactory = continuationFactory,
+        )
+    }
+
+    private suspend fun commitBootstrapPageCore(
+        response: TerminalHttpResponsePersistence,
+        receipt: SyncPageReceiptEntity,
+        changes: List<ReplicaChangePersistence>,
+        continuationFactory: (suspend (SyncBootstrapSessionEntity) -> SyncHttpRequestEntity)?,
+        verifiedStreamObserver: (SyncStreamStateEntity) -> Unit = {},
+    ) {
+        val bootstrapId = receipt.bootstrapId
+        requireReplica(
                     response.endpointId == BOOTSTRAP_ENDPOINT &&
                         receipt.endpointId == response.endpointId &&
                         receipt.requestIdentity == response.requestIdentity &&
@@ -290,7 +347,7 @@ class SyncPersistenceStore(
                     "Durable sync request is missing",
                 )
                 if (isStaleAttemptCallback(request, response)) {
-                    return@withTransaction
+                    return
                 }
                 val session = requireReplicaValue(
                     replicaDao.findBootstrapSession(durableBootstrapId),
@@ -316,7 +373,7 @@ class SyncPersistenceStore(
                         "Bootstrap session no longer belongs to the active stream",
                     )
                     if (session.state in setOf("staging", "complete")) {
-                        streamBinding = stream
+                        verifiedStreamObserver(stream)
                     }
                 } else {
                     val activeSession = replicaDao.findBootstrapSessionWithActiveSlot()
@@ -329,7 +386,7 @@ class SyncPersistenceStore(
                         session.credentialEpochId != stream.credentialEpochId ||
                         session.deviceId != stream.deviceId
                     ) {
-                        return@withTransaction
+                        return
                     }
                     if (
                         !requestStore.preflightFreshResponseRequestMetadata(
@@ -337,7 +394,7 @@ class SyncPersistenceStore(
                             response.terminalAtUtc,
                         )
                     ) {
-                        return@withTransaction
+                        return
                     }
                 }
                 verifyBootstrapRequestBinding(
@@ -361,7 +418,7 @@ class SyncPersistenceStore(
                         "sync_integrity_already_halted",
                         "Bootstrap sync is already halted",
                     )
-                    streamBinding = stream
+                    verifiedStreamObserver(stream)
                 }
 
                 validateBootstrapPageShape(receipt, changes)
@@ -411,7 +468,7 @@ class SyncPersistenceStore(
                             message = "Bootstrap page replay has no durable active state",
                         )
                     }
-                    return@withTransaction
+                    return
                 }
                 validateBootstrapSessionContinuation(
                     session = session,
@@ -427,6 +484,10 @@ class SyncPersistenceStore(
                     "bootstrap_page_collision",
                     "Bootstrap page or request identity is already claimed",
                 )
+                reserveBootstrapCursorLineage(
+                    lineageId = durableBootstrapId,
+                    receipt = receipt,
+                )
 
                 val priorChanges = replicaDao.findStagedChanges(durableBootstrapId)
                     .map(ReplicaChangePersistence::from)
@@ -435,14 +496,9 @@ class SyncPersistenceStore(
                     ReplicaTopologyState(),
                 )
                 try {
-                    replicaDao.stageBootstrapPage(
+                    stageBootstrapPageInCurrentTransaction(
                         receipt = receipt,
-                        changes = changes.map {
-                            it.asStaged(
-                                bootstrapId = durableBootstrapId,
-                                pageId = receipt.pageId,
-                            )
-                        },
+                        changes = changes,
                         responseBodyBytes = response.exactResponseBody.size.toLong(),
                     )
                 } catch (error: ReplicaIntegrityException) {
@@ -502,15 +558,6 @@ class SyncPersistenceStore(
                     )
                     transportDao.insertRequest(continuation)
                 }
-            }
-        } catch (error: ReplicaIntegrityException) {
-            haltStreamAfterRollback(
-                stream = streamBinding,
-                error = error,
-                updatedAtUtc = response.terminalAtUtc,
-            )
-            throw error
-        }
     }
 
     /**
@@ -525,7 +572,45 @@ class SyncPersistenceStore(
         var streamBinding: SyncStreamStateEntity? = null
         try {
             database.withTransaction {
-                requireReplica(
+                commitPullPageCore(
+                    response = response,
+                    receipt = receipt,
+                    changes = changes,
+                    verifiedStreamObserver = { streamBinding = it },
+                )
+            }
+        } catch (error: ReplicaIntegrityException) {
+            haltStreamAfterRollback(
+                stream = streamBinding,
+                error = error,
+                updatedAtUtc = response.terminalAtUtc,
+            )
+            throw error
+        }
+    }
+
+    internal suspend fun commitPullPageInCurrentTransaction(
+        response: TerminalHttpResponsePersistence,
+        receipt: SyncPageReceiptEntity,
+        changes: List<ReplicaChangePersistence>,
+    ) {
+        check(database.inTransaction()) {
+            "Pull page reduction requires an outer transaction"
+        }
+        commitPullPageCore(
+            response = response,
+            receipt = receipt,
+            changes = changes,
+        )
+    }
+
+    private suspend fun commitPullPageCore(
+        response: TerminalHttpResponsePersistence,
+        receipt: SyncPageReceiptEntity,
+        changes: List<ReplicaChangePersistence>,
+        verifiedStreamObserver: (SyncStreamStateEntity) -> Unit = {},
+    ) {
+        requireReplica(
                     response.endpointId == PULL_ENDPOINT &&
                         receipt.endpointId == response.endpointId &&
                         receipt.requestIdentity == response.requestIdentity &&
@@ -543,7 +628,7 @@ class SyncPersistenceStore(
                     "Durable sync request is missing",
                 )
                 if (isStaleAttemptCallback(request, response)) {
-                    return@withTransaction
+                    return
                 }
                 val currentStream = replicaDao.findStreamState()
                 if (
@@ -554,7 +639,7 @@ class SyncPersistenceStore(
                             request.deviceId != currentStream.deviceId
                         )
                 ) {
-                    return@withTransaction
+                    return
                 }
                 val stream = requireReplicaValue(
                     currentStream,
@@ -574,9 +659,9 @@ class SyncPersistenceStore(
                         response.terminalAtUtc,
                     )
                 ) {
-                    return@withTransaction
+                    return
                 }
-                streamBinding = stream
+                verifiedStreamObserver(stream)
                 validatePullPageShape(receipt, changes)
                 val decodedPage = changes.map(replicaCodec::decode)
                 decodedPage.forEach { change ->
@@ -599,7 +684,7 @@ class SyncPersistenceStore(
                         "Pull replay has a non-applied durable receipt",
                     )
                     verifyMaterializedReplay(decodedPage)
-                    return@withTransaction
+                    return
                 }
                 requireReplica(
                     stream.integrityErrorCode == null,
@@ -626,6 +711,16 @@ class SyncPersistenceStore(
                             ),
                     "pull_cursor_invalid",
                     "Pull page does not continue the committed stream position",
+                )
+                val replicaLineageId = requireReplicaValue(
+                    stream.replicaLineageId,
+                    "pull_cursor_invalid",
+                    "Pull stream has no authoritative cursor lineage",
+                )
+                reservePullCursorLineage(
+                    lineageId = replicaLineageId,
+                    receipt = receipt,
+                    changes = changes,
                 )
                 requireReplica(
                     replicaDao.findPageReceipt(receipt.pageId) == null &&
@@ -659,6 +754,7 @@ class SyncPersistenceStore(
                     replicaDao.compareAndAdvanceCursor(
                         credentialEpochId = stream.credentialEpochId,
                         deviceId = stream.deviceId,
+                        replicaLineageId = replicaLineageId,
                         expectedCursor = stream.appliedCursor,
                         expectedServerSequence = stream.lastAppliedServerSequence,
                         nextCursor = requireReplicaValue(
@@ -673,15 +769,6 @@ class SyncPersistenceStore(
                     "pull_cursor_cas_failed",
                     "Pull data and cursor could not advance together",
                 )
-            }
-        } catch (error: ReplicaIntegrityException) {
-            haltStreamAfterRollback(
-                stream = streamBinding,
-                error = error,
-                updatedAtUtc = response.terminalAtUtc,
-            )
-            throw error
-        }
     }
 
     /**
@@ -721,13 +808,57 @@ class SyncPersistenceStore(
         var streamBinding: SyncStreamStateEntity? = null
         try {
             database.withTransaction {
-                val request = requireReplicaValue(
+                commitBootstrapCursorExpiredCore(
+                    response = response,
+                    bootstrapId = bootstrapId,
+                    replacementFactory = replacementFactory,
+                    existingCandidateVerifier = existingCandidateVerifier,
+                    verifiedStreamObserver = { streamBinding = it },
+                )
+            }
+        } catch (error: ReplicaIntegrityException) {
+            haltStreamAfterRollback(
+                stream = streamBinding,
+                error = error,
+                updatedAtUtc = response.terminalAtUtc,
+            )
+            throw error
+        }
+    }
+
+    internal suspend fun commitBootstrapCursorExpiredInCurrentTransaction(
+        response: TerminalHttpResponsePersistence,
+        bootstrapId: String,
+        replacementFactory: suspend () -> BootstrapIntentPersistence,
+        existingCandidateVerifier: suspend (SyncBootstrapSessionEntity) -> Boolean = { true },
+    ) {
+        check(database.inTransaction()) {
+            "Bootstrap expiry reduction requires an outer transaction"
+        }
+        require(response.endpointId == BOOTSTRAP_ENDPOINT)
+        require(response.terminalErrorCode == CURSOR_EXPIRED)
+        commitBootstrapCursorExpiredCore(
+            response = response,
+            bootstrapId = bootstrapId,
+            replacementFactory = replacementFactory,
+            existingCandidateVerifier = existingCandidateVerifier,
+        )
+    }
+
+    private suspend fun commitBootstrapCursorExpiredCore(
+        response: TerminalHttpResponsePersistence,
+        bootstrapId: String,
+        replacementFactory: suspend () -> BootstrapIntentPersistence,
+        existingCandidateVerifier: suspend (SyncBootstrapSessionEntity) -> Boolean,
+        verifiedStreamObserver: (SyncStreamStateEntity) -> Unit = {},
+    ) {
+        val request = requireReplicaValue(
                     transportDao.findRequest(response.endpointId, response.requestIdentity),
                     "bootstrap_request_missing",
                     "Expired bootstrap request is missing",
                 )
                 if (isStaleAttemptCallback(request, response)) {
-                    return@withTransaction
+                    return
                 }
                 val session = requireReplicaValue(
                     replicaDao.findBootstrapSession(bootstrapId),
@@ -750,7 +881,7 @@ class SyncPersistenceStore(
                         session = session,
                         retainedTerminalAtUtc = retainedTerminalAtUtc,
                     )
-                    return@withTransaction
+                    return
                 }
                 val activeSession = replicaDao.findBootstrapSessionWithActiveSlot()
                 if (
@@ -761,10 +892,10 @@ class SyncPersistenceStore(
                     // A callback for a superseded shadow is a legitimate late
                     // arrival. It must not authenticate its old candidate
                     // against the replacement session or halt the new stream.
-                    return@withTransaction
+                    return
                 }
-                val stream = replicaDao.findStreamState() ?: return@withTransaction
-                val currentAuth = authDao.findState() ?: return@withTransaction
+                val stream = replicaDao.findStreamState() ?: return
+                val currentAuth = authDao.findState() ?: return
                 if (
                     request.credentialEpochId != session.credentialEpochId ||
                     request.deviceId != session.deviceId ||
@@ -774,7 +905,7 @@ class SyncPersistenceStore(
                     currentAuth.deviceId != session.deviceId ||
                     currentAuth.state !in setOf("active", "refresh_in_flight")
                 ) {
-                    return@withTransaction
+                    return
                 }
                 if (
                     !requestStore.preflightFreshResponseRequestMetadata(
@@ -782,17 +913,17 @@ class SyncPersistenceStore(
                         response.terminalAtUtc,
                     )
                 ) {
-                    return@withTransaction
+                    return
                 }
                 if (!existingCandidateVerifier(session)) {
-                    return@withTransaction
+                    return
                 }
                 verifyBootstrapRequestBinding(
                     request = request,
                     session = session,
                     expectedPageCursor = session.nextPageCursor,
                 )
-                streamBinding = stream
+                verifiedStreamObserver(stream)
                 requireReplica(
                     installOrVerifyTerminalResponse(response),
                     "bootstrap_expiry_replay_drift",
@@ -897,15 +1028,6 @@ class SyncPersistenceStore(
                         retainedRequestIdentity,
                     terminalAtUtc = response.terminalAtUtc,
                 )
-            }
-        } catch (error: ReplicaIntegrityException) {
-            haltStreamAfterRollback(
-                stream = streamBinding,
-                error = error,
-                updatedAtUtc = response.terminalAtUtc,
-            )
-            throw error
-        }
     }
 
     /**
@@ -918,7 +1040,37 @@ class SyncPersistenceStore(
         var streamBinding: SyncStreamStateEntity? = null
         try {
             database.withTransaction {
-                val request = requireReplicaValue(
+                commitCursorInvalidCore(
+                    response = response,
+                    verifiedStreamObserver = { streamBinding = it },
+                )
+            }
+        } catch (error: ReplicaIntegrityException) {
+            haltStreamAfterRollback(
+                stream = streamBinding,
+                error = error,
+                updatedAtUtc = response.terminalAtUtc,
+            )
+            throw error
+        }
+    }
+
+    internal suspend fun commitCursorInvalidInCurrentTransaction(
+        response: TerminalHttpResponsePersistence,
+    ) {
+        check(database.inTransaction()) {
+            "Cursor-invalid reduction requires an outer transaction"
+        }
+        require(response.endpointId == BOOTSTRAP_ENDPOINT || response.endpointId == PULL_ENDPOINT)
+        require(response.terminalErrorCode == CURSOR_INVALID)
+        commitCursorInvalidCore(response)
+    }
+
+    private suspend fun commitCursorInvalidCore(
+        response: TerminalHttpResponsePersistence,
+        verifiedStreamObserver: (SyncStreamStateEntity?) -> Unit = {},
+    ) {
+        val request = requireReplicaValue(
                     transportDao.findRequest(response.endpointId, response.requestIdentity),
                     "sync_request_missing",
                     "Cursor-invalid request is missing",
@@ -948,7 +1100,7 @@ class SyncPersistenceStore(
                                     .findBootstrapSessionWithActiveSlot()
                                     ?.bootstrapId == bootstrapId
                             ) {
-                                streamBinding = activeStream
+                                verifiedStreamObserver(activeStream)
                                 verifyBootstrapRequestBinding(
                                     request = request,
                                     session = session,
@@ -956,11 +1108,11 @@ class SyncPersistenceStore(
                                 )
                                 activeStream
                             } else {
-                                streamBinding = null
+                                verifiedStreamObserver(null)
                                 null
                             }
                         } else {
-                            streamBinding = activeStream
+                            verifiedStreamObserver(activeStream)
                             activeStream
                         }
                     requireReplica(
@@ -976,10 +1128,10 @@ class SyncPersistenceStore(
                             "Cursor-invalid replay lost its durable stream halt",
                         )
                     }
-                    return@withTransaction
+                    return
                 }
                 if (isStaleAttemptCallback(request, response)) {
-                    return@withTransaction
+                    return
                 }
                 val stream = replicaDao.findStreamState()
                 if (response.endpointId == BOOTSTRAP_ENDPOINT) {
@@ -987,9 +1139,9 @@ class SyncPersistenceStore(
                         request.credentialEpochId == it.credentialEpochId &&
                             request.deviceId == it.deviceId
                     }
-                    streamBinding = tentativeStream
+                    verifiedStreamObserver(tentativeStream)
                     if (tentativeStream == null) {
-                        streamBinding = null
+                        verifiedStreamObserver(null)
                         requireReplica(
                             transportDao.markSupersededBootstrapRequest(
                                 requestIdentity = request.requestIdentity,
@@ -1001,7 +1153,7 @@ class SyncPersistenceStore(
                             "bootstrap_supersession_drift",
                             "Historical bootstrap request lost its terminal CAS",
                         )
-                        return@withTransaction
+                        return
                     }
                     val requestBody = bootstrapRequestBody(request)
                     val bootstrapId = bootstrapRequestString(
@@ -1017,7 +1169,7 @@ class SyncPersistenceStore(
                             .findBootstrapSessionWithActiveSlot()
                             ?.bootstrapId != bootstrapId
                     ) {
-                        streamBinding = null
+                        verifiedStreamObserver(null)
                         requireReplica(
                             transportDao.markSupersededBootstrapRequest(
                                 requestIdentity = request.requestIdentity,
@@ -1029,7 +1181,7 @@ class SyncPersistenceStore(
                             "bootstrap_supersession_drift",
                             "Superseded bootstrap request lost its terminal CAS",
                         )
-                        return@withTransaction
+                        return
                     }
                     if (
                         !requestStore.preflightFreshResponseRequestMetadata(
@@ -1037,7 +1189,7 @@ class SyncPersistenceStore(
                             response.terminalAtUtc,
                         )
                     ) {
-                        return@withTransaction
+                        return
                     }
                     verifyBootstrapRequestBinding(
                         request = request,
@@ -1050,7 +1202,7 @@ class SyncPersistenceStore(
                         response.terminalAtUtc,
                     )
                 ) {
-                    return@withTransaction
+                    return
                 }
                 val activeStream = requireReplicaValue(
                     stream,
@@ -1063,7 +1215,7 @@ class SyncPersistenceStore(
                     "sync_request_binding_drift",
                     "Cursor-invalid request no longer belongs to the active stream",
                 )
-                streamBinding = activeStream
+                verifiedStreamObserver(activeStream)
                 if (!installOrVerifyTerminalResponse(response)) {
                     requireReplica(
                         activeStream.phase == "integrity_halted" &&
@@ -1071,7 +1223,7 @@ class SyncPersistenceStore(
                         CURSOR_INVALID,
                         "Cursor-invalid replay lost its durable stream halt",
                     )
-                    return@withTransaction
+                    return
                 }
                 requireReplica(
                     replicaDao.markIntegrityHalted(
@@ -1083,15 +1235,6 @@ class SyncPersistenceStore(
                     "sync_stream_missing",
                     "Cursor-invalid response could not halt the sync stream",
                 )
-            }
-        } catch (error: ReplicaIntegrityException) {
-            haltStreamAfterRollback(
-                stream = streamBinding,
-                error = error,
-                updatedAtUtc = response.terminalAtUtc,
-            )
-            throw error
-        }
     }
 
     private fun isStaleAttemptCallback(
@@ -1263,11 +1406,19 @@ class SyncPersistenceStore(
             )
         } else {
             requireReplica(
-                receipt.nextCursor != null && changes.isNotEmpty(),
+                receipt.nextCursor != null &&
+                    receipt.nextCursor != receipt.fromCursor &&
+                    changes.isNotEmpty(),
                 "bootstrap_cursor_invalid",
-                "An incomplete bootstrap page needs changes and a continuation cursor",
+                "An incomplete bootstrap page needs a new continuation cursor and changes",
             )
         }
+        requireReplica(
+            receipt.incrementalCursor != receipt.fromCursor &&
+                receipt.incrementalCursor != receipt.nextCursor,
+            "bootstrap_cursor_invalid",
+            "The incremental cursor cannot alias this page's pagination cursors",
+        )
         if (changes.isEmpty()) {
             requireReplica(
                 receipt.completeOrHasMore && receipt.nextCursor == null,
@@ -1283,9 +1434,26 @@ class SyncPersistenceStore(
         receipt: SyncPageReceiptEntity,
         changes: List<ReplicaChangePersistence>,
     ) {
+        val hasExactInitialMetadata =
+            session.nextPageIndex == 0 &&
+                session.stagedPageCount == 0 &&
+                session.stagedBodyBytes == 0L &&
+                session.snapshotId == null &&
+                session.nextPageCursor == null &&
+                session.candidateIncrementalCursor == null &&
+                session.lastStagedServerSequence == null
+        val hasExactProgressedMetadata =
+            session.nextPageIndex > 0 &&
+                session.nextPageIndex == session.stagedPageCount &&
+                session.stagedBodyBytes > 0L &&
+                session.snapshotId != null &&
+                session.nextPageCursor != null &&
+                session.candidateIncrementalCursor != null &&
+                session.lastStagedServerSequence != null
         requireReplica(
             session.state == "staging" &&
                 session.activeSlot == 1 &&
+                (hasExactInitialMetadata || hasExactProgressedMetadata) &&
                 session.nextPageIndex == receipt.pageIndex &&
                 session.nextPageCursor == receipt.fromCursor &&
                 (session.snapshotId == null || session.snapshotId == receipt.snapshotId) &&
@@ -1306,6 +1474,64 @@ class SyncPersistenceStore(
         )
     }
 
+    private suspend fun stageBootstrapPageInCurrentTransaction(
+        receipt: SyncPageReceiptEntity,
+        changes: List<ReplicaChangePersistence>,
+        responseBodyBytes: Long,
+    ) {
+        check(database.inTransaction()) {
+            "Bootstrap staging requires an outer transaction"
+        }
+        val bootstrapId = checkNotNull(receipt.bootstrapId)
+        val snapshotId = checkNotNull(receipt.snapshotId)
+        val incrementalCursor = checkNotNull(receipt.incrementalCursor)
+        require(receipt.state == "staged")
+        require(receipt.endpointId == BOOTSTRAP_ENDPOINT)
+        require(responseBodyBytes >= 0)
+        require(replicaDao.terminalRequestExists(receipt.endpointId, receipt.requestIdentity)) {
+            "Bootstrap page may only be staged from a terminal verified request"
+        }
+        require(receipt.changeCount == changes.size)
+        val sequences = changes.map { it.serverSequence }
+        require(sequences.zipWithNext().all { (previous, next) -> previous < next }) {
+            "Bootstrap page sequences must be strictly increasing"
+        }
+        if (changes.isEmpty()) {
+            require(receipt.firstServerSequence == null)
+            require(receipt.lastServerSequence == null)
+        } else {
+            require(receipt.firstServerSequence == sequences.first())
+            require(receipt.lastServerSequence == sequences.last())
+        }
+        replicaDao.insertPageReceipt(receipt)
+        if (changes.isNotEmpty()) {
+            replicaDao.insertStagedChanges(
+                changes.map {
+                    it.asStaged(
+                        bootstrapId = bootstrapId,
+                        pageId = receipt.pageId,
+                    )
+                },
+            )
+        }
+        check(
+            replicaDao.advanceBootstrapSession(
+                bootstrapId = bootstrapId,
+                expectedPageIndex = receipt.pageIndex,
+                expectedPageCursor = receipt.fromCursor,
+                snapshotId = snapshotId,
+                nextPageCursor = receipt.nextCursor,
+                incrementalCursor = incrementalCursor,
+                firstServerSequence = receipt.firstServerSequence,
+                lastServerSequence = receipt.lastServerSequence,
+                responseBodyBytes = responseBodyBytes,
+                updatedAtUtc = receipt.receivedAtUtc,
+            ) == 1,
+        ) {
+            "Bootstrap page does not continue the active staging session"
+        }
+    }
+
     private fun validatePullPageShape(
         receipt: SyncPageReceiptEntity,
         changes: List<ReplicaChangePersistence>,
@@ -1317,6 +1543,7 @@ class SyncPersistenceStore(
                 receipt.state == "applied" &&
                 receipt.appliedAtUtc != null &&
                 receipt.pageIndex >= 0 &&
+                receipt.fromCursor != null &&
                 receipt.nextCursor != null,
             "pull_receipt_invalid",
             "Pull receipt has an invalid durable state",
@@ -1374,6 +1601,133 @@ class SyncPersistenceStore(
                     receipt.lastServerSequence == changes.last().serverSequence,
                 "page_receipt_projection_drift",
                 "Page sequence bounds differ from the verified changes",
+            )
+        }
+    }
+
+    private suspend fun reserveBootstrapCursorLineage(
+        lineageId: String,
+        receipt: SyncPageReceiptEntity,
+    ) {
+        check(database.inTransaction()) {
+            "Bootstrap cursor reservation requires an outer transaction"
+        }
+        receipt.fromCursor?.let { fromCursor ->
+            requireReplica(
+                replicaDao.findReplicaCursor(lineageId, fromCursor)?.role ==
+                    SyncReplicaCursorEntity.ROLE_BOOTSTRAP_PAGE,
+                "bootstrap_cursor_invalid",
+                "Bootstrap page cursor is absent from its authoritative lineage",
+            )
+        }
+        val incrementalCursor = requireReplicaValue(
+            receipt.incrementalCursor,
+            "bootstrap_cursor_invalid",
+            "Bootstrap page has no incremental cursor",
+        )
+        receipt.nextCursor?.let { nextCursor ->
+            reserveNewReplicaCursor(
+                lineageId = lineageId,
+                cursorValue = nextCursor,
+                role = SyncReplicaCursorEntity.ROLE_BOOTSTRAP_PAGE,
+                errorCode = "bootstrap_cursor_invalid",
+            )
+        }
+        if (receipt.completeOrHasMore) {
+            reserveNewReplicaCursor(
+                lineageId = lineageId,
+                cursorValue = incrementalCursor,
+                role = SyncReplicaCursorEntity.ROLE_INCREMENTAL,
+                errorCode = "bootstrap_cursor_invalid",
+            )
+        } else {
+            requireReplica(
+                replicaDao.findReplicaCursor(lineageId, incrementalCursor) == null,
+                "bootstrap_cursor_invalid",
+                "Bootstrap incremental cursor aliases retained pagination history",
+            )
+        }
+    }
+
+    private suspend fun reservePullCursorLineage(
+        lineageId: String,
+        receipt: SyncPageReceiptEntity,
+        changes: List<ReplicaChangePersistence>,
+    ) {
+        check(database.inTransaction()) {
+            "Pull cursor reservation requires an outer transaction"
+        }
+        val fromCursor = requireReplicaValue(
+            receipt.fromCursor,
+            "pull_cursor_invalid",
+            "Pull page has no source cursor",
+        )
+        val retainedFrom = replicaDao.findReplicaCursor(lineageId, fromCursor)
+        requireReplica(
+            retainedFrom?.role == SyncReplicaCursorEntity.ROLE_INCREMENTAL,
+            "pull_cursor_invalid",
+            "Pull source cursor is absent from its authoritative lineage",
+        )
+        val retainedIncrementalCursorCount = replicaDao.countReplicaCursorsByRole(
+            lineageId = lineageId,
+            role = SyncReplicaCursorEntity.ROLE_INCREMENTAL,
+        )
+        requireReplica(
+            retainedIncrementalCursorCount > 0 &&
+                receipt.pageIndex == retainedIncrementalCursorCount - 1,
+            "pull_cursor_invalid",
+            "Pull page index differs from its authoritative cursor lineage",
+        )
+        val nextCursor = requireReplicaValue(
+            receipt.nextCursor,
+            "pull_cursor_invalid",
+            "Pull page has no next cursor",
+        )
+        if (changes.isEmpty()) {
+            requireReplica(
+                !receipt.completeOrHasMore && nextCursor == fromCursor,
+                "pull_cursor_invalid",
+                "Only an empty terminal pull may reuse its current cursor",
+            )
+            return
+        }
+        reserveNewReplicaCursor(
+            lineageId = lineageId,
+            cursorValue = nextCursor,
+            role = SyncReplicaCursorEntity.ROLE_INCREMENTAL,
+            errorCode = "pull_cursor_invalid",
+        )
+    }
+
+    private suspend fun reserveNewReplicaCursor(
+        lineageId: String,
+        cursorValue: String,
+        role: String,
+        errorCode: String,
+    ) {
+        requireReplica(
+            replicaDao.countReplicaCursor(lineageId, cursorValue) == 0 &&
+                replicaDao.findReplicaCursor(lineageId, cursorValue) == null,
+            errorCode,
+            "Replica cursor collides with retained lineage history",
+        )
+        try {
+            replicaDao.insertReplicaCursor(
+                SyncReplicaCursorEntity(
+                    lineageId = lineageId,
+                    cursorValue = cursorValue,
+                    role = role,
+                ),
+            )
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: ReplicaIntegrityException) {
+            throw error
+        } catch (error: Exception) {
+            throw ReplicaIntegrityException(
+                errorCode = errorCode,
+                message = "Replica cursor reservation collided atomically",
+                cause = error,
             )
         }
     }
@@ -1503,6 +1857,7 @@ class SyncPersistenceStore(
             replicaDao.promoteBootstrapCursor(
                 credentialEpochId = stream.credentialEpochId,
                 deviceId = stream.deviceId,
+                replicaLineageId = bootstrapId,
                 incrementalCursor = incrementalCursor,
                 lastServerSequence = topology.lastServerSequence,
                 updatedAtUtc = response.terminalAtUtc,
@@ -2180,6 +2535,30 @@ class SyncPersistenceStore(
         errorCode: String,
         message: String,
     ): T = value ?: throw ReplicaIntegrityException(errorCode, message)
+
+    internal suspend fun haltVerifiedRouteAfterRollback(
+        credentialEpochId: String,
+        endpointId: String,
+        error: ReplicaIntegrityException,
+        updatedAtUtc: String,
+    ) {
+        check(!database.inTransaction()) {
+            "Verified route halt must run only after the response transaction rolled back"
+        }
+        require(endpointId in setOf(PUSH_ENDPOINT, BOOTSTRAP_ENDPOINT, PULL_ENDPOINT))
+        val stream = try {
+            replicaDao.findStreamState()
+        } catch (error: CancellationException) {
+            throw error
+        } catch (_: Exception) {
+            null
+        }?.takeIf { it.credentialEpochId == credentialEpochId }
+        haltStreamAfterRollback(
+            stream = stream,
+            error = error,
+            updatedAtUtc = updatedAtUtc,
+        )
+    }
 
     private suspend fun haltStreamAfterRollback(
         stream: SyncStreamStateEntity?,

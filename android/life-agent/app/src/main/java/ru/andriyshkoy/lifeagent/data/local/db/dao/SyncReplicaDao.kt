@@ -14,6 +14,7 @@ import ru.andriyshkoy.lifeagent.data.local.db.entity.LocalOwnerEntity
 import ru.andriyshkoy.lifeagent.data.local.db.entity.LocalRevisionParentEntity
 import ru.andriyshkoy.lifeagent.data.local.db.entity.SyncBootstrapSessionEntity
 import ru.andriyshkoy.lifeagent.data.local.db.entity.SyncPageReceiptEntity
+import ru.andriyshkoy.lifeagent.data.local.db.entity.SyncReplicaCursorEntity
 import ru.andriyshkoy.lifeagent.data.local.db.entity.SyncServerChangeEntity
 import ru.andriyshkoy.lifeagent.data.local.db.entity.SyncStagedChangeEntity
 import ru.andriyshkoy.lifeagent.data.local.db.entity.SyncStreamStateEntity
@@ -28,6 +29,39 @@ interface SyncReplicaDao {
 
     @Query("SELECT * FROM sync_bootstrap_session WHERE active_slot = 1")
     suspend fun findBootstrapSessionWithActiveSlot(): SyncBootstrapSessionEntity?
+
+    @Query(
+        """
+        SELECT * FROM sync_replica_cursor
+        WHERE lineage_id = :lineageId AND cursor_value = :cursorValue
+        """,
+    )
+    suspend fun findReplicaCursor(
+        lineageId: String,
+        cursorValue: String,
+    ): SyncReplicaCursorEntity?
+
+    @Query(
+        """
+        SELECT COUNT(*) FROM sync_replica_cursor
+        WHERE lineage_id = :lineageId AND cursor_value = :cursorValue
+        """,
+    )
+    suspend fun countReplicaCursor(
+        lineageId: String,
+        cursorValue: String,
+    ): Int
+
+    @Query(
+        """
+        SELECT COUNT(*) FROM sync_replica_cursor
+        WHERE lineage_id = :lineageId AND role = :role
+        """,
+    )
+    suspend fun countReplicaCursorsByRole(
+        lineageId: String,
+        role: String,
+    ): Int
 
     @Query("SELECT * FROM sync_page_receipt WHERE page_id = :pageId")
     suspend fun findPageReceipt(pageId: String): SyncPageReceiptEntity?
@@ -223,6 +257,9 @@ interface SyncReplicaDao {
     @Insert(onConflict = OnConflictStrategy.ABORT)
     suspend fun insertBootstrapSession(entity: SyncBootstrapSessionEntity)
 
+    @Insert(onConflict = OnConflictStrategy.ABORT)
+    suspend fun insertReplicaCursor(entity: SyncReplicaCursorEntity)
+
     @Query(
         """
         UPDATE sync_bootstrap_session
@@ -386,16 +423,24 @@ interface SyncReplicaDao {
         WHERE singleton_id = 1
           AND credential_epoch_id = :credentialEpochId
           AND device_id = :deviceId
+          AND replica_lineage_id = :replicaLineageId
           AND applied_cursor IS :expectedCursor
           AND last_applied_server_sequence = :expectedServerSequence
           AND bootstrap_required = 0
           AND phase IN ('incremental', 'pulling')
           AND integrity_error_code IS NULL
+          AND EXISTS(
+            SELECT 1 FROM sync_replica_cursor
+            WHERE lineage_id = :replicaLineageId
+              AND cursor_value = :nextCursor
+              AND role = 'incremental'
+          )
         """,
     )
     suspend fun compareAndAdvanceCursor(
         credentialEpochId: String,
         deviceId: String,
+        replicaLineageId: String,
         expectedCursor: String?,
         expectedServerSequence: Long,
         nextCursor: String,
@@ -410,6 +455,7 @@ interface SyncReplicaDao {
         SET phase = 'incremental',
             bootstrap_required = 0,
             applied_cursor = :incrementalCursor,
+            replica_lineage_id = :replicaLineageId,
             last_applied_server_sequence = :lastServerSequence,
             high_watermark_hint = NULL,
             updated_at_utc = :updatedAtUtc
@@ -417,11 +463,26 @@ interface SyncReplicaDao {
           AND credential_epoch_id = :credentialEpochId
           AND device_id = :deviceId
           AND integrity_error_code IS NULL
+          AND EXISTS(
+            SELECT 1 FROM sync_bootstrap_session
+            WHERE bootstrap_id = :replicaLineageId
+              AND credential_epoch_id = :credentialEpochId
+              AND device_id = :deviceId
+              AND state = 'staging'
+              AND active_slot = 1
+          )
+          AND EXISTS(
+            SELECT 1 FROM sync_replica_cursor
+            WHERE lineage_id = :replicaLineageId
+              AND cursor_value = :incrementalCursor
+              AND role = 'incremental'
+          )
         """,
     )
     suspend fun promoteBootstrapCursor(
         credentialEpochId: String,
         deviceId: String,
+        replicaLineageId: String,
         incrementalCursor: String,
         lastServerSequence: Long,
         updatedAtUtc: String,

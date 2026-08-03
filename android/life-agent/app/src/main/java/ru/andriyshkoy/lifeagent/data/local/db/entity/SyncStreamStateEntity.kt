@@ -34,6 +34,8 @@ data class SyncStreamStateEntity(
     val integrityErrorCode: String?,
     @ColumnInfo(name = "updated_at_utc")
     val updatedAtUtc: String,
+    @ColumnInfo(name = "replica_lineage_id")
+    val replicaLineageId: String? = null,
 ) {
     companion object {
         const val CURRENT_ID = 1

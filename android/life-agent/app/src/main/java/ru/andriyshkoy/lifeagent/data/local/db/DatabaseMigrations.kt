@@ -121,7 +121,70 @@ object DatabaseMigrations {
         }
     }
 
-    val ALL: Array<Migration> = arrayOf(MIGRATION_1_2, MIGRATION_2_3)
+    val MIGRATION_3_4 = object : Migration(3, 4) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            db.execSQL(
+                """
+                ALTER TABLE `sync_stream_state`
+                ADD COLUMN `replica_lineage_id` TEXT
+                """.trimIndent(),
+            )
+            db.execSQL(
+                """
+                CREATE TABLE IF NOT EXISTS `sync_replica_cursor` (
+                    `lineage_id` TEXT NOT NULL,
+                    `cursor_value` TEXT NOT NULL,
+                    `role` TEXT NOT NULL,
+                    PRIMARY KEY(`lineage_id`, `cursor_value`),
+                    FOREIGN KEY(`lineage_id`)
+                        REFERENCES `sync_bootstrap_session`(`bootstrap_id`)
+                        ON UPDATE NO ACTION ON DELETE RESTRICT
+                )
+                """.trimIndent(),
+            )
+            db.execSQL(
+                """
+                CREATE INDEX IF NOT EXISTS
+                    `index_sync_replica_cursor_lineage_id_role`
+                ON `sync_replica_cursor` (`lineage_id`, `role`)
+                """.trimIndent(),
+            )
+
+            // A v3 applied cursor has no trustworthy lineage ledger. Keep the
+            // materialized replica visible, but forbid incremental use until a
+            // new bootstrap establishes an authoritative lineage.
+            db.execSQL(
+                """
+                UPDATE `sync_auth_state`
+                SET `bootstrap_required` = 1
+                WHERE EXISTS(
+                    SELECT 1 FROM `sync_stream_state`
+                    WHERE `sync_stream_state`.`applied_cursor` IS NOT NULL
+                      AND `sync_stream_state`.`credential_epoch_id` =
+                          `sync_auth_state`.`credential_epoch_id`
+                      AND `sync_stream_state`.`device_id` =
+                          `sync_auth_state`.`device_id`
+                )
+                """.trimIndent(),
+            )
+            db.execSQL(
+                """
+                UPDATE `sync_stream_state`
+                SET `phase` = 'bootstrap_required',
+                    `bootstrap_required` = 1
+                WHERE `applied_cursor` IS NOT NULL
+                """.trimIndent(),
+            )
+
+            requireNoRows(
+                db = db,
+                sql = "PRAGMA foreign_key_check",
+                message = "Room v4 migration produced a foreign-key violation",
+            )
+        }
+    }
+
+    val ALL: Array<Migration> = arrayOf(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
 
     /**
      * Room does not expose table CHECK declarations in @Entity. Equivalent

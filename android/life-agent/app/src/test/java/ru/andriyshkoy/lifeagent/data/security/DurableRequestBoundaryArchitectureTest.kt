@@ -312,7 +312,11 @@ class DurableRequestBoundaryArchitectureTest {
         if (!responseStore.isFile) return
         val source = responseStore.readText()
         assertTrue(source.contains("internal sealed interface ProtectedFreshResponseDecoder"))
-        assertFalse(source.contains("suspend fun decode(input: ProtectedFreshResponseInput)"))
+        assertFalse(Regex("""\bsuspend\s+fun\s+decode\s*\(""").containsMatchIn(source))
+        val constructor = source
+            .substringAfter("internal class ProtectedSyncResponseStore(")
+            .substringBefore(") {")
+        assertFalse(constructor.contains("decoder"))
         assertTrue(
             Regex(
                 """\b(?:object|class)\s+\w+\s*:\s*ProtectedFreshResponseDecoder\b""",
