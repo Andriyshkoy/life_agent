@@ -109,10 +109,32 @@ internal class M2HttpsConfiguration private constructor(
 
 /** Constructs the only production-configured transport client. */
 internal object ProductionM2HttpsTransportFactory {
-    fun create(): ExactHttpsTransport {
+    fun create(): ExactHttpsTransport = createPinnedTransport { configuration, client ->
+        ExactHttpsTransport(
+            callFactory = client,
+            configuration = configuration,
+        )
+    }
+
+    fun createAuth(): OneShotAuthHttpsTransport =
+        createPinnedTransport { configuration, client ->
+            OneShotAuthHttpsTransport(
+                callFactory = client,
+                configuration = configuration,
+            )
+        }
+
+    private inline fun <T> createPinnedTransport(
+        factory: (M2HttpsConfiguration, OkHttpClient) -> T,
+    ): T {
         // Parse both environment-backed fields before allocating a client. In
         // particular, an empty pin set must fail before any Call can exist.
         val configuration = M2HttpsConfiguration.fromBuildConfig()
+        val client = buildPinnedClient(configuration)
+        return factory(configuration, client)
+    }
+
+    private fun buildPinnedClient(configuration: M2HttpsConfiguration): OkHttpClient {
         val client = OkHttpClient.Builder()
             .certificatePinner(configuration.certificatePinner())
             .connectionSpecs(listOf(ConnectionSpec.MODERN_TLS))
@@ -131,10 +153,7 @@ internal object ProductionM2HttpsTransportFactory {
             .callTimeout(CALL_TIMEOUT_SECONDS, TimeUnit.SECONDS)
             .build()
         check(client.interceptors.isEmpty() && client.networkInterceptors.isEmpty())
-        return ExactHttpsTransport(
-            callFactory = client,
-            configuration = configuration,
-        )
+        return client
     }
 }
 

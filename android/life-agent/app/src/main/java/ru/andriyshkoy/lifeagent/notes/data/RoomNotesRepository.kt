@@ -9,16 +9,14 @@ import ru.andriyshkoy.lifeagent.core.id.UuidGenerator
 import ru.andriyshkoy.lifeagent.core.time.ResolvedPointTime
 import ru.andriyshkoy.lifeagent.core.time.TemporalPrecision
 import ru.andriyshkoy.lifeagent.data.local.db.LifeAgentDatabase
+import ru.andriyshkoy.lifeagent.data.local.db.LocalIdentityStore
 import ru.andriyshkoy.lifeagent.data.local.db.dao.CurrentRevisionRow
 import ru.andriyshkoy.lifeagent.data.local.db.dao.LocalIdentityRow
 import ru.andriyshkoy.lifeagent.data.local.db.dao.RevisionContextRow
 import ru.andriyshkoy.lifeagent.data.local.db.entity.LocalCaptureEntity
 import ru.andriyshkoy.lifeagent.data.local.db.entity.LocalEventHeadEntity
 import ru.andriyshkoy.lifeagent.data.local.db.entity.LocalEventRevisionEntity
-import ru.andriyshkoy.lifeagent.data.local.db.entity.LocalInstallationEntity
-import ru.andriyshkoy.lifeagent.data.local.db.entity.LocalIdentityStateEntity
 import ru.andriyshkoy.lifeagent.data.local.db.entity.LocalLifeEventEntity
-import ru.andriyshkoy.lifeagent.data.local.db.entity.LocalOwnerEntity
 import ru.andriyshkoy.lifeagent.data.local.db.entity.LocalRevisionParentEntity
 import ru.andriyshkoy.lifeagent.data.local.db.entity.SyncOutboxEntity
 import ru.andriyshkoy.lifeagent.data.local.serialization.CanonicalNoteCodec
@@ -54,10 +52,10 @@ import java.util.UUID
 class RoomNotesRepository(
     private val database: LifeAgentDatabase,
     private val collectorVersion: String,
-    private val uuidGenerator: UuidGenerator = RandomUuidGenerator,
+    uuidGenerator: UuidGenerator = RandomUuidGenerator,
     private val codec: CanonicalNoteCodec = CanonicalNoteCodec(),
 ) : NotesRepository {
-    private val identityDao = database.identityDao()
+    private val identityStore = LocalIdentityStore(database, uuidGenerator)
     private val mutationDao = database.noteMutationDao()
     private val queryDao = database.noteQueryDao()
 
@@ -460,46 +458,11 @@ class RoomNotesRepository(
     }
 
     private suspend fun ensureIdentity(createdAt: Instant): LocalIdentityRow {
-        identityDao.findIdentity()?.let { return it }
-        if (identityDao.ownerCount() != 0) {
-            throw CorruptLocalNoteException(
-                "Current identity marker is missing while historical owners exist",
-            )
-        }
-        val installationId = uuidGenerator.next().toString()
-        val ownerId = uuidGenerator.next().toString()
-        val createdAtUtc = createdAt.toString()
-        identityDao.insertInstallation(
-            LocalInstallationEntity(
-                installationId = installationId,
-                createdAtUtc = createdAtUtc,
-            ),
-        )
-        identityDao.insertOwner(
-            LocalOwnerEntity(
-                localOwnerId = ownerId,
-                installationId = installationId,
-                createdAtUtc = createdAtUtc,
-            ),
-        )
-        identityDao.insertIdentityState(
-            LocalIdentityStateEntity(
-                installationId = installationId,
-                localOwnerId = ownerId,
-                selectedAtUtc = createdAtUtc,
-            ),
-        )
-        return LocalIdentityRow(
-            installationId = installationId,
-            localOwnerId = ownerId,
-            serverDeviceId = null,
-            serverPersonId = null,
-        )
+        return identityStore.ensureIdentityInCurrentTransaction(createdAt)
     }
 
     private suspend fun requireIdentity(): LocalIdentityRow =
-        identityDao.findIdentity()
-            ?: throw CorruptLocalNoteException("Local identity is missing")
+        identityStore.requireIdentity()
 
     private suspend fun ensureUnusedMutationIds(
         ids: MutationIds,
