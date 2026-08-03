@@ -30,6 +30,7 @@ import ru.andriyshkoy.lifeagent.data.local.db.ProtectedDurableDispatchClaimBound
 import ru.andriyshkoy.lifeagent.data.local.db.ProtectedDurableDispatchResponseBoundary
 import ru.andriyshkoy.lifeagent.data.local.db.ProtectedDurableDispatchResult
 import ru.andriyshkoy.lifeagent.data.local.db.ProtectedDurableExactExchange
+import ru.andriyshkoy.lifeagent.data.local.db.ProtectedDispatchRequestClaim
 import ru.andriyshkoy.lifeagent.data.local.db.ProtectedResponseDisposition
 import ru.andriyshkoy.lifeagent.data.local.db.ProtectedSyncRequestConstructionSettings
 import ru.andriyshkoy.lifeagent.data.local.db.ProtectedSyncRequestPlanningFacade
@@ -43,6 +44,7 @@ import ru.andriyshkoy.lifeagent.data.sync.runtime.AccessTokenKey
 import ru.andriyshkoy.lifeagent.data.sync.runtime.AccessTokenVault
 import ru.andriyshkoy.lifeagent.data.sync.runtime.DurableSyncRequestKind
 import ru.andriyshkoy.lifeagent.data.sync.transport.ExactHttpsNetworkFailure
+import ru.andriyshkoy.lifeagent.data.sync.transport.ExactHttpsNetworkFailureKind
 import ru.andriyshkoy.lifeagent.data.sync.transport.ExactHttpsProtocolFailure
 import ru.andriyshkoy.lifeagent.data.sync.transport.ExactHttpsRawResponse
 import ru.andriyshkoy.lifeagent.data.sync.wire.StrictJson
@@ -247,6 +249,10 @@ class M2ProductionRuntimeApi35InstrumentedTest {
             assertEquals(2L, released.accessGenerationUsed)
             assertEquals(1, released.originalRetryCount)
             assertNull(released.activeAttemptId)
+            assertEquals(
+                REFRESH_COMMITTED_AT.toEpochMilli(),
+                released.nextAttemptAtEpochMs,
+            )
             assertTrue(
                 fixture.database.syncTransportDao()
                     .findWaitingRefreshAuthoritySnapshots()
@@ -258,6 +264,88 @@ class M2ProductionRuntimeApi35InstrumentedTest {
                 fixture.database.noteMutationDao()
                     .findOutbox(noteIds.operationId.toString())
                     ?.wireState,
+            )
+
+            val successorTokenKey = AccessTokenKey(
+                credentialEpochId = SyncM2PersistenceFixture.EPOCH_ID,
+                accessGeneration = 2,
+            )
+            vault.replace(successorTokenKey, WipeableSecret.ascii(VALID_ACCESS_TOKEN))
+            val retryRequests = ProtectedSyncRequestStore(
+                context = context,
+                database = fixture.database,
+                keyring = reopenedKeyring,
+            )
+            val retryClaimResult = retryRequests.verifyAndClaimForDispatch(
+                endpointId = "sync_push",
+                requestIdentity = batchId,
+                attemptId = RETRY_ATTEMPT_ID,
+                attemptedAtEpochMs = REFRESH_COMMITTED_AT.toEpochMilli(),
+                leaseExpiresAtEpochMs = RETRY_LEASE_EXPIRES_AT.toEpochMilli(),
+                updatedAtUtc = REFRESH_COMMITTED_AT.toString(),
+                accessTokenVault = vault,
+            )
+            assertTrue(retryClaimResult is ProtectedDispatchRequestClaim.Claimed)
+            val retryClaim =
+                retryClaimResult as ProtectedDispatchRequestClaim.Claimed
+            try {
+                val sending = request(batchId)
+                assertEquals("sending", sending.state)
+                assertEquals(2, sending.attemptCount)
+                assertEquals(2L, sending.accessGenerationUsed)
+                assertEquals(RETRY_ATTEMPT_ID, sending.activeAttemptId)
+                assertEquals(
+                    REFRESH_COMMITTED_AT.toEpochMilli(),
+                    sending.lastAttemptAtEpochMs,
+                )
+                assertEquals(
+                    RETRY_LEASE_EXPIRES_AT.toEpochMilli(),
+                    sending.leaseExpiresAtEpochMs,
+                )
+                assertNull(sending.nextAttemptAtEpochMs)
+                assertTrue(
+                    requireNotNull(
+                        fixture.database.syncTransportDao().findResponseRouteSnapshot(
+                            endpointId = "sync_push",
+                            requestIdentity = batchId,
+                            expectedAttemptId = RETRY_ATTEMPT_ID,
+                        ),
+                    ).hasFreshResponseMetadataShape,
+                )
+
+                val retryResponses = ProtectedSyncResponseStore(
+                    context = context,
+                    database = fixture.database,
+                    bootstrapIntents = planner(reopenedKeyring).protectedBootstrapIntents,
+                    keyring = reopenedKeyring,
+                )
+                assertEquals(
+                    ProtectedResponseDisposition.RETRY_SCHEDULED,
+                    retryResponses.reduceRetryableFailure(
+                        ExactHttpsNetworkFailure(
+                            claim = retryClaim.requestClaim,
+                            kind = ExactHttpsNetworkFailureKind.TIMEOUT,
+                            httpStatus = null,
+                        ),
+                        RETRY_FAILED_AT.toString(),
+                    ),
+                )
+            } finally {
+                retryClaim.close()
+            }
+
+            val retryScheduled = request(batchId)
+            assertEquals("retry_wait", retryScheduled.state)
+            assertEquals("transport_timeout", retryScheduled.terminalErrorCode)
+            assertEquals(
+                RETRY_FAILED_AT.plusSeconds(2).toEpochMilli(),
+                retryScheduled.nextAttemptAtEpochMs,
+            )
+            assertNull(retryScheduled.activeAttemptId)
+            assertNull(retryScheduled.leaseExpiresAtEpochMs)
+            assertEquals(
+                "incremental",
+                fixture.database.syncReplicaDao().findStreamState()?.phase,
             )
         }
 
@@ -367,6 +455,7 @@ class M2ProductionRuntimeApi35InstrumentedTest {
     private companion object {
         const val ANDROID_KEYSTORE = "AndroidKeyStore"
         const val ATTEMPT_ID = "m2-runtime-api35-attempt"
+        const val RETRY_ATTEMPT_ID = "m2-runtime-api35-retry-attempt"
         const val VALID_ACCESS_TOKEN =
             "laa_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
         val RECORDED_AT: OffsetDateTime =
@@ -377,5 +466,7 @@ class M2ProductionRuntimeApi35InstrumentedTest {
         val COMPLETED_AT: Instant = Instant.parse("2030-01-01T00:01:02Z")
         val REFRESH_CLAIMED_AT: Instant = Instant.parse("2030-01-01T00:01:03Z")
         val REFRESH_COMMITTED_AT: Instant = Instant.parse("2030-01-01T00:01:04Z")
+        val RETRY_FAILED_AT: Instant = Instant.parse("2030-01-01T00:01:05Z")
+        val RETRY_LEASE_EXPIRES_AT: Instant = Instant.parse("2030-01-01T00:02:04Z")
     }
 }

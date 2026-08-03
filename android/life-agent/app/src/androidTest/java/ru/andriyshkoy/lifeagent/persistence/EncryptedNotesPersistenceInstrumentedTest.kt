@@ -1097,6 +1097,27 @@ class EncryptedNotesPersistenceInstrumentedTest {
                 updatedAtUtc = "2026-01-15T03:00:03Z",
             ),
         )
+        val reclaimed = requireNotNull(
+            requireDatabase().syncTransportDao().findRequest(
+                endpointId = "auth_revoke",
+                requestIdentity = requestIdentity,
+            ),
+        )
+        assertEquals("sending", reclaimed.state)
+        assertEquals(2, reclaimed.attemptCount)
+        assertEquals(revokeAttemptTwo, reclaimed.activeAttemptId)
+        assertEquals(3_000L, reclaimed.lastAttemptAtEpochMs)
+        assertEquals(4_000L, reclaimed.leaseExpiresAtEpochMs)
+        assertNull(reclaimed.nextAttemptAtEpochMs)
+        assertTrue(
+            requireNotNull(
+                requireDatabase().syncTransportDao().findResponseRouteSnapshot(
+                    endpointId = "auth_revoke",
+                    requestIdentity = requestIdentity,
+                    expectedAttemptId = revokeAttemptTwo,
+                ),
+            ).hasFreshResponseMetadataShape,
+        )
 
         KeyStore.getInstance(ANDROID_KEYSTORE).apply {
             load(null)
