@@ -469,6 +469,15 @@ interface SyncTransportDao {
 
     @Query(
         """
+        SELECT COUNT(*)
+        FROM sync_http_request
+        WHERE state IN ('ready', 'retry_wait', 'sending', 'waiting_refresh')
+        """,
+    )
+    suspend fun countOpenRequestRows(): Long
+
+    @Query(
+        """
         SELECT COUNT(*) FROM sync_http_request
         WHERE endpoint_id = 'sync_pull'
           AND credential_epoch_id = :credentialEpochId
@@ -513,6 +522,7 @@ interface SyncTransportDao {
           request.lease_expires_at_epoch_ms,
           request.active_attempt_id,
           CASE request.state
+            WHEN 'sending' THEN request.lease_expires_at_epoch_ms
             WHEN 'retry_wait' THEN request.next_attempt_at_epoch_ms
             ELSE :nowEpochMs
           END AS scheduled_at_epoch_ms,
@@ -533,6 +543,12 @@ interface SyncTransportDao {
               request.state = 'retry_wait'
               AND request.next_attempt_at_epoch_ms IS NOT NULL
               AND request.next_attempt_at_epoch_ms <= :nowEpochMs
+            )
+            OR (
+              request.state = 'sending'
+              AND request.active_attempt_id IS NOT NULL
+              AND request.lease_expires_at_epoch_ms IS NOT NULL
+              AND request.lease_expires_at_epoch_ms <= :nowEpochMs
             )
           )
           AND request.attempt_count < request.attempt_budget

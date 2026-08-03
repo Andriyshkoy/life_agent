@@ -39,6 +39,17 @@ interface SyncAuthDao {
     @Insert(onConflict = OnConflictStrategy.ABORT)
     suspend fun insertTokenFingerprint(entity: SyncAuthTokenFingerprintEntity)
 
+    @Query(
+        """
+        SELECT COUNT(*)
+        FROM sync_auth_token_fingerprint
+        WHERE hmac_key_generation = :hmacKeyGeneration
+        """,
+    )
+    suspend fun countTokenFingerprintsReferencingKeyGeneration(
+        hmacKeyGeneration: Int,
+    ): Long
+
     @Transaction
     suspend fun installEnrollment(
         state: SyncAuthStateEntity,

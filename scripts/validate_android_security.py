@@ -46,13 +46,21 @@ REQUIRED_APPLICATION_ATTRIBUTES = {
     "networkSecurityConfig": "@xml/network_security_config",
     "usesCleartextTraffic": "false",
 }
-REQUIRED_PERMISSIONS = frozenset({"android.permission.INTERNET"})
-FORBIDDEN_PERMISSIONS = frozenset(
+SOURCE_PERMISSIONS = frozenset(
     {
+        "android.permission.INTERNET",
         "android.permission.ACCESS_NETWORK_STATE",
-        "android.permission.CHANGE_NETWORK_STATE",
     }
 )
+WORK_MANAGER_MERGED_PERMISSIONS = frozenset(
+    {
+        "android.permission.WAKE_LOCK",
+        "android.permission.RECEIVE_BOOT_COMPLETED",
+        "android.permission.FOREGROUND_SERVICE",
+    }
+)
+FORBIDDEN_PERMISSIONS = frozenset({"android.permission.CHANGE_NETWORK_STATE"})
+DYNAMIC_RECEIVER_PERMISSION_SUFFIX = ".DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION"
 
 
 class SecurityValidationError(AssertionError):
@@ -107,7 +115,7 @@ def require_full_exclusion(parent: ET.Element, label: str) -> None:
         fail(f"{label}: unknown backup domains: {', '.join(unknown)}")
 
 
-def validate_manifest(path: Path) -> None:
+def validate_manifest(path: Path, *, merged: bool = False) -> None:
     root = parse_xml(path)
     if local_name(root) != "manifest":
         fail(f"{path}: expected <manifest>, got <{local_name(root)}>")
@@ -131,6 +139,8 @@ def validate_manifest(path: Path) -> None:
         for child in root
         if local_name(child) == "uses-permission"
     ]
+    if any(permission is None for permission in permissions):
+        fail(f"{path}: uses-permission without android:name")
     duplicate_permissions = sorted(
         permission
         for permission in set(permissions)
@@ -138,12 +148,28 @@ def validate_manifest(path: Path) -> None:
     )
     if duplicate_permissions:
         fail(f"{path}: duplicate permissions: {duplicate_permissions}")
-    missing_permissions = sorted(REQUIRED_PERMISSIONS - set(permissions))
+    permission_set = set(permissions)
+    required_permissions = set(SOURCE_PERMISSIONS)
+    allowed_permissions = set(SOURCE_PERMISSIONS)
+    if merged:
+        package_name = root.attrib.get("package")
+        if not package_name:
+            fail(f"{path}: merged manifest package is missing")
+        required_permissions.update(WORK_MANAGER_MERGED_PERMISSIONS)
+        allowed_permissions.update(WORK_MANAGER_MERGED_PERMISSIONS)
+        allowed_permissions.add(
+            f"{package_name}{DYNAMIC_RECEIVER_PERMISSION_SUFFIX}"
+        )
+
+    missing_permissions = sorted(required_permissions - permission_set)
     if missing_permissions:
         fail(f"{path}: required permissions missing: {', '.join(missing_permissions)}")
-    forbidden_permissions = sorted(FORBIDDEN_PERMISSIONS & set(permissions))
+    forbidden_permissions = sorted(FORBIDDEN_PERMISSIONS & permission_set)
     if forbidden_permissions:
         fail(f"{path}: forbidden permissions present: {', '.join(forbidden_permissions)}")
+    unexpected_permissions = sorted(permission_set - allowed_permissions)
+    if unexpected_permissions:
+        fail(f"{path}: unexpected permissions present: {', '.join(unexpected_permissions)}")
 
 
 def validate_network_security_config(path: Path) -> None:
@@ -215,7 +241,7 @@ def validate_all(merged_manifests: Iterable[Path] = ()) -> None:
     validate_extraction_rules(EXTRACTION_RULES)
     validate_network_security_config(NETWORK_SECURITY_CONFIG)
     for manifest in merged_manifests:
-        validate_manifest(manifest)
+        validate_manifest(manifest, merged=True)
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:

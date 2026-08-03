@@ -82,6 +82,102 @@ internal class ProtectedSyncRequestStore(
         protected.toPersistedRef()
     }
 
+    /**
+     * Builds, but does not insert, a first bootstrap request for a caller that
+     * already owns the Room transaction. This shape is required by response
+     * reducers which must commit the request with the state transition that
+     * made it authoritative.
+     */
+    internal suspend fun prepareInitialBootstrapIntentInCurrentTransaction(
+        session: SyncBootstrapSessionEntity,
+        request: BootstrapRequest,
+        persistence: NewDurableRequestPersistence,
+    ): BootstrapIntentPersistence {
+        check(database.inTransaction())
+        requireInitialBootstrapSession(session, persistence.createdAtUtc)
+        requireBootstrapConstructionAuthority(
+            credentialEpochId = session.credentialEpochId,
+            deviceId = session.deviceId,
+            accessGeneration = persistence.accessGenerationUsed,
+            createdAtUtc = persistence.createdAtUtc,
+            expectedActiveSession = null,
+            allowPendingBootstrapTransition = true,
+        )
+        val active = replicaDao.findBootstrapSessionWithActiveSlot()
+        check(
+            active == null ||
+                (
+                    active.credentialEpochId == session.credentialEpochId &&
+                        active.deviceId == session.deviceId &&
+                        active.bootstrapId != session.bootstrapId
+                    ),
+        ) {
+            "Initial bootstrap cannot replace another credential family"
+        }
+        check(
+            transportDao.findOpenBootstrapRequestKeys(
+                credentialEpochId = session.credentialEpochId,
+                deviceId = session.deviceId,
+            ).isEmpty(),
+        ) {
+            "A durable bootstrap request is already open for this stream"
+        }
+        var transient: SyncHttpRequestEntity? = null
+        return try {
+            val protected = prepareNewInCurrentTransaction(request, persistence)
+            transient = protected
+            requireBootstrapPersistenceBinding(protected, session)
+            BootstrapIntentPersistence(session, protected).also(::validateBootstrapIntent)
+                .also { transient = null }
+        } catch (error: Throwable) {
+            transient?.wipeTransientProtectionBuffers()
+            throw error
+        }
+    }
+
+    internal suspend fun prepareBootstrapContinuationInCurrentTransaction(
+        session: SyncBootstrapSessionEntity,
+        request: BootstrapRequest,
+        persistence: NewDurableRequestPersistence,
+    ): SyncHttpRequestEntity {
+        check(database.inTransaction())
+        require(
+            session.state == "staging" &&
+                session.activeSlot == 1 &&
+                session.nextPageCursor != null &&
+                session.nextPageIndex > 0,
+        ) {
+            "Bootstrap continuation requires an advanced active session"
+        }
+        requireBootstrapConstructionAuthority(
+            credentialEpochId = session.credentialEpochId,
+            deviceId = session.deviceId,
+            accessGeneration = persistence.accessGenerationUsed,
+            createdAtUtc = persistence.createdAtUtc,
+            expectedActiveSession = session,
+            allowPendingBootstrapTransition = false,
+        )
+        check(
+            transportDao.findOpenBootstrapRequestKeys(
+                credentialEpochId = session.credentialEpochId,
+                deviceId = session.deviceId,
+            ).isEmpty(),
+        ) {
+            "A durable bootstrap continuation is already open"
+        }
+        var transient: SyncHttpRequestEntity? = null
+        return try {
+            val protected = prepareNewInCurrentTransaction(request, persistence)
+            transient = protected
+            requireBootstrapPersistenceBinding(protected, session)
+            transient = null
+            protected
+        } catch (error: Throwable) {
+            transient?.wipeTransientProtectionBuffers()
+            throw error
+        }
+    }
+
     suspend fun beginRevoke(
         request: RevokeRequest,
         persistence: NewDurableRequestPersistence,
@@ -689,10 +785,13 @@ internal class ProtectedSyncRequestStore(
         }
     }
 
-    private suspend fun verifyExistingBootstrapCandidates(
+    internal suspend fun verifyExistingBootstrapCandidates(
         session: SyncBootstrapSessionEntity,
         failedAtUtc: String,
     ): Boolean {
+        check(database.inTransaction()) {
+            "Bootstrap candidate verification requires an active Room transaction"
+        }
         val currentAuth = authDao.findState()
         if (
             currentAuth == null ||
@@ -755,6 +854,74 @@ internal class ProtectedSyncRequestStore(
             }
         }
         return true
+    }
+
+    private fun requireInitialBootstrapSession(
+        session: SyncBootstrapSessionEntity,
+        createdAtUtc: String,
+    ) {
+        require(
+            session.state == "staging" &&
+                session.activeSlot == 1 &&
+                session.snapshotId == null &&
+                session.nextPageCursor == null &&
+                session.candidateIncrementalCursor == null &&
+                session.nextPageIndex == 0 &&
+                session.lastStagedServerSequence == null &&
+                session.stagedPageCount == 0 &&
+                session.stagedBodyBytes == 0L &&
+                session.createdAtUtc == createdAtUtc &&
+                session.updatedAtUtc == createdAtUtc,
+        ) {
+            "Initial bootstrap session is not canonical"
+        }
+    }
+
+    private suspend fun requireBootstrapConstructionAuthority(
+        credentialEpochId: String,
+        deviceId: String,
+        accessGeneration: Long,
+        createdAtUtc: String,
+        expectedActiveSession: SyncBootstrapSessionEntity?,
+        allowPendingBootstrapTransition: Boolean,
+    ) {
+        val createdAtEpochMs = Instant.parse(createdAtUtc).toEpochMilli()
+        val auth = checkNotNull(authDao.findState()) {
+            "Protected bootstrap construction requires current credentials"
+        }
+        val stream = checkNotNull(replicaDao.findStreamState()) {
+            "Protected bootstrap construction requires a current stream"
+        }
+        check(
+            auth.credentialEpochId == credentialEpochId &&
+                auth.deviceId == deviceId &&
+                auth.generation == accessGeneration &&
+                auth.state in setOf("active", "refresh_in_flight") &&
+                auth.familyExpiresAtEpochMs > createdAtEpochMs &&
+                stream.credentialEpochId == credentialEpochId &&
+                stream.deviceId == deviceId &&
+                stream.integrityErrorCode == null &&
+                stream.phase != "integrity_halted" &&
+                (
+                    (auth.bootstrapRequired && stream.bootstrapRequired &&
+                        stream.phase == "bootstrap_required") ||
+                        (
+                            allowPendingBootstrapTransition &&
+                                !auth.bootstrapRequired &&
+                                !stream.bootstrapRequired &&
+                                stream.phase in setOf("incremental", "pulling")
+                            )
+                    ),
+        ) {
+            "Protected bootstrap construction lost current authority"
+        }
+        if (expectedActiveSession != null) {
+            check(
+                replicaDao.findBootstrapSessionWithActiveSlot() == expectedActiveSession,
+            ) {
+                "Bootstrap continuation lost its active session"
+            }
+        }
     }
 
     private suspend fun requireBootstrapMembership(
@@ -1106,7 +1273,7 @@ private fun SyncHttpRequestEntity.toPersistedRef() = PersistedDurableRequestRef(
     requestIdentity = requestIdentity,
 )
 
-private fun SyncHttpRequestEntity.wipeTransientProtectionBuffers() {
+internal fun SyncHttpRequestEntity.wipeTransientProtectionBuffers() {
     rawRequestBody?.fill(0)
     sealedBodyCiphertext?.fill(0)
     sealedBodyNonce?.fill(0)

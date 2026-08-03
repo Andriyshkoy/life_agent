@@ -9,6 +9,107 @@ import ru.andriyshkoy.lifeagent.data.local.db.entity.SyncBootstrapSessionEntity
 import ru.andriyshkoy.lifeagent.data.local.db.entity.SyncHttpRequestEntity
 import ru.andriyshkoy.lifeagent.data.local.db.entity.SyncStreamStateEntity
 
+/**
+ * Authoritative, content-free binding for exactly one non-replayable enrollment.
+ * No enrollment-code or serialized-request bytes can enter this value.
+ */
+internal class EnrollmentAttemptBinding internal constructor(
+    val requestId: String,
+    val installationId: String,
+    val localOwnerId: String,
+    val predecessorCredentialEpochId: String?,
+    val predecessorDeviceId: String?,
+    val predecessorGeneration: Long?,
+    val expectedStableDeviceId: String?,
+    val expectedStablePersonId: String?,
+    val credentialFingerprintReferenceCount: Long,
+) {
+    override fun toString(): String = "EnrollmentAttemptBinding(redacted=true)"
+}
+
+/** Exact installed family metadata used only to probe the process-local vault. */
+internal class AccessRecoveryBinding internal constructor(
+    val credentialEpochId: String,
+    val installationId: String,
+    val localOwnerId: String,
+    val deviceId: String,
+    val personId: String,
+    val generation: Long,
+    val state: String,
+    val accessExpiresAtEpochMs: Long,
+    val refreshExpiresAtEpochMs: Long,
+    val familyExpiresAtUtc: String,
+    val familyExpiresAtEpochMs: Long,
+    val bootstrapRequired: Boolean,
+) {
+    override fun toString(): String = "AccessRecoveryBinding(redacted=true)"
+}
+
+/**
+ * Atomic outcome of one bounded interrupted-auth recovery transaction.
+ *
+ * [recoveredCount] includes request-integrity and stale-attempt cleanup.
+ * [currentAuthorityChanged] is narrower: it is true only when the installed
+ * credential-family authority observed at transaction entry differs on exit.
+ */
+internal class InterruptedAuthRecoveryResult internal constructor(
+    val recoveredCount: Int,
+    val currentAuthorityChanged: Boolean,
+) {
+    init {
+        require(recoveredCount >= 0)
+    }
+
+    override fun toString(): String =
+        "InterruptedAuthRecoveryResult(" +
+            "count=$recoveredCount,currentAuthorityChanged=$currentAuthorityChanged," +
+            "redacted=true)"
+}
+
+/**
+ * Owns an exact copy of the durable refresh envelope for one claimed attempt.
+ * Closing the binding wipes its byte arrays. Callers own and must wipe copies.
+ */
+internal class RefreshAttemptBinding internal constructor(
+    val requestId: String,
+    val credentialEpochId: String,
+    val installationId: String,
+    val localOwnerId: String,
+    val deviceId: String,
+    val personId: String,
+    val generation: Long,
+    val accessExpiresAtEpochMs: Long,
+    val refreshExpiresAtEpochMs: Long,
+    val familyExpiresAtUtc: String,
+    val familyExpiresAtEpochMs: Long,
+    val bootstrapRequired: Boolean,
+    val durableRefreshTokenReferenceCount: Long,
+    val credentialFingerprintReferenceCount: Long,
+    refreshTokenCiphertext: ByteArray,
+    refreshTokenNonce: ByteArray,
+    val refreshTokenKeyAlias: String,
+    val refreshTokenKeyGeneration: Int,
+    val refreshTokenAadVersion: Int,
+) : AutoCloseable {
+    private var ciphertextStorage: ByteArray? = refreshTokenCiphertext
+    private var nonceStorage: ByteArray? = refreshTokenNonce
+
+    fun copyRefreshTokenCiphertext(): ByteArray =
+        checkNotNull(ciphertextStorage) { "Refresh attempt binding is closed" }.copyOf()
+
+    fun copyRefreshTokenNonce(): ByteArray =
+        checkNotNull(nonceStorage) { "Refresh attempt binding is closed" }.copyOf()
+
+    override fun close() {
+        ciphertextStorage?.fill(0)
+        nonceStorage?.fill(0)
+        ciphertextStorage = null
+        nonceStorage = null
+    }
+
+    override fun toString(): String = "RefreshAttemptBinding(redacted=true)"
+}
+
 data class EnrollmentSuccessPersistence(
     val attemptRequestId: String,
     val authState: SyncAuthStateEntity,
@@ -61,6 +162,221 @@ class SyncAuthPersistenceStore(
     private val replicaDao = database.syncReplicaDao()
     private val transportDao = database.syncTransportDao()
     private val requestStore = SyncRequestPersistenceStore(database)
+    private val identityStore = LocalIdentityStore(database)
+
+    /**
+     * Atomically establishes the local identity and claims one enrollment send.
+     * Duplicate IDs and a concurrently dispatching enrollment are zero-write
+     * outcomes represented by null.
+     */
+    internal suspend fun beginEnrollmentAttempt(
+        requestId: String,
+        createdAt: Instant,
+        hmacKeyGeneration: Int,
+    ): EnrollmentAttemptBinding? {
+        requireCanonicalAuthUuid(requestId, "Enrollment request ID")
+        require(hmacKeyGeneration > 0) {
+            "Credential fingerprint key generation must be positive"
+        }
+        val createdAtUtc = createdAt.toString()
+        return database.withTransaction {
+            if (
+                authDao.findAttempt(requestId) != null ||
+                authDao.findAttempts(AUTH_ENROLL, DISPATCHING).isNotEmpty()
+            ) {
+                return@withTransaction null
+            }
+
+            val current = authDao.findState()
+            if (
+                current != null &&
+                current.state !in ENROLLMENT_REPLACEABLE_STATES
+            ) {
+                return@withTransaction null
+            }
+            val identity = identityStore.ensureIdentityInCurrentTransaction(createdAt)
+            requireServerIdentityCoherence(identity.serverDeviceId, identity.serverPersonId)
+            if (current != null) {
+                check(
+                    current.installationId == identity.installationId &&
+                        current.localOwnerId == identity.localOwnerId &&
+                        current.deviceId == identity.serverDeviceId &&
+                        current.personId == identity.serverPersonId,
+                ) {
+                    "Enrollment predecessor does not bind the current identity"
+                }
+            }
+            val fingerprintReferenceCount =
+                authDao.countTokenFingerprintsReferencingKeyGeneration(
+                    hmacKeyGeneration,
+                )
+            if (current != null) {
+                check(fingerprintReferenceCount >= TOKEN_FINGERPRINTS_PER_GENERATION) {
+                    "Installed credential family has no proven fingerprint key"
+                }
+            }
+
+            val attempt = SyncAuthAttemptEntity(
+                requestId = requestId,
+                endpointId = AUTH_ENROLL,
+                installationId = identity.installationId,
+                localOwnerId = identity.localOwnerId,
+                credentialEpochId = current?.credentialEpochId,
+                expectedDeviceId = current?.deviceId,
+                expectedGeneration = current?.generation,
+                state = DISPATCHING,
+                createdAtUtc = createdAtUtc,
+                updatedAtUtc = createdAtUtc,
+                lastErrorCode = null,
+            )
+            authDao.insertAttempt(attempt)
+            EnrollmentAttemptBinding(
+                requestId = requestId,
+                installationId = identity.installationId,
+                localOwnerId = identity.localOwnerId,
+                predecessorCredentialEpochId = current?.credentialEpochId,
+                predecessorDeviceId = current?.deviceId,
+                predecessorGeneration = current?.generation,
+                expectedStableDeviceId = identity.serverDeviceId,
+                expectedStablePersonId = identity.serverPersonId,
+                credentialFingerprintReferenceCount = fingerprintReferenceCount,
+            )
+        }
+    }
+
+    /** Returns no refresh-envelope bytes and performs no writes. */
+    internal suspend fun readAccessRecoveryBinding(): AccessRecoveryBinding? =
+        database.withTransaction {
+            val current = authDao.findState() ?: return@withTransaction null
+            val identity = checkNotNull(identityDao.findIdentity()) {
+                "Installed credential family has no current local identity"
+            }
+            requireServerIdentityCoherence(identity.serverDeviceId, identity.serverPersonId)
+            check(
+                current.installationId == identity.installationId &&
+                    current.localOwnerId == identity.localOwnerId &&
+                    current.deviceId == identity.serverDeviceId &&
+                    current.personId == identity.serverPersonId,
+            ) {
+                "Installed credential family does not bind the current identity"
+            }
+            current.toAccessRecoveryBinding()
+        }
+
+    /**
+     * Claims the exact family observed by [expected] and returns an owned
+     * refresh-envelope copy. A stale, duplicate, busy, or expired claim is a
+     * zero-write null result.
+     */
+    internal suspend fun beginRefreshAttempt(
+        requestId: String,
+        expected: AccessRecoveryBinding,
+        now: Instant,
+        hmacKeyGeneration: Int,
+    ): RefreshAttemptBinding? {
+        requireCanonicalAuthUuid(requestId, "Refresh request ID")
+        require(hmacKeyGeneration > 0) {
+            "Credential fingerprint key generation must be positive"
+        }
+        val nowEpochMs = now.toEpochMilli()
+        val updatedAtUtc = now.toString()
+        return database.withTransaction {
+            if (
+                authDao.findAttempt(requestId) != null ||
+                authDao.findAttempts(AUTH_REFRESH, DISPATCHING).isNotEmpty()
+            ) {
+                return@withTransaction null
+            }
+            val current = authDao.findState() ?: return@withTransaction null
+            val identity = identityDao.findIdentity() ?: return@withTransaction null
+            if (
+                current.state != ACTIVE ||
+                expected.state != ACTIVE ||
+                current.credentialEpochId != expected.credentialEpochId ||
+                current.installationId != expected.installationId ||
+                current.localOwnerId != expected.localOwnerId ||
+                current.deviceId != expected.deviceId ||
+                current.personId != expected.personId ||
+                current.generation != expected.generation ||
+                current.accessExpiresAtEpochMs != expected.accessExpiresAtEpochMs ||
+                current.refreshExpiresAtEpochMs != expected.refreshExpiresAtEpochMs ||
+                current.familyExpiresAtUtc != expected.familyExpiresAtUtc ||
+                current.familyExpiresAtEpochMs != expected.familyExpiresAtEpochMs ||
+                current.bootstrapRequired != expected.bootstrapRequired ||
+                identity.installationId != current.installationId ||
+                identity.localOwnerId != current.localOwnerId ||
+                identity.serverDeviceId != current.deviceId ||
+                identity.serverPersonId != current.personId ||
+                current.refreshExpiresAtEpochMs <= nowEpochMs ||
+                current.familyExpiresAtEpochMs <= nowEpochMs
+            ) {
+                return@withTransaction null
+            }
+            val ciphertext = current.refreshTokenCiphertext ?: return@withTransaction null
+            val nonce = current.refreshTokenNonce ?: return@withTransaction null
+            val keyAlias = current.refreshTokenKeyAlias ?: return@withTransaction null
+            val keyGeneration = current.refreshTokenKeyGeneration
+                ?: return@withTransaction null
+            val aadVersion = current.refreshTokenAadVersion
+                ?: return@withTransaction null
+            val fingerprintReferenceCount =
+                authDao.countTokenFingerprintsReferencingKeyGeneration(
+                    hmacKeyGeneration,
+                )
+            check(fingerprintReferenceCount >= TOKEN_FINGERPRINTS_PER_GENERATION) {
+                "Installed credential family has no proven fingerprint key"
+            }
+            if (
+                authDao.claimRefreshFamily(
+                    credentialEpochId = current.credentialEpochId,
+                    deviceId = current.deviceId,
+                    generation = current.generation,
+                    installationId = current.installationId,
+                    localOwnerId = current.localOwnerId,
+                    nowEpochMs = nowEpochMs,
+                    updatedAtUtc = updatedAtUtc,
+                ) != 1
+            ) {
+                return@withTransaction null
+            }
+            authDao.insertAttempt(
+                SyncAuthAttemptEntity(
+                    requestId = requestId,
+                    endpointId = AUTH_REFRESH,
+                    installationId = current.installationId,
+                    localOwnerId = current.localOwnerId,
+                    credentialEpochId = current.credentialEpochId,
+                    expectedDeviceId = current.deviceId,
+                    expectedGeneration = current.generation,
+                    state = DISPATCHING,
+                    createdAtUtc = updatedAtUtc,
+                    updatedAtUtc = updatedAtUtc,
+                    lastErrorCode = null,
+                ),
+            )
+            RefreshAttemptBinding(
+                requestId = requestId,
+                credentialEpochId = current.credentialEpochId,
+                installationId = current.installationId,
+                localOwnerId = current.localOwnerId,
+                deviceId = current.deviceId,
+                personId = current.personId,
+                generation = current.generation,
+                accessExpiresAtEpochMs = current.accessExpiresAtEpochMs,
+                refreshExpiresAtEpochMs = current.refreshExpiresAtEpochMs,
+                familyExpiresAtUtc = current.familyExpiresAtUtc,
+                familyExpiresAtEpochMs = current.familyExpiresAtEpochMs,
+                bootstrapRequired = current.bootstrapRequired,
+                durableRefreshTokenReferenceCount = 1L,
+                credentialFingerprintReferenceCount = fingerprintReferenceCount,
+                refreshTokenCiphertext = ciphertext.copyOf(),
+                refreshTokenNonce = nonce.copyOf(),
+                refreshTokenKeyAlias = keyAlias,
+                refreshTokenKeyGeneration = keyGeneration,
+                refreshTokenAadVersion = aadVersion,
+            )
+        }
+    }
 
     suspend fun beginEnrollment(attempt: SyncAuthAttemptEntity) {
         require(attempt.endpointId == AUTH_ENROLL)
@@ -682,8 +998,11 @@ class SyncAuthPersistenceStore(
      * A process death after a non-replayable refresh was dispatched is always
      * ambiguous. It is quarantined before any request can become runnable.
      */
-    suspend fun recoverInterruptedAuthFlows(updatedAtUtc: String): Int =
+    internal suspend fun recoverInterruptedAuthFlows(
+        updatedAtUtc: String,
+    ): InterruptedAuthRecoveryResult =
         database.withTransaction {
+            val authorityBefore = authDao.findState().toRecoveryAuthoritySnapshot()
             var recovered = 0
             val integrityRecovered = SyncRequestPersistenceStore(database)
                 .recoverInvalidRequestMetadata(
@@ -694,7 +1013,13 @@ class SyncAuthPersistenceStore(
             if (integrityRecovered == MAX_INTEGRITY_RECOVERY_ROWS) {
                 // Keep recovery bounded. The next invocation continues the
                 // integrity queue before any full-row auth-recovery scan.
-                return@withTransaction recovered
+                return@withTransaction InterruptedAuthRecoveryResult(
+                    recoveredCount = recovered,
+                    currentAuthorityChanged = currentAuthorityChanged(
+                        authorityBefore,
+                        authDao.findState().toRecoveryAuthoritySnapshot(),
+                    ),
+                )
             }
             authDao.findAttempts(AUTH_ENROLL, DISPATCHING).forEach { attempt ->
                 val current = authDao.findState()
@@ -813,7 +1138,13 @@ class SyncAuthPersistenceStore(
                     )
                     recovered += 1
                 }
-            recovered
+            InterruptedAuthRecoveryResult(
+                recoveredCount = recovered,
+                currentAuthorityChanged = currentAuthorityChanged(
+                    authorityBefore,
+                    authDao.findState().toRecoveryAuthoritySnapshot(),
+                ),
+            )
         }
 
     private suspend fun quarantineEnrollmentAttempt(
@@ -1304,6 +1635,37 @@ class SyncAuthPersistenceStore(
         }
     }
 
+    private fun SyncAuthStateEntity.toAccessRecoveryBinding() =
+        AccessRecoveryBinding(
+            credentialEpochId = credentialEpochId,
+            installationId = installationId,
+            localOwnerId = localOwnerId,
+            deviceId = deviceId,
+            personId = personId,
+            generation = generation,
+            state = state,
+            accessExpiresAtEpochMs = accessExpiresAtEpochMs,
+            refreshExpiresAtEpochMs = refreshExpiresAtEpochMs,
+            familyExpiresAtUtc = familyExpiresAtUtc,
+            familyExpiresAtEpochMs = familyExpiresAtEpochMs,
+            bootstrapRequired = bootstrapRequired,
+        )
+
+    private fun requireServerIdentityCoherence(
+        serverDeviceId: String?,
+        serverPersonId: String?,
+    ) {
+        check((serverDeviceId == null) == (serverPersonId == null)) {
+            "Current server identity binding is incomplete"
+        }
+    }
+
+    private fun requireCanonicalAuthUuid(value: String, label: String) {
+        require(CANONICAL_UUID_PATTERN.matches(value)) {
+            "$label must be a canonical UUID"
+        }
+    }
+
     private companion object {
         const val AUTH_ENROLL = "auth_enroll"
         const val AUTH_REFRESH = "auth_refresh"
@@ -1325,6 +1687,7 @@ class SyncAuthPersistenceStore(
         const val BOOTSTRAP_REQUIRED = "bootstrap_required"
         const val STAGING = "staging"
         const val MAX_INTEGRITY_RECOVERY_ROWS = 1_000
+        const val TOKEN_FINGERPRINTS_PER_GENERATION = 2L
         val ENROLLMENT_REPLACEABLE_STATES = setOf(
             ACTIVE,
             QUARANTINED,
@@ -1337,3 +1700,42 @@ class SyncAuthPersistenceStore(
         )
     }
 }
+
+private fun currentAuthorityChanged(
+    before: RecoveryAuthoritySnapshot?,
+    after: RecoveryAuthoritySnapshot?,
+): Boolean {
+    if (before == null || after == null) return before != after
+    return before.credentialEpochId != after.credentialEpochId ||
+        before.installationId != after.installationId ||
+        before.localOwnerId != after.localOwnerId ||
+        before.deviceId != after.deviceId ||
+        before.personId != after.personId ||
+        before.generation != after.generation ||
+        before.state != after.state
+}
+
+private class RecoveryAuthoritySnapshot(
+    val credentialEpochId: String,
+    val installationId: String,
+    val localOwnerId: String,
+    val deviceId: String,
+    val personId: String,
+    val generation: Long,
+    val state: String,
+) {
+    override fun toString(): String = "RecoveryAuthoritySnapshot(redacted=true)"
+}
+
+private fun SyncAuthStateEntity?.toRecoveryAuthoritySnapshot(): RecoveryAuthoritySnapshot? =
+    this?.let { authority ->
+        RecoveryAuthoritySnapshot(
+            credentialEpochId = authority.credentialEpochId,
+            installationId = authority.installationId,
+            localOwnerId = authority.localOwnerId,
+            deviceId = authority.deviceId,
+            personId = authority.personId,
+            generation = authority.generation,
+            state = authority.state,
+        )
+    }

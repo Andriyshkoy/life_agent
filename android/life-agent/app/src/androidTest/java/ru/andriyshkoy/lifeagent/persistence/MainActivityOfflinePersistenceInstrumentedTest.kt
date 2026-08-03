@@ -362,9 +362,24 @@ class MainActivityOfflinePersistenceInstrumentedTest {
             .orEmpty()
             .toSet()
 
-        assertTrue(requested.contains(Manifest.permission.INTERNET))
-        assertFalse(requested.contains(Manifest.permission.ACCESS_NETWORK_STATE))
+        val expectedPlatformPermissions = setOf(
+            Manifest.permission.INTERNET,
+            Manifest.permission.ACCESS_NETWORK_STATE,
+            Manifest.permission.WAKE_LOCK,
+            Manifest.permission.RECEIVE_BOOT_COMPLETED,
+            Manifest.permission.FOREGROUND_SERVICE,
+        )
+        expectedPlatformPermissions.forEach { permission ->
+            assertTrue("Expected merged permission $permission", requested.contains(permission))
+        }
         assertFalse(requested.contains(Manifest.permission.CHANGE_NETWORK_STATE))
+
+        val generatedReceiverPermission =
+            "${context.packageName}.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION"
+        assertEquals(
+            expectedPlatformPermissions + generatedReceiverPermission,
+            requested,
+        )
     }
 
     private fun assertAirplaneModeWhenRequired() {

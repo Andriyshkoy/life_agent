@@ -175,6 +175,7 @@ dependencies {
     val composeBom = platform("androidx.compose:compose-bom:2026.06.00")
     val okhttpVersion = "5.3.0"
     val roomVersion = "2.8.4"
+    val workManagerVersion = "2.11.2"
 
     implementation(composeBom)
     androidTestImplementation(composeBom)
@@ -191,6 +192,7 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.10.0")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.10.0")
     implementation("androidx.room:room-runtime:$roomVersion")
+    implementation("androidx.work:work-runtime-ktx:$workManagerVersion")
     implementation("androidx.sqlite:sqlite:2.6.2")
     implementation("net.zetetic:sqlcipher-android:4.17.0@aar")
     implementation("com.squareup.okhttp3:okhttp:$okhttpVersion")

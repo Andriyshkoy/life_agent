@@ -525,12 +525,6 @@ class SyncPersistenceStore(
                 "bootstrap_session_missing",
                 "Advanced bootstrap staging session is missing",
             )
-            val continuation = checkNotNull(continuationFactory)(advancedSession)
-            verifyBootstrapRequestBinding(
-                request = continuation,
-                session = advancedSession,
-                expectedPageCursor = receipt.nextCursor,
-            )
             val currentAuth = requireReplicaValue(
                 authDao.findState(),
                 "auth_state_missing",
@@ -545,18 +539,32 @@ class SyncPersistenceStore(
                     currentAuth.deviceId == advancedSession.deviceId &&
                     currentAuth.state in setOf("active", "refresh_in_flight") &&
                     currentAuth.bootstrapRequired &&
-                    continuation.state == "ready" &&
-                    continuation.attemptCount == 0 &&
-                    checkNotNull(continuation.accessGenerationUsed) <=
-                    currentAuth.generation &&
                     transportDao.findOpenBootstrapRequestKeys(
                         credentialEpochId = advancedSession.credentialEpochId,
                         deviceId = advancedSession.deviceId,
                     ).isEmpty(),
                 "bootstrap_continuation_binding_drift",
-                "Protected bootstrap continuation does not bind the advanced shadow",
+                "Bootstrap continuation lost authority before construction",
             )
-            transportDao.insertRequest(continuation)
+            val continuation = checkNotNull(continuationFactory)(advancedSession)
+            try {
+                verifyBootstrapRequestBinding(
+                    request = continuation,
+                    session = advancedSession,
+                    expectedPageCursor = receipt.nextCursor,
+                )
+                requireReplica(
+                    continuation.state == "ready" &&
+                        continuation.attemptCount == 0 &&
+                        checkNotNull(continuation.accessGenerationUsed) <=
+                        currentAuth.generation,
+                    "bootstrap_continuation_binding_drift",
+                    "Protected bootstrap continuation does not bind the advanced shadow",
+                )
+                transportDao.insertRequest(continuation)
+            } finally {
+                continuation.wipeTransientProtectionBuffers()
+            }
         }
     }
 
@@ -988,27 +996,33 @@ class SyncPersistenceStore(
             "auth_stream_binding_drift",
             "Expired bootstrap could not gate its credential family",
         )
+        transportDao.invalidateSupersededBootstrapRequests(
+            credentialEpochId = request.credentialEpochId,
+            deviceId = request.deviceId,
+            retainedRequestIdentity = null,
+            terminalAtUtc = response.terminalAtUtc,
+        )
         val replacementIntent = replacementFactory()
-        validateBootstrapIntent(replacementIntent)
-        val replacementAuth = requireReplicaValue(
-            authDao.findState(),
-            "auth_state_missing",
-            "Replacement bootstrap has no credential family",
-        )
-        requireReplica(
-            replacementIntent.session.credentialEpochId ==
-                request.credentialEpochId &&
-                replacementIntent.session.deviceId == request.deviceId &&
-                replacementAuth.credentialEpochId == request.credentialEpochId &&
-                replacementAuth.deviceId == request.deviceId &&
-                replacementAuth.state in setOf("active", "refresh_in_flight") &&
-                replacementAuth.bootstrapRequired &&
-                checkNotNull(replacementIntent.firstRequest.accessGenerationUsed) <=
-                replacementAuth.generation,
-            "bootstrap_replacement_binding_drift",
-            "Replacement bootstrap intent belongs to another stream",
-        )
-        val retainedRequestIdentity =
+        val retainedRequestIdentity = try {
+            validateBootstrapIntent(replacementIntent)
+            val replacementAuth = requireReplicaValue(
+                authDao.findState(),
+                "auth_state_missing",
+                "Replacement bootstrap has no credential family",
+            )
+            requireReplica(
+                replacementIntent.session.credentialEpochId ==
+                    request.credentialEpochId &&
+                    replacementIntent.session.deviceId == request.deviceId &&
+                    replacementAuth.credentialEpochId == request.credentialEpochId &&
+                    replacementAuth.deviceId == request.deviceId &&
+                    replacementAuth.state in setOf("active", "refresh_in_flight") &&
+                    replacementAuth.bootstrapRequired &&
+                    checkNotNull(replacementIntent.firstRequest.accessGenerationUsed) <=
+                    replacementAuth.generation,
+                "bootstrap_replacement_binding_drift",
+                "Replacement bootstrap intent belongs to another stream",
+            )
             SyncRequestPersistenceStore(database)
                 .installOrRetainBootstrapIntent(
                     expectedCredentialEpochId =
@@ -1017,6 +1031,9 @@ class SyncPersistenceStore(
                     proposedIntent = replacementIntent,
                     updatedAtUtc = response.terminalAtUtc,
                 )
+        } finally {
+            replacementIntent.firstRequest.wipeTransientProtectionBuffers()
+        }
         releaseOpenPushBatchesForBootstrap(
             credentialEpochId = request.credentialEpochId,
             deviceId = request.deviceId,

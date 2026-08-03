@@ -13,6 +13,34 @@ import okhttp3.OkHttpClient
 import ru.andriyshkoy.lifeagent.BuildConfig
 import ru.andriyshkoy.lifeagent.data.sync.wire.M2Endpoint
 
+/** Presence-only deployment state; it never contains the origin or pins. */
+internal enum class M2HttpsDeploymentPresence {
+    ABSENT,
+    PARTIAL,
+    PRESENT_UNVALIDATED,
+}
+
+/**
+ * Distinguishes an intentionally local build from a partially configured one.
+ *
+ * PRESENT_UNVALIDATED is not permission to send. Full validation still happens
+ * inside [ProductionM2HttpsTransportFactory] before a client can be allocated.
+ */
+internal fun m2HttpsDeploymentPresence(
+    rawOrigin: String,
+    rawSpkiPins: String,
+): M2HttpsDeploymentPresence = when {
+    rawOrigin.isEmpty() && rawSpkiPins.isEmpty() -> M2HttpsDeploymentPresence.ABSENT
+    rawOrigin.isEmpty() || rawSpkiPins.isEmpty() -> M2HttpsDeploymentPresence.PARTIAL
+    else -> M2HttpsDeploymentPresence.PRESENT_UNVALIDATED
+}
+
+internal fun m2HttpsDeploymentPresenceFromBuildConfig(): M2HttpsDeploymentPresence =
+    m2HttpsDeploymentPresence(
+        rawOrigin = BuildConfig.LIFE_AGENT_API_ORIGIN,
+        rawSpkiPins = BuildConfig.LIFE_AGENT_API_SPKI_PINS,
+    )
+
 /**
  * Validated immutable production routing and certificate policy.
  *
@@ -107,22 +135,51 @@ internal class M2HttpsConfiguration private constructor(
     }
 }
 
-/** Constructs the only production-configured transport client. */
-internal object ProductionM2HttpsTransportFactory {
-    fun create(): ExactHttpsTransport = createPinnedTransport { configuration, client ->
-        ExactHttpsTransport(
-            callFactory = client,
-            configuration = configuration,
-        )
-    }
+/** Both production transports bound to one validated configuration and client. */
+internal class ProductionM2HttpsTransportBundle internal constructor(
+    val exact: ExactHttpsTransport,
+    val auth: OneShotAuthHttpsTransport,
+) {
+    override fun toString(): String = "ProductionM2HttpsTransportBundle(redacted=true)"
+}
 
-    fun createAuth(): OneShotAuthHttpsTransport =
+/**
+ * App-graph-scoped lazy holder for the shared pinned transport bundle.
+ *
+ * Constructing this holder performs no BuildConfig parsing and allocates no
+ * OkHttp client. A future coordinator composition root owns one instance and
+ * calls [open] only when an HTTP-capable transition is actually selected.
+ */
+internal class LazyProductionM2HttpsTransportBundle internal constructor(
+    factory: () -> ProductionM2HttpsTransportBundle =
+        ProductionM2HttpsTransportFactory::createBundle,
+) {
+    private val storage = lazy(LazyThreadSafetyMode.SYNCHRONIZED, factory)
+
+    fun open(): ProductionM2HttpsTransportBundle = storage.value
+
+    override fun toString(): String =
+        "LazyProductionM2HttpsTransportBundle(redacted=true)"
+}
+
+/** Constructs the only production-configured transport bundle. */
+internal object ProductionM2HttpsTransportFactory {
+    fun createBundle(): ProductionM2HttpsTransportBundle =
         createPinnedTransport { configuration, client ->
-            OneShotAuthHttpsTransport(
-                callFactory = client,
-                configuration = configuration,
+            ProductionM2HttpsTransportBundle(
+                exact = ExactHttpsTransport(
+                    callFactory = client,
+                    configuration = configuration,
+                ),
+                auth = OneShotAuthHttpsTransport(
+                    callFactory = client,
+                    configuration = configuration,
+                ),
             )
         }
+
+    /** Compatibility entry point backed by the same single-client bundle. */
+    fun createAuth(): OneShotAuthHttpsTransport = createBundle().auth
 
     private inline fun <T> createPinnedTransport(
         factory: (M2HttpsConfiguration, OkHttpClient) -> T,

@@ -83,6 +83,7 @@ class AndroidSecurityValidatorTest(unittest.TestCase):
         xml = f"""\
 <manifest xmlns:android="{ANDROID_NS}">
   <uses-permission android:name="android.permission.INTERNET" />
+  <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
   <application
       android:allowBackup="true"
       android:dataExtractionRules="@xml/data_extraction_rules"
@@ -104,16 +105,51 @@ class AndroidSecurityValidatorTest(unittest.TestCase):
         with self.assertRaisesRegex(SecurityValidationError, "required permissions missing"):
             validate_manifest(path)
 
+    def test_network_observation_permission_is_required(self) -> None:
+        xml = self.valid_manifest().replace(
+            "  <uses-permission "
+            'android:name="android.permission.ACCESS_NETWORK_STATE" />\n',
+            "",
+        )
+        path = self.write_temporary_xml(xml)
+        with self.assertRaisesRegex(SecurityValidationError, "required permissions missing"):
+            validate_manifest(path)
+
     def test_network_management_permissions_are_forbidden(self) -> None:
         xml = self.valid_manifest().replace(
             "  <application",
             "  <uses-permission "
-            'android:name="android.permission.ACCESS_NETWORK_STATE" />\n'
+            'android:name="android.permission.CHANGE_NETWORK_STATE" />\n'
             "  <application",
         )
         path = self.write_temporary_xml(xml)
         with self.assertRaisesRegex(SecurityValidationError, "forbidden permissions present"):
             validate_manifest(path)
+
+    def test_source_manifest_rejects_library_generated_permissions(self) -> None:
+        xml = self.valid_manifest().replace(
+            "  <application",
+            "  <uses-permission android:name=\"android.permission.WAKE_LOCK\" />\n"
+            "  <application",
+        )
+        path = self.write_temporary_xml(xml)
+        with self.assertRaisesRegex(SecurityValidationError, "unexpected permissions present"):
+            validate_manifest(path)
+
+    def test_merged_manifest_allows_only_work_manager_generated_permissions(self) -> None:
+        path = self.write_temporary_xml(self.valid_merged_manifest())
+
+        validate_manifest(path, merged=True)
+
+    def test_merged_manifest_rejects_unknown_permission(self) -> None:
+        xml = self.valid_merged_manifest().replace(
+            "  <application",
+            "  <uses-permission android:name=\"android.permission.CHANGE_WIFI_STATE\" />\n"
+            "  <application",
+        )
+        path = self.write_temporary_xml(xml)
+        with self.assertRaisesRegex(SecurityValidationError, "unexpected permissions present"):
+            validate_manifest(path, merged=True)
 
     def test_network_security_config_requires_only_system_trust(self) -> None:
         xml = """\
@@ -133,6 +169,7 @@ class AndroidSecurityValidatorTest(unittest.TestCase):
         return f"""\
 <manifest xmlns:android="{ANDROID_NS}">
   <uses-permission android:name="android.permission.INTERNET" />
+  <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
   <application
       android:allowBackup="false"
       android:dataExtractionRules="@xml/data_extraction_rules"
@@ -141,6 +178,23 @@ class AndroidSecurityValidatorTest(unittest.TestCase):
       android:usesCleartextTraffic="false" />
 </manifest>
 """
+
+    def valid_merged_manifest(self) -> str:
+        package_name = "ru.andriyshkoy.lifeagent.test"
+        return self.valid_manifest().replace(
+            f'<manifest xmlns:android="{ANDROID_NS}">',
+            f'<manifest xmlns:android="{ANDROID_NS}" package="{package_name}">',
+        ).replace(
+            "  <application",
+            "  <uses-permission android:name=\"android.permission.WAKE_LOCK\" />\n"
+            "  <uses-permission "
+            "android:name=\"android.permission.RECEIVE_BOOT_COMPLETED\" />\n"
+            "  <uses-permission "
+            "android:name=\"android.permission.FOREGROUND_SERVICE\" />\n"
+            "  <uses-permission android:name=\""
+            f"{package_name}.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION\" />\n"
+            "  <application",
+        )
 
     def write_temporary_xml(self, content: str) -> Path:
         temporary_directory = tempfile.TemporaryDirectory()
