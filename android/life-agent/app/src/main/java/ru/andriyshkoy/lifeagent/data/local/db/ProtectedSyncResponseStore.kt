@@ -83,14 +83,14 @@ internal fun createProductionProtectedDurableDispatchPort(
     accessTokenVault: AccessTokenVault,
     transports: LazyProductionM2HttpsTransportBundle =
         LazyProductionM2HttpsTransportBundle(),
-    completionClock: Clock = Clock.systemUTC(),
-): ProtectedDurableDispatchPort {
-    val requests = ProtectedSyncRequestStore(context, database)
-    val responses = ProtectedSyncResponseStore(
+    responseStore: ProtectedSyncResponseStore = ProtectedSyncResponseStore(
         context = context,
         database = database,
         bootstrapIntents = bootstrapIntents,
-    )
+    ),
+    completionClock: Clock = Clock.systemUTC(),
+): ProtectedDurableDispatchPort {
+    val requests = ProtectedSyncRequestStore(context, database)
     return ProductionProtectedDurableDispatchPort(
         exchangeProvider = {
             val exact = transports.open().exact
@@ -115,19 +115,19 @@ internal fun createProductionProtectedDurableDispatchPort(
                 outcome: ExactHttpsNetworkFailure,
                 terminalAtUtc: String,
             ): ProtectedResponseDisposition =
-                responses.reduceRetryableFailure(outcome, terminalAtUtc)
+                responseStore.reduceRetryableFailure(outcome, terminalAtUtc)
 
             override suspend fun reduce(
                 outcome: ExactHttpsProtocolFailure,
                 terminalAtUtc: String,
             ): ProtectedResponseDisposition =
-                responses.reduceProtocolFailure(outcome, terminalAtUtc)
+                responseStore.reduceProtocolFailure(outcome, terminalAtUtc)
 
             override suspend fun reduce(
                 outcome: ExactHttpsRawResponse,
                 terminalAtUtc: String,
             ): ProtectedResponseDisposition =
-                responses.reduceRawResponse(outcome, terminalAtUtc)
+                responseStore.reduceRawResponse(outcome, terminalAtUtc)
         },
         accessTokenVault = accessTokenVault,
         completionClock = completionClock,

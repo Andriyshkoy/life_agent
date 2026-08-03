@@ -8,8 +8,8 @@ import androidx.work.WorkerParameters
 /**
  * Stable WorkManager entry point for bounded sync execution.
  *
- * Until the Application implements [SyncWorkExecutionPortProvider], direct or
- * stale invocations fail closed without opening storage or constructing HTTP.
+ * Direct or stale invocations still require the application-owned opaque port;
+ * the worker never constructs storage, credentials, request bodies or HTTP.
  */
 internal class LifeAgentSyncWorker(
     appContext: Context,

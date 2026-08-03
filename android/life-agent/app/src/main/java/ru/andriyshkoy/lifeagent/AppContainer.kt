@@ -11,14 +11,16 @@ import ru.andriyshkoy.lifeagent.data.security.RetryableSensitiveStorageCloser
 import ru.andriyshkoy.lifeagent.data.security.SqlCipherKey
 import ru.andriyshkoy.lifeagent.data.security.SqlCipherOpenHelperFactoryProvider
 import ru.andriyshkoy.lifeagent.data.security.SqlCipherRuntime
-import ru.andriyshkoy.lifeagent.data.security.closeDatabaseThenKey
+import ru.andriyshkoy.lifeagent.data.security.closeProcessSecretsDatabaseThenKey
+import ru.andriyshkoy.lifeagent.data.sync.work.SyncWorkExecutionPort
 import ru.andriyshkoy.lifeagent.domain.export.ExportNotesUseCase
 import ru.andriyshkoy.lifeagent.domain.export.NotesRepositoryExportSnapshotSource
 import ru.andriyshkoy.lifeagent.notes.data.RoomNotesRepository
 import ru.andriyshkoy.lifeagent.notes.domain.NotesRepository
+import ru.andriyshkoy.lifeagent.ui.sync.DefaultSyncSetupController
 
 /**
- * Small application graph for the local-first M1 slice.
+ * Process graph for local-first storage and the protected M2 sync runtime.
  *
  * The SQLCipher key holder deliberately lives for exactly as long as Room.
  */
@@ -27,6 +29,7 @@ class AppContainer(
 ) : Closeable {
     private val databaseKey: SqlCipherKey
     private val database: LifeAgentDatabase
+    private val m2Runtime: M2ProductionAppRuntime
     private val storageCloser: RetryableSensitiveStorageCloser
 
     val notesRepository: NotesRepository
@@ -40,6 +43,7 @@ class AppContainer(
             databaseName = LifeAgentDatabase.NAME,
         ).openSqlCipherKey()
         var openedDatabase: LifeAgentDatabase? = null
+        var openedM2Runtime: M2ProductionAppRuntime? = null
 
         try {
             val db = LifeAgentDatabaseFactory.create(
@@ -53,27 +57,44 @@ class AppContainer(
                 database = db,
                 collectorVersion = BuildConfig.VERSION_NAME,
             )
+            val runtime = M2ProductionAppRuntime.create(
+                context = context,
+                database = db,
+                localNotesRepository = repository,
+            )
+            openedM2Runtime = runtime
             databaseKey = key
             database = db
-            notesRepository = repository
+            m2Runtime = runtime
+            notesRepository = runtime.notesRepository
             exportNotes = ExportNotesUseCase(
-                source = NotesRepositoryExportSnapshotSource(repository),
+                source = NotesRepositoryExportSnapshotSource(notesRepository),
                 codec = CanonicalNotesExportCodec(),
             )
             storageCloser = RetryableSensitiveStorageCloser(
                 closeDatabase = database::close,
                 closeKey = databaseKey::close,
+                closeProcessSecrets = m2Runtime::close,
             )
         } catch (error: Throwable) {
             throw checkNotNull(
-                closeDatabaseThenKey(
+                closeProcessSecretsDatabaseThenKey(
                     primaryFailure = error,
+                    closeProcessSecrets = { openedM2Runtime?.close() },
                     closeDatabase = { openedDatabase?.close() },
                     closeKey = key::close,
                 ),
             )
         }
     }
+
+    internal val syncWorkExecutionPort: SyncWorkExecutionPort
+        get() = m2Runtime.syncWorkExecutionPort
+
+    internal fun enqueueSyncAtStartup() = m2Runtime.enqueueAtStartup()
+
+    internal fun createSyncSetupController(): DefaultSyncSetupController =
+        m2Runtime.createSyncSetupController()
 
     override fun close() = storageCloser.close()
 

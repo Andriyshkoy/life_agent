@@ -18,6 +18,22 @@ class SyncWorkBoundaryArchitectureTest {
             ),
         )
         assertOnlyAllowedMainMatches(
+            Regex("""\bSyncWorkExecutionPortProvider\b"""),
+            setOf(
+                APPLICATION,
+                SYNC_WORK_EXECUTION,
+                SYNC_WORKER,
+            ),
+        )
+        assertOnlyAllowedMainMatches(
+            Regex("""\bSyncWorkScheduler\b"""),
+            setOf(
+                M2_APP_RUNTIME,
+                SYNC_WORK_SCHEDULER,
+                SYNC_WORKER,
+            ),
+        )
+        assertOnlyAllowedMainMatches(
             Regex("""\bCoroutineWorker\b"""),
             setOf(SYNC_WORKER),
         )
@@ -54,11 +70,17 @@ class SyncWorkBoundaryArchitectureTest {
 
         val appContainer = File(mainSourceRoot(), APP_CONTAINER).readText()
         val application = File(mainSourceRoot(), APPLICATION).readText()
-        listOf(appContainer, application).forEach { source ->
-            assertFalse(source.contains("SyncWorkScheduler"))
-            assertFalse(source.contains("SyncWorkExecutionPortProvider"))
-            assertFalse(source.contains("LifeAgentSyncWorker"))
-        }
+        val runtime = File(mainSourceRoot(), M2_APP_RUNTIME).readText()
+        assertTrue(application.contains("SyncWorkExecutionPortProvider"))
+        assertTrue(application.contains("openStorage().getOrThrow().syncWorkExecutionPort"))
+        assertTrue(appContainer.contains("M2ProductionAppRuntime.create("))
+        assertTrue(appContainer.contains("closeProcessSecrets = m2Runtime::close"))
+        assertEqualsCount(runtime, "LazyProductionM2HttpsTransportBundle()", 1)
+        assertEqualsCount(runtime, "createProductionM2SyncWorkExecutionPort(", 1)
+        assertEqualsCount(runtime, "createProductionProtectedDurableDispatchPort(", 1)
+        assertFalse(runtime.contains("transports.open()"))
+        assertFalse(appContainer.contains("LifeAgentSyncWorker"))
+        assertFalse(application.contains("LifeAgentSyncWorker"))
     }
 
     private fun assertOnlyAllowedMainMatches(
@@ -94,6 +116,7 @@ class SyncWorkBoundaryArchitectureTest {
     private companion object {
         const val APP_CONTAINER = "java/ru/andriyshkoy/lifeagent/AppContainer.kt"
         const val APPLICATION = "java/ru/andriyshkoy/lifeagent/LifeAgentApplication.kt"
+        const val M2_APP_RUNTIME = "java/ru/andriyshkoy/lifeagent/M2AppRuntime.kt"
         const val WORK_PACKAGE = "java/ru/andriyshkoy/lifeagent/data/sync/work"
         const val SYNC_WORK_CONTRACT = "$WORK_PACKAGE/SyncWorkContract.kt"
         const val SYNC_WORK_EXECUTION = "$WORK_PACKAGE/SyncWorkExecution.kt"

@@ -24,7 +24,9 @@ internal fun interface UniqueSyncWorkEnqueuer {
 private class WorkManagerUniqueSyncWorkEnqueuer(
     context: Context,
 ) : UniqueSyncWorkEnqueuer {
-    private val workManager = WorkManager.getInstance(context.applicationContext)
+    private val workManager: WorkManager by lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
+        WorkManager.getInstance(context.applicationContext)
+    }
 
     override fun enqueue(
         uniqueWorkName: String,
@@ -38,8 +40,8 @@ private class WorkManagerUniqueSyncWorkEnqueuer(
 /**
  * One coalescing lane shared by future startup and manual "Sync now" calls.
  *
- * This class is deliberately not wired into Application yet. Configuration
- * presence is checked before a WorkRequest is allocated or persisted.
+ * Configuration presence is checked before WorkManager is resolved and before
+ * a WorkRequest is allocated or persisted.
  */
 internal class SyncWorkScheduler internal constructor(
     private val deploymentPresence: () -> M2HttpsDeploymentPresence,
