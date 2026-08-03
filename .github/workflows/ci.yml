@@ -67,8 +67,10 @@ jobs:
           python scripts/validate_schemas.py
           python scripts/validate_repository.py
           python scripts/validate_android_security.py
+          python scripts/validate_android_distribution_workflow.py
           python scripts/validate_backend_production_workflow.py
           python -m unittest scripts.test_validate_android_security
+          python -m unittest scripts.test_validate_android_distribution_workflow
           python -m unittest scripts.test_validate_backend_production_workflow
           bash -n scripts/run_android_m1_instrumented_ci.sh
           bash -n scripts/run_android_m1_cold_start_smoke.sh
