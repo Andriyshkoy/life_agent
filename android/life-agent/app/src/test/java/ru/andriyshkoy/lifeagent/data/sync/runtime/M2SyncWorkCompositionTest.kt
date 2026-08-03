@@ -178,7 +178,10 @@ class M2SyncWorkCompositionTest {
             },
         )
 
-        assertEquals(SyncWorkExecutionDisposition.RETRY, port.runOneBoundedSync())
+        assertEquals(
+            SyncWorkExecutionDisposition.FOLLOW_UP_REQUIRED,
+            port.runOneBoundedSync(),
+        )
         assertEquals(2, ensureAccessCalls)
         assertEquals(1, dispatchCalls)
         assertEquals(TrustedUnauthorizedPhase.RETRY_N_PLUS_ONE, phase)
