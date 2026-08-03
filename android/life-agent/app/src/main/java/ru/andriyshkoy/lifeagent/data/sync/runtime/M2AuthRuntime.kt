@@ -290,10 +290,11 @@ internal class M2AuthRuntime internal constructor(
     suspend fun recoverInterruptedAuthFlows(): M2AuthRuntimeResult {
         if (!operationMutex.tryLock()) return M2AuthRuntimeResult.Busy
         return try {
-            vault.clear()
-            M2AuthRuntimeResult.RecoveryComplete(
-                persistence.recoverInterrupted(clock.instant().toString()),
-            )
+            val recoveredCount = persistence.recoverInterrupted(clock.instant().toString())
+            if (recoveredCount > 0) {
+                vault.clear()
+            }
+            M2AuthRuntimeResult.RecoveryComplete(recoveredCount)
         } finally {
             operationMutex.unlock()
         }

@@ -58,6 +58,33 @@ class DurableSyncRequestPlanningPolicyTest {
     }
 
     @Test
+    fun leaseRecoveryProjectionRetainsExpiredSendingAndBlocksLiveSending() {
+        val expiredSending = decide(
+            auth = DurableSyncPlannerAuth.ACTIVE_CURRENT,
+            stream = DurableSyncPlannerStream.INCREMENTAL_WITH_CURSOR,
+            session = false,
+            outbox = false,
+            retained = setOf(DurableSyncRequestKind.PULL),
+        )
+        val liveSending = decide(
+            auth = DurableSyncPlannerAuth.ACTIVE_CURRENT,
+            stream = DurableSyncPlannerStream.INCREMENTAL_WITH_CURSOR,
+            session = false,
+            outbox = false,
+            otherOpen = true,
+        )
+
+        assertEquals(
+            DurableSyncRequestPlan.RetainExisting(DurableSyncRequestKind.PULL),
+            expiredSending,
+        )
+        assertEquals(
+            noRequest(DurableSyncNoRequestReason.OPEN_REQUEST_REQUIRES_RECOVERY),
+            liveSending,
+        )
+    }
+
+    @Test
     fun inactiveAuthorityNeverCreatesANewDurableRequest() {
         val expected = mapOf(
             DurableSyncPlannerAuth.MISSING to

@@ -195,6 +195,62 @@ class SyncRunnableRequestCandidateDaoApi35InstrumentedTest {
         )
     }
 
+    @Test
+    fun expiredSendingLeaseIsRunnableWhileLiveLeaseRemainsOpenAndHidden() = runBlocking {
+        val fixture = newFixture("runnable-candidate-expired-lease")
+        fixture.seedIdentity(
+            deviceId = SyncM2PersistenceFixture.DEVICE_ID,
+            personId = SyncM2PersistenceFixture.PERSON_ID,
+        )
+        fixture.installActiveAuth()
+        fixture.seedIncrementalStream()
+        val dao = fixture.database.syncTransportDao()
+        val expiredPushId = "01000000-0000-4000-8000-000000000004"
+        val livePullId = "01000000-0000-4000-8000-000000000005"
+        val expiredLeaseAt = SyncM2PersistenceFixture.NOW_MS
+        val liveLeaseAt = SyncM2PersistenceFixture.NOW_MS + 5_000
+
+        dao.insertRequest(
+            fixture.request(
+                endpointId = "sync_push",
+                requestIdentity = expiredPushId,
+                state = "sending",
+                attemptCount = 1,
+                activeAttemptId = UUID.randomUUID().toString(),
+                leaseExpiresAtEpochMs = expiredLeaseAt,
+            ),
+        )
+        dao.insertRequest(
+            fixture.request(
+                endpointId = "sync_pull",
+                requestIdentity = livePullId,
+                state = "sending",
+                attemptCount = 1,
+                activeAttemptId = UUID.randomUUID().toString(),
+                leaseExpiresAtEpochMs = liveLeaseAt,
+            ),
+        )
+
+        val nowCandidates = dao.findRunnableRequestCandidates(
+            SyncM2PersistenceFixture.NOW_MS,
+            10,
+        )
+        assertEquals(listOf(expiredPushId), nowCandidates.map { it.requestIdentity })
+        assertEquals("sending", nowCandidates.single().state)
+        assertEquals(expiredLeaseAt, nowCandidates.single().scheduledAtEpochMs)
+        assertEquals(2L, dao.countOpenRequestRows())
+
+        val afterLiveLeaseExpires = dao.findRunnableRequestCandidates(liveLeaseAt, 10)
+        assertEquals(
+            listOf(expiredPushId, livePullId),
+            afterLiveLeaseExpires.map { it.requestIdentity },
+        )
+        assertEquals(
+            listOf(expiredLeaseAt, liveLeaseAt),
+            afterLiveLeaseExpires.map { it.scheduledAtEpochMs },
+        )
+    }
+
     private fun newFixture(label: String): SyncM2PersistenceFixture =
         SyncM2PersistenceFixture(context, label).also(fixtures::add)
 }

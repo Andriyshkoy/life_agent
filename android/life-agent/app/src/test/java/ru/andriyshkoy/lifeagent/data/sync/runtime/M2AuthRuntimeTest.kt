@@ -31,6 +31,55 @@ import ru.andriyshkoy.lifeagent.data.sync.wire.WipeableSecret
 
 class M2AuthRuntimeTest {
     @Test
+    fun zeroRecoveryPreservesCurrentProcessAccessAuthority() = runTest {
+        val events = mutableListOf<String>()
+        val persistence = FakePersistence(events)
+        val vault = FakeVault(events)
+        val key = AccessTokenKey(EPOCH_ID, 7)
+        val token = WipeableSecret.ascii(ACCESS_TOKEN)
+        vault.replace(key, token)
+
+        val result = runtime(
+            persistence = persistence,
+            credentials = FakeCredentials(),
+            exchange = FakeExchange(),
+            vault = vault,
+        ).recoverInterruptedAuthFlows()
+
+        val recovery = result as M2AuthRuntimeResult.RecoveryComplete
+        assertEquals(0, recovery.recoveredCount)
+        assertEquals(0, vault.clearCalls)
+        assertTrue(vault.contains(key))
+        vault.clear()
+        assertSecretClosed(token)
+    }
+
+    @Test
+    fun recoveredInterruptedAuthorityClearsProcessAccessVault() = runTest {
+        val events = mutableListOf<String>()
+        val persistence = FakePersistence(events).apply {
+            interruptedRecoveryCount = 1
+        }
+        val vault = FakeVault(events)
+        val key = AccessTokenKey(EPOCH_ID, 7)
+        val token = WipeableSecret.ascii(ACCESS_TOKEN)
+        vault.replace(key, token)
+
+        val result = runtime(
+            persistence = persistence,
+            credentials = FakeCredentials(),
+            exchange = FakeExchange(),
+            vault = vault,
+        ).recoverInterruptedAuthFlows()
+
+        val recovery = result as M2AuthRuntimeResult.RecoveryComplete
+        assertEquals(1, recovery.recoveredCount)
+        assertEquals(1, vault.clearCalls)
+        assertFalse(vault.contains(key))
+        assertSecretClosed(token)
+    }
+
+    @Test
     fun enrollmentCommitsRoomBeforeVaultAndRevokesOnlyPredecessorEpoch() = runTest {
         val events = mutableListOf<String>()
         val persistence = FakePersistence(events).apply {
@@ -356,6 +405,7 @@ class M2AuthRuntimeTest {
         var beginEnrollmentCalls = 0
         var readAccessCalls = 0
         var beginRefreshCalls = 0
+        var interruptedRecoveryCount = 0
         var lastRefreshBinding: RefreshAttemptBinding? = null
         val committedEnrollments = mutableListOf<PreparedEnrollmentInstallation>()
         val committedRefreshes = mutableListOf<PreparedRefreshInstallation>()
@@ -428,7 +478,8 @@ class M2AuthRuntimeTest {
             refreshUnknowns += Settlement(requestId, failureCode)
         }
 
-        override suspend fun recoverInterrupted(updatedAtUtc: String): Int = 0
+        override suspend fun recoverInterrupted(updatedAtUtc: String): Int =
+            interruptedRecoveryCount
     }
 
     private class FakeCredentials : M2AuthCredentialBoundary {
@@ -625,6 +676,7 @@ class M2AuthRuntimeTest {
         val revokedKeys = mutableListOf<AccessTokenKey>()
         val revokedEpochs = mutableListOf<String>()
         var failReplace = false
+        var clearCalls = 0
 
         override fun contains(key: AccessTokenKey): Boolean = stored.containsKey(key)
 
@@ -655,6 +707,7 @@ class M2AuthRuntimeTest {
         }
 
         override fun clear() {
+            clearCalls += 1
             stored.values.forEach(WipeableSecret::close)
             stored.clear()
         }

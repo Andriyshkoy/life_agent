@@ -522,6 +522,7 @@ interface SyncTransportDao {
           request.lease_expires_at_epoch_ms,
           request.active_attempt_id,
           CASE request.state
+            WHEN 'sending' THEN request.lease_expires_at_epoch_ms
             WHEN 'retry_wait' THEN request.next_attempt_at_epoch_ms
             ELSE :nowEpochMs
           END AS scheduled_at_epoch_ms,
@@ -542,6 +543,12 @@ interface SyncTransportDao {
               request.state = 'retry_wait'
               AND request.next_attempt_at_epoch_ms IS NOT NULL
               AND request.next_attempt_at_epoch_ms <= :nowEpochMs
+            )
+            OR (
+              request.state = 'sending'
+              AND request.active_attempt_id IS NOT NULL
+              AND request.lease_expires_at_epoch_ms IS NOT NULL
+              AND request.lease_expires_at_epoch_ms <= :nowEpochMs
             )
           )
           AND request.attempt_count < request.attempt_budget
