@@ -222,6 +222,9 @@ class M2SyncWorkCompositionTest {
 
     @Test
     fun durableCredentialCommitWithoutProcessAccessDoesNotRotateAgain() = runTest {
+        var requestRecoveryCalls = 0
+        var planningCalls = 0
+        var dispatchCalls = 0
         val auth = FakeAuthBoundary(
             ensureAccessBlock = {
                 M2AuthRuntimeResult.DurableCredentialsCommitted(ACCESS_KEY)
@@ -229,14 +232,74 @@ class M2SyncWorkCompositionTest {
         )
         val port = port(
             auth = auth,
-            planning = { noRequest(DurableSyncNoRequestReason.REFRESH_REQUIRED) },
+            requestRecovery = {
+                requestRecoveryCalls += 1
+                M2SyncRequestRecoveryResult(0, false)
+            },
+            planning = {
+                planningCalls += 1
+                noRequest(DurableSyncNoRequestReason.REFRESH_REQUIRED)
+            },
+            dispatch = {
+                dispatchCalls += 1
+                ProtectedSyncDispatchDisposition.PROGRESSED
+            },
         )
 
         assertEquals(
             SyncWorkExecutionDisposition.PERMANENT_FAILURE,
             port.runOneBoundedSync(),
         )
+        val countersAfterDurableCommit = listOf(
+            auth.recoveryCalls,
+            auth.ensureAccessCalls,
+            requestRecoveryCalls,
+            planningCalls,
+            dispatchCalls,
+        )
+        assertEquals(
+            SyncWorkExecutionDisposition.PERMANENT_FAILURE,
+            port.runOneBoundedSync(),
+        )
+        assertEquals(
+            countersAfterDurableCommit,
+            listOf(
+                auth.recoveryCalls,
+                auth.ensureAccessCalls,
+                requestRecoveryCalls,
+                planningCalls,
+                dispatchCalls,
+            ),
+        )
         assertEquals(1, auth.ensureAccessCalls)
+        assertEquals(0, dispatchCalls)
+
+        var requestPresentAfterRestart = true
+        var dispatchCallsAfterRestart = 0
+        val authAfterRestart = FakeAuthBoundary()
+        val portAfterRestart = port(
+            auth = authAfterRestart,
+            planning = {
+                if (requestPresentAfterRestart) {
+                    retained(DurableSyncRequestKind.PUSH, PUSH_CANDIDATE)
+                } else {
+                    noRequest(DurableSyncNoRequestReason.AUTHORITY_MISSING)
+                }
+            },
+            dispatch = {
+                dispatchCallsAfterRestart += 1
+                requestPresentAfterRestart = false
+                ProtectedSyncDispatchDisposition.PROGRESSED
+            },
+        )
+
+        assertEquals(
+            SyncWorkExecutionDisposition.COMPLETE,
+            portAfterRestart.runOneBoundedSync(),
+        )
+        assertEquals(1, authAfterRestart.recoveryCalls)
+        assertEquals(1, authAfterRestart.ensureAccessCalls)
+        assertEquals(1, dispatchCallsAfterRestart)
     }
 
     @Test

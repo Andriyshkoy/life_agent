@@ -223,9 +223,11 @@ internal class M2SyncWorkExecutionPort(
     clock: Clock = Clock.systemUTC(),
 ) : SyncWorkExecutionPort {
     private val accessState = M2SyncAccessAuthorityState()
+    private val processState = M2SyncProcessState()
     private val recovery = M2SyncRecoveryPort(
         auth = auth,
         requests = requestRecovery,
+        processState = processState,
         clock = clock,
     )
     private val actionSource = M2SyncCoordinatorActionSource(
@@ -236,6 +238,7 @@ internal class M2SyncWorkExecutionPort(
     private val actionPort = M2SyncCoordinatorActionPort(
         auth = auth,
         accessState = accessState,
+        processState = processState,
         dispatch = dispatch,
     )
     private val coordinator = BoundedSyncCoordinator(
@@ -258,6 +261,7 @@ internal class M2SyncWorkExecutionPort(
             -> SyncWorkExecutionDisposition.RETRY
 
             SyncCoordinatorStopReason.USER_ACTION_REQUIRED,
+            SyncCoordinatorStopReason.PROCESS_RESTART_REQUIRED,
             SyncCoordinatorStopReason.DUPLICATE_AUTHORITY,
             SyncCoordinatorStopReason.INVALID_ACTION_DISPOSITION,
             -> SyncWorkExecutionDisposition.PERMANENT_FAILURE
@@ -275,11 +279,15 @@ internal class M2SyncWorkExecutionPort(
 private class M2SyncRecoveryPort(
     private val auth: M2SyncAuthRuntimeBoundary,
     private val requests: M2SyncRequestRecoveryBoundary,
+    private val processState: M2SyncProcessState,
     private val clock: Clock,
 ) : SyncCoordinatorRecoveryPort {
     private var authRecoveryComplete = false
 
     override suspend fun recoverOne(): SyncCoordinatorRecoveryDisposition {
+        if (processState.restartRequired) {
+            return SyncCoordinatorRecoveryDisposition.PROCESS_RESTART_REQUIRED
+        }
         if (!authRecoveryComplete) {
             when (val result = auth.recoverInterrupted()) {
                 is M2AuthRuntimeResult.RecoveryComplete -> if (result.recoveredCount == 0) {
@@ -292,8 +300,12 @@ private class M2SyncRecoveryPort(
                 M2AuthRuntimeResult.LocalUnavailable,
                 -> return SyncCoordinatorRecoveryDisposition.RETRY_LATER
 
+                is M2AuthRuntimeResult.DurableCredentialsCommitted -> {
+                    processState.requireRestart()
+                    return SyncCoordinatorRecoveryDisposition.PROCESS_RESTART_REQUIRED
+                }
+
                 is M2AuthRuntimeResult.AccessReady,
-                is M2AuthRuntimeResult.DurableCredentialsCommitted,
                 M2AuthRuntimeResult.ManualReenrollmentRequired,
                 M2AuthRuntimeResult.Rejected,
                 M2AuthRuntimeResult.Unenrolled,
@@ -413,6 +425,7 @@ private class M2SyncCoordinatorActionSource(
 private class M2SyncCoordinatorActionPort(
     private val auth: M2SyncAuthRuntimeBoundary,
     private val accessState: M2SyncAccessAuthorityState,
+    private val processState: M2SyncProcessState,
     private val dispatch: ProtectedDurableSyncDispatchBoundary,
 ) : SyncCoordinatorActionPort {
     override suspend fun performOne(
@@ -449,7 +462,11 @@ private class M2SyncCoordinatorActionPort(
             M2AuthRuntimeResult.LocalUnavailable,
             -> SyncCoordinatorActionDisposition.RETRY_LATER
 
-            is M2AuthRuntimeResult.DurableCredentialsCommitted,
+            is M2AuthRuntimeResult.DurableCredentialsCommitted -> {
+                processState.requireRestart()
+                SyncCoordinatorActionDisposition.PROCESS_RESTART_REQUIRED
+            }
+
             M2AuthRuntimeResult.ManualReenrollmentRequired,
             M2AuthRuntimeResult.Rejected,
             M2AuthRuntimeResult.Unenrolled,
@@ -459,6 +476,18 @@ private class M2SyncCoordinatorActionPort(
                 SyncCoordinatorActionDisposition.NO_PROGRESS
         }
     }
+}
+
+/** Process-local latch; no credential or durable identity is retained. */
+private class M2SyncProcessState {
+    var restartRequired: Boolean = false
+        private set
+
+    fun requireRestart() {
+        restartRequired = true
+    }
+
+    override fun toString(): String = "M2SyncProcessState(redacted=true)"
 }
 
 /** Body-free cache of the authority that [M2AuthRuntime] last proved usable. */

@@ -18,6 +18,7 @@ internal enum class SyncCoordinatorRecoveryDisposition {
     READY,
     RETRY_LATER,
     USER_ACTION_REQUIRED,
+    PROCESS_RESTART_REQUIRED,
 }
 
 /**
@@ -122,6 +123,7 @@ internal enum class SyncCoordinatorActionDisposition {
     PULL_CYCLE_COMPLETE,
     RETRY_LATER,
     USER_ACTION_REQUIRED,
+    PROCESS_RESTART_REQUIRED,
     NO_PROGRESS,
 }
 
@@ -131,6 +133,7 @@ internal enum class SyncCoordinatorStopReason {
     RECOVERY_RETRY_LATER,
     ACTION_RETRY_LATER,
     USER_ACTION_REQUIRED,
+    PROCESS_RESTART_REQUIRED,
     NO_PROGRESS,
     DUPLICATE_AUTHORITY,
     PULL_CYCLE_COMPLETE,
@@ -184,6 +187,12 @@ internal class BoundedSyncCoordinator(
                 return outcome(
                     transitionCount,
                     SyncCoordinatorStopReason.USER_ACTION_REQUIRED,
+                )
+
+            SyncCoordinatorRecoveryDisposition.PROCESS_RESTART_REQUIRED ->
+                return outcome(
+                    transitionCount,
+                    SyncCoordinatorStopReason.PROCESS_RESTART_REQUIRED,
                 )
         }
 
@@ -240,6 +249,12 @@ internal class BoundedSyncCoordinator(
                     return outcome(
                         transitionCount,
                         SyncCoordinatorStopReason.USER_ACTION_REQUIRED,
+                    )
+
+                SyncCoordinatorActionDisposition.PROCESS_RESTART_REQUIRED ->
+                    return outcome(
+                        transitionCount,
+                        SyncCoordinatorStopReason.PROCESS_RESTART_REQUIRED,
                     )
 
                 SyncCoordinatorActionDisposition.NO_PROGRESS ->
