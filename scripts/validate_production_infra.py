@@ -259,6 +259,8 @@ def validate_shell_and_image_policy() -> None:
         PRODUCTION / "lib.sh",
         PRODUCTION / "deploy-backend.sh",
         PRODUCTION / "rollback-backend.sh",
+        PRODUCTION / "deploy-from-ci.sh",
+        PRODUCTION / "install-production-host.sh",
     ]
     subprocess.run(
         ["bash", "-n", *(str(path) for path in shell_paths[1:])],
@@ -310,11 +312,118 @@ life_agent_compose config --format json
         fail("backend image healthcheck must use readiness")
 
     deployment_library = (PRODUCTION / "lib.sh").read_text(encoding="utf-8")
+    if "/usr/bin/docker-compose" in deployment_library:
+        fail("production deployment must use the installed Docker Compose plugin")
+    if "/usr/bin/docker compose" not in deployment_library:
+        fail("production deployment is missing plugin-style Docker Compose")
     schema_probe_users = re.findall(
         r"--username ([A-Za-z_][A-Za-z0-9_]*)", deployment_library
     )
     if schema_probe_users != ["life_agent_owner", "life_agent_owner"]:
         fail("schema probes must use the configured PostgreSQL owner role")
+
+    rollback_script = (PRODUCTION / "rollback-backend.sh").read_text(encoding="utf-8")
+    if "life_agent_compose pull api" in rollback_script:
+        fail("rollback must not depend on persistent private-registry credentials")
+    if 'life_agent_docker image inspect "${previous_image}"' not in rollback_script:
+        fail("rollback must require its immutable target to exist locally")
+
+
+def validate_fixed_ci_boundary() -> None:
+    boundary = (PRODUCTION / "deploy-from-ci.sh").read_text(encoding="utf-8")
+    required_fragments = {
+        "fixed production directory": (
+            'readonly life_agent_fixed_production_dir="/opt/life-agent/production"'
+        ),
+        "root execution check": '[[ "${EUID}" -ne 0 ]]',
+        "dedicated sudo account": (
+            '[[ "${SUDO_USER:-}" != "${life_agent_deploy_user}" ]]'
+        ),
+        "no command-line arguments": '[[ "$#" -ne 0 ]]',
+        "protected parent directories": (
+            'for protected_directory in /opt/life-agent "${life_agent_fixed_production_dir}"'
+        ),
+        "installed bundle hash": "life_agent_ci_bundle_digest",
+        "root ownership check": "0:0:755",
+        "bundle install lock": "/run/lock/life-agent-production-bundle.lock",
+        "ephemeral registry directory": (
+            "/usr/bin/mktemp -d /run/life-agent-ghcr.XXXXXXXX"
+        ),
+        "private registry login": "login ghcr.io",
+        "standard-input password": "--password-stdin",
+        "ephemeral registry cleanup": (
+            '/usr/bin/rm -rf -- "${registry_config_dir}"'
+        ),
+        "source revision image label": "org.opencontainers.image.revision",
+        "sanitized child environment": "/usr/bin/env -i",
+    }
+    for label, fragment in required_fragments.items():
+        if fragment not in boundary:
+            fail(f"production CI boundary is missing {label}")
+    for forbidden in (
+        "GHCR_PULL_TOKEN",
+        "REGISTRY_PASSWORD",
+        "read:packages",
+        "write:packages",
+        "/root/.docker",
+        "set -x",
+        "BASH_SOURCE",
+    ):
+        if forbidden in boundary:
+            fail("production CI boundary contains persistent or exposed registry auth")
+    if boundary.index("trap life_agent_ci_cleanup_registry EXIT") > boundary.index(
+        "login ghcr.io"
+    ):
+        fail("registry cleanup must be armed before authentication")
+
+
+def validate_host_installer_and_sudoers() -> None:
+    installer = (PRODUCTION / "install-production-host.sh").read_text(
+        encoding="utf-8"
+    )
+    sudoers_path = PRODUCTION / "life-agent-production.sudoers"
+    sudoers = sudoers_path.read_text(encoding="utf-8")
+    required_installer_fragments = {
+        "fixed target": 'readonly target_parent="/opt/life-agent"',
+        "dedicated deploy user": 'readonly deploy_user="life-agent-deploy"',
+        "docker-group rejection": "'^(docker|sudo)$'",
+        "bundle lock": "/run/lock/life-agent-production-bundle.lock",
+        "root-owned Compose install": "-o root -g root -m 0644",
+        "root-owned script install": "-o root -g root -m 0755",
+        "sudoers validation": '/usr/sbin/visudo -cf "${sudoers_source}"',
+        "restricted sudoers install": "-o root -g root -m 0440",
+    }
+    for label, fragment in required_installer_fragments.items():
+        if fragment not in installer:
+            fail(f"production host installer is missing {label}")
+    for forbidden in (
+        "/etc/life-agent",
+        "production.env",
+        "credentials",
+        "POSTGRES",
+        "HMAC_KEY",
+    ):
+        if forbidden in installer:
+            fail("production host installer must not access application secrets")
+
+    required_sudoers_fragments = (
+        "Defaults!/opt/life-agent/production/deploy-from-ci.sh !use_pty",
+        "life-agent-deploy ALL=(root)",
+        "NOPASSWD:NOSETENV:NOLOG_INPUT:NOLOG_OUTPUT:",
+        '/opt/life-agent/production/deploy-from-ci.sh ""',
+    )
+    for fragment in required_sudoers_fragments:
+        if fragment not in sudoers:
+            fail("production sudoers policy is incomplete")
+    if "install-production-host.sh" in sudoers or "/bin/bash" in sudoers:
+        fail("production sudoers policy grants an expansive command")
+    subprocess.run(
+        ["/usr/sbin/visudo", "-cf", str(sudoers_path)],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
 
 
 def validate_example_environment() -> None:
@@ -338,6 +447,8 @@ def main() -> int:
     validate_compose()
     validate_nginx()
     validate_shell_and_image_policy()
+    validate_fixed_ci_boundary()
+    validate_host_installer_and_sudoers()
     validate_example_environment()
     print("PASS: production Compose, nginx boundary, secret wiring, and deploy policy")
     return 0

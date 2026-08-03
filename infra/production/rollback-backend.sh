@@ -88,7 +88,9 @@ trap 'rollback_failure_handler 130' INT
 trap 'rollback_failure_handler 143' TERM
 
 export LIFE_AGENT_BACKEND_IMAGE="${previous_image}"
-life_agent_compose pull api >/dev/null
+if ! life_agent_docker image inspect "${previous_image}" >/dev/null 2>&1; then
+    life_agent_die "rollback target is not available as a local immutable image"
+fi
 rollback_mutating=1
 life_agent_stop_api
 life_agent_compose up --detach --no-deps api >/dev/null

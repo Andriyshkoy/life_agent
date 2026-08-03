@@ -286,6 +286,7 @@ jobs:
     environment: production
     permissions:
       contents: read
+      packages: read
     env:
       IMMUTABLE_IMAGE_REF: ${{ needs.publish.outputs.image_ref }}
       SOURCE_SHA: ${{ needs.verified_main.outputs.source_sha }}
@@ -297,6 +298,7 @@ jobs:
           persist-credentials: false
 
       - name: Validate the tracked production bundle
+        id: production_bundle
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -327,7 +329,9 @@ jobs:
             infra/production/compose.production.yaml \
             infra/production/deploy-backend.sh \
             infra/production/rollback-backend.sh \
-            infra/production/lib.sh; do
+            infra/production/lib.sh \
+            infra/production/deploy-from-ci.sh \
+            infra/production/life-agent-production.sudoers; do
             if [ ! -f "$path" ] || [ -L "$path" ]; then
               echo "The tracked production deployment bundle is incomplete."
               exit 1
@@ -336,10 +340,40 @@ jobs:
           bash -n infra/production/deploy-backend.sh
           bash -n infra/production/rollback-backend.sh
           bash -n infra/production/lib.sh
+          bash -n infra/production/deploy-from-ci.sh
+          bash -n infra/production/install-production-host.sh
+
+          bundle_manifest="$RUNNER_TEMP/life-agent-production-bundle.sha256"
+          : >"$bundle_manifest"
+          for file_name in \
+            compose.production.yaml \
+            deploy-backend.sh \
+            rollback-backend.sh \
+            lib.sh \
+            deploy-from-ci.sh \
+            life-agent-production.sudoers; do
+            file_hash="$(
+              sha256sum -- "infra/production/$file_name" | cut -d' ' -f1
+            )"
+            if [[ ! "$file_hash" =~ ^[0-9a-f]{64}$ ]]; then
+              echo "A production bundle file could not be hashed."
+              exit 1
+            fi
+            printf '%s  %s\n' "$file_hash" "$file_name" >>"$bundle_manifest"
+          done
+          bundle_hash="$(sha256sum -- "$bundle_manifest" | cut -d' ' -f1)"
+          rm -f -- "$bundle_manifest"
+          if [[ ! "$bundle_hash" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "The production bundle could not be hashed."
+            exit 1
+          fi
+          echo "bundle_digest=sha256:$bundle_hash" >>"$GITHUB_OUTPUT"
 
       - name: Deploy the immutable image through the protected host boundary
         env:
           GH_TOKEN: ${{ github.token }}
+          GHCR_PULL_TOKEN: ${{ github.token }}
+          PRODUCTION_BUNDLE_DIGEST: ${{ steps.production_bundle.outputs.bundle_digest }}
           PROD_SSH_HOST: ${{ secrets.PROD_SSH_HOST }}
           PROD_SSH_USER: ${{ secrets.PROD_SSH_USER }}
           PROD_SSH_PRIVATE_KEY: ${{ secrets.PROD_SSH_PRIVATE_KEY }}
@@ -350,7 +384,10 @@ jobs:
           if [[ ! "$PROD_SSH_HOST" =~ ^[a-zA-Z0-9][a-zA-Z0-9.:-]*$ ]] ||
             [[ ! "$PROD_SSH_USER" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] ||
             [ -z "$PROD_SSH_PRIVATE_KEY" ] ||
-            [ -z "$PROD_SSH_HOST_KEY" ]; then
+            [ -z "$PROD_SSH_HOST_KEY" ] ||
+            [ -z "$GHCR_PULL_TOKEN" ] ||
+            [[ ! "$GITHUB_ACTOR" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,37}[A-Za-z0-9])?$ ]] ||
+            [[ ! "$PRODUCTION_BUNDLE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then
             echo "Production SSH credentials are missing or malformed."
             exit 1
           fi
@@ -359,8 +396,7 @@ jobs:
           ssh_key="$ssh_root/id"
           known_hosts="$ssh_root/known_hosts"
           ssh_config="$ssh_root/config"
-          bundle_root="$RUNNER_TEMP/life-agent-production-release"
-          install -d -m 0700 "$ssh_root" "$bundle_root/infra/production"
+          install -d -m 0700 "$ssh_root"
           printf '%s\n' "$PROD_SSH_PRIVATE_KEY" >"$ssh_key"
           printf '%s\n' "$PROD_SSH_HOST_KEY" >"$known_hosts"
           chmod 0600 "$ssh_key" "$known_hosts"
@@ -388,45 +424,13 @@ jobs:
           } >"$ssh_config"
           chmod 0600 "$ssh_config"
 
-          install -m 0644 \
-            infra/production/compose.production.yaml \
-            "$bundle_root/infra/production/compose.production.yaml"
-          install -m 0755 \
-            infra/production/deploy-backend.sh \
-            infra/production/rollback-backend.sh \
-            infra/production/lib.sh \
-            "$bundle_root/infra/production/"
-
-          remote_release_dir=""
           cleanup() {
             local exit_status="$?"
             trap - EXIT
-            if [[
-              "$remote_release_dir" =~ ^/tmp/life-agent-release\.[a-zA-Z0-9]+$
-            ]]; then
-              ssh -F "$ssh_config" life-agent-production \
-                /bin/rm -rf -- "$remote_release_dir" \
-                >/dev/null 2>&1 || true
-            fi
-            rm -rf -- "$ssh_root" "$bundle_root"
+            rm -rf -- "$ssh_root"
             exit "$exit_status"
           }
           trap cleanup EXIT
-
-          remote_release_dir="$(
-            ssh -F "$ssh_config" life-agent-production \
-              'umask 077; mktemp -d /tmp/life-agent-release.XXXXXXXX'
-          )"
-          if [[
-            ! "$remote_release_dir" =~ ^/tmp/life-agent-release\.[a-zA-Z0-9]+$
-          ]]; then
-            echo "The production host returned an invalid release directory."
-            exit 1
-          fi
-
-          scp -F "$ssh_config" -r -- \
-            "$bundle_root/infra" \
-            "life-agent-production:$remote_release_dir/"
           current_main_sha="$(
             gh api \
               "repos/$GITHUB_REPOSITORY/git/ref/heads/main" \
@@ -436,7 +440,14 @@ jobs:
             echo "Refusing stale main immediately before production deployment."
             exit 1
           fi
-          ssh -F "$ssh_config" life-agent-production \
-            sudo -- \
-            "$remote_release_dir/infra/production/deploy-backend.sh" \
-            "$IMMUTABLE_IMAGE_REF"
+          {
+            printf '%s\n' \
+              "$IMMUTABLE_IMAGE_REF" \
+              "$GITHUB_ACTOR" \
+              "$SOURCE_SHA" \
+              "$PRODUCTION_BUNDLE_DIGEST"
+            printf '%s' "$GHCR_PULL_TOKEN"
+          } |
+            ssh -T -F "$ssh_config" life-agent-production \
+              sudo -n -- \
+              /opt/life-agent/production/deploy-from-ci.sh

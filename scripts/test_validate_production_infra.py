@@ -87,6 +87,12 @@ class ProductionBoundaryTests(unittest.TestCase):
     def test_shell_and_digest_policy(self) -> None:
         VALIDATOR.validate_shell_and_image_policy()
 
+    def test_fixed_ci_boundary_policy(self) -> None:
+        VALIDATOR.validate_fixed_ci_boundary()
+
+    def test_host_installer_and_sudoers_policy(self) -> None:
+        VALIDATOR.validate_host_installer_and_sudoers()
+
 
 if __name__ == "__main__":
     unittest.main()
