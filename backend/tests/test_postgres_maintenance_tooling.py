@@ -12,9 +12,7 @@ MAINTENANCE_ROOT = BACKEND_ROOT.parent / "infra" / "postgres-maintenance"
 
 def parsed_maintenance_config() -> dict[str, str]:
     assignments: dict[str, str] = {}
-    for line in (MAINTENANCE_ROOT / "maintenance.conf").read_text(
-        encoding="utf-8"
-    ).splitlines():
+    for line in (MAINTENANCE_ROOT / "maintenance.conf").read_text(encoding="utf-8").splitlines():
         name, value = line.split("=", 1)
         assignments[name] = value
     return assignments
@@ -32,7 +30,7 @@ def test_maintenance_contract_pins_database_revision_and_toolchain() -> None:
     ) in dockerfile
     assert "AGE_DEBIAN_VERSION=1.1.1-1+b3" in dockerfile
     assert "JQ_DEBIAN_VERSION=1.6-2.1+deb12u2" in dockerfile
-    assert 'USER 10001:10001' in dockerfile
+    assert "USER 10001:10001" in dockerfile
 
 
 def test_maintenance_shell_entrypoints_parse_and_expose_bounded_help() -> None:
@@ -60,8 +58,8 @@ def test_backup_is_streamed_to_age_and_bundle_is_atomically_published() -> None:
     assert "umask 077" in common
     assert re.search(r"pg_dump \\\n(?:.*\\\n)+?  \| age \\\n", source)
     assert "--format=custom" in source
-    assert "--snapshot=\"$snapshot_id\"" in source
-    assert "mv -- \"$staging_directory\" \"$final_directory\"" in source
+    assert '--snapshot="$snapshot_id"' in source
+    assert 'mv -- "$staging_directory" "$final_directory"' in source
     assert "database.dump.age" not in source
     assert "pg_dump >" not in source
 
@@ -83,9 +81,7 @@ def test_restore_is_clean_fail_closed_and_uses_required_pg_restore_guards() -> N
 
 
 def test_fixture_invariant_covers_every_m2_table_without_row_content() -> None:
-    invariant = (MAINTENANCE_ROOT / "sql" / "fixture_invariant.sql").read_text(
-        encoding="utf-8"
-    )
+    invariant = (MAINTENANCE_ROOT / "sql" / "fixture_invariant.sql").read_text(encoding="utf-8")
     expected_tables = {
         "alembic_version",
         "capture",
