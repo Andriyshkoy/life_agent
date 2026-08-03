@@ -8,6 +8,7 @@ import ru.andriyshkoy.lifeagent.data.local.db.dao.NoteQueryDao
 import ru.andriyshkoy.lifeagent.data.local.db.dao.OutboxDao
 import ru.andriyshkoy.lifeagent.data.local.db.dao.SyncAuthDao
 import ru.andriyshkoy.lifeagent.data.local.db.dao.SyncReplicaDao
+import ru.andriyshkoy.lifeagent.data.local.db.dao.SyncStatusProjectionDao
 import ru.andriyshkoy.lifeagent.data.local.db.dao.SyncTransportDao
 import ru.andriyshkoy.lifeagent.data.local.db.entity.LocalCaptureEntity
 import ru.andriyshkoy.lifeagent.data.local.db.entity.LocalCatalogHeadEntity
@@ -78,6 +79,8 @@ abstract class LifeAgentDatabase : RoomDatabase() {
     abstract fun syncTransportDao(): SyncTransportDao
 
     abstract fun syncReplicaDao(): SyncReplicaDao
+
+    internal abstract fun syncStatusProjectionDao(): SyncStatusProjectionDao
 
     companion object {
         const val NAME = "life-agent.db"

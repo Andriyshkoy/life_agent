@@ -157,7 +157,7 @@ class SettingsScreenTest {
     }
 
     @Test
-    fun diagnosticsSurfaceShowsOnlyVersionStorageAndM1SyncStatus() {
+    fun diagnosticsSurfaceShowsOnlyVersionStorageAndBodylessSyncNavigation() {
         composeRule.setContent {
             LifeAgentTheme(darkTheme = false) {
                 DiagnosticsScreen(
@@ -170,7 +170,9 @@ class SettingsScreenTest {
 
         composeRule.onNodeWithText("Зашифрованное хранилище доступно").assertIsDisplayed()
         composeRule.onNodeWithText("0.1.0-test").assertIsDisplayed()
-        composeRule.onNodeWithText("Синхронизация отсутствует в M1").assertIsDisplayed()
+        composeRule.onNodeWithText(
+            "Подключение и очередь доступны в настройках синхронизации",
+        ).assertIsDisplayed()
         composeRule.onNodeWithText(
             "ID, логи и значения здоровья здесь не отображаются.",
             substring = true,

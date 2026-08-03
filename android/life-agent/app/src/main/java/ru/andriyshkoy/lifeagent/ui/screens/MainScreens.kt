@@ -97,6 +97,8 @@ import ru.andriyshkoy.lifeagent.ui.notes.LastNoteUiState
 import ru.andriyshkoy.lifeagent.ui.notes.NoteRecordStatusUi
 import ru.andriyshkoy.lifeagent.ui.notes.NoteSummaryUi
 import ru.andriyshkoy.lifeagent.ui.notes.formatUtcOffset
+import ru.andriyshkoy.lifeagent.ui.sync.SyncSetupSummary
+import ru.andriyshkoy.lifeagent.ui.sync.SyncSetupUiState
 import ru.andriyshkoy.lifeagent.ui.theme.LifeAgentThemeValues
 import ru.andriyshkoy.lifeagent.ui.theme.ThemeMode
 
@@ -519,6 +521,7 @@ fun SettingsScreen(
     modifier: Modifier = Modifier,
     onExportNotes: () -> Unit = {},
     notesPersistenceAvailable: Boolean = false,
+    syncSetupState: SyncSetupUiState = SyncSetupUiState.LocalOnly(SyncSetupSummary.Empty),
     zoneId: ZoneId = ZoneId.systemDefault(),
     appVersion: String = BuildConfig.VERSION_NAME,
 ) {
@@ -558,7 +561,7 @@ fun SettingsScreen(
                 SettingsRow(
                     icon = Icons.Rounded.Sync,
                     title = "Синхронизация",
-                    subtitle = "Не настроена · локальная работа доступна",
+                    subtitle = syncSettingsSubtitle(syncSetupState),
                     onClick = { onNavigate(DemoRoute.SyncSetup) },
                 )
                 HorizontalDivider(
@@ -813,7 +816,7 @@ fun DiagnosticsScreen(
                     } else {
                         "Зашифрованное хранилище недоступно"
                     },
-                    subtitle = "Синхронизация отсутствует в M1",
+                    subtitle = "Подключение и очередь доступны в настройках синхронизации",
                     icon = Icons.Rounded.Security,
                 )
             }
@@ -838,8 +841,9 @@ fun DiagnosticsScreen(
             item {
                 InformationCard(
                     icon = Icons.Rounded.Sync,
-                    title = "Синхронизация M1",
-                    text = "Серверная синхронизация отсутствует; приложение работает локально.",
+                    title = "Синхронизация",
+                    text = "Состояние подключения, начальной загрузки и очереди " +
+                        "показывается в разделе «Синхронизация».",
                 )
             }
             item {
@@ -875,8 +879,8 @@ fun PrivacyScreen(
         ) {
             item {
                 StatusCard(
-                    title = "Данные остаются локально",
-                    subtitle = "В M1 серверная синхронизация отсутствует",
+                    title = "Локальное хранение защищено",
+                    subtitle = "Передача включается только после явного подключения сервера",
                     icon = Icons.Rounded.Security,
                 )
             }
@@ -900,8 +904,8 @@ fun PrivacyScreen(
                 InformationCard(
                     icon = Icons.Rounded.Sync,
                     title = "Синхронизация",
-                    text = "Серверная синхронизация в M1 отсутствует. " +
-                        "Локальные заметки не отправляются на сервер.",
+                    text = "До явного подключения данные остаются на устройстве. " +
+                        "После подключения локальные изменения передаются через защищённую очередь.",
                 )
             }
             item {
@@ -1161,73 +1165,6 @@ private fun CatalogEditorSheet(kind: CatalogKind, onSave: () -> Unit) {
             onClick = onSave,
             enabled = title.isNotBlank(),
         )
-    }
-}
-
-@Composable
-fun SyncSetupScreen(
-    onBack: () -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    Scaffold(
-        modifier = modifier.fillMaxSize(),
-        topBar = { DetailTopBar("Синхронизация", onBack) },
-        containerColor = MaterialTheme.colorScheme.background,
-    ) { padding ->
-        LazyColumn(
-            modifier = Modifier
-                .padding(padding)
-                .fillMaxSize()
-                .widthIn(max = 680.dp)
-                .padding(horizontal = 20.dp),
-            contentPadding = PaddingValues(top = 16.dp, bottom = 32.dp),
-            verticalArrangement = Arrangement.spacedBy(18.dp),
-        ) {
-            item {
-                Surface(
-                    shape = MaterialTheme.shapes.large,
-                    color = MaterialTheme.colorScheme.primaryContainer,
-                    contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
-                ) {
-                    Column(Modifier.padding(20.dp)) {
-                        Icon(Icons.Rounded.Sync, null, Modifier.size(30.dp))
-                        Spacer(Modifier.height(16.dp))
-                        Text(
-                            "Локальная работа уже доступна",
-                            style = MaterialTheme.typography.titleLarge,
-                        )
-                        Spacer(Modifier.height(6.dp))
-                        Text(
-                            "Подключение сервера можно пропустить и настроить позже.",
-                            style = MaterialTheme.typography.bodyLarge,
-                        )
-                    }
-                }
-            }
-            item {
-                OutlinedTextField(
-                    value = "",
-                    onValueChange = {},
-                    modifier = Modifier.fillMaxWidth(),
-                    label = { Text("Одноразовый код · M2") },
-                    supportingText = { Text("Подключение появится в M2") },
-                    readOnly = true,
-                    enabled = false,
-                    singleLine = true,
-                    shape = MaterialTheme.shapes.medium,
-                )
-            }
-            item {
-                PrimaryActionButton(
-                    text = "Подключить",
-                    onClick = {},
-                    enabled = false,
-                    icon = Icons.Rounded.Sync,
-                )
-                Spacer(Modifier.height(10.dp))
-                SecondaryActionButton("Настроить позже", onBack)
-            }
-        }
     }
 }
 
