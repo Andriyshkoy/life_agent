@@ -168,7 +168,10 @@ internal class ProtectedSyncRequestPlanningFacade(
                     DurableSyncPlannerStream.INCREMENTAL_WITH_CURSOR,
                     DurableSyncPlannerStream.INCREMENTAL_WITHOUT_CURSOR,
                 ) &&
-                outboxDao.actionableForBatch(1).isNotEmpty()
+                (
+                    outboxDao.actionableForBatch(1).isNotEmpty() ||
+                        outboxDao.awaitingWireMaterialization(1).isNotEmpty()
+                )
             val snapshot = DurableSyncRequestPlanningSnapshot(
                 auth = authClass,
                 stream = streamClass,

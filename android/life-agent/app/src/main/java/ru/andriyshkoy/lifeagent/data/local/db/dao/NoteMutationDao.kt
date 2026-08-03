@@ -13,6 +13,17 @@ import ru.andriyshkoy.lifeagent.data.local.db.entity.SyncOutboxEntity
 
 @Dao
 interface NoteMutationDao {
+    @Query(
+        """
+        SELECT * FROM local_capture
+        WHERE capture_id = :captureId AND operation_id = :operationId
+        """,
+    )
+    suspend fun findCapture(
+        captureId: String,
+        operationId: String,
+    ): LocalCaptureEntity?
+
     @Query("SELECT * FROM sync_outbox WHERE operation_id = :operationId")
     suspend fun findOutbox(operationId: String): SyncOutboxEntity?
 
