@@ -21,6 +21,7 @@ import ru.andriyshkoy.lifeagent.data.sync.transport.ExactHttpsNetworkFailureKind
 import ru.andriyshkoy.lifeagent.data.sync.transport.ExactHttpsProtocolFailure
 import ru.andriyshkoy.lifeagent.data.sync.transport.ExactHttpsProtocolFailureKind
 import ru.andriyshkoy.lifeagent.data.sync.transport.ExactHttpsRawResponse
+import ru.andriyshkoy.lifeagent.data.sync.transport.LazyProductionM2HttpsTransportBundle
 import ru.andriyshkoy.lifeagent.data.sync.wire.M2Endpoint
 import ru.andriyshkoy.lifeagent.data.sync.wire.WipeableSecret
 
@@ -249,6 +250,60 @@ class ProtectedDurableDispatchPortTest {
             )
             assertEquals(1, claimCount.get())
             assertEquals(0, executeCount.get())
+        } finally {
+            vault.close()
+        }
+    }
+
+    @Test
+    fun configurationFailureStopsBeforeClaimOrExactReplay() {
+        val vault = AccessTokenVault()
+        try {
+            var bundleOpenCount = 0
+            var claimCount = 0
+            val transports = LazyProductionM2HttpsTransportBundle {
+                bundleOpenCount += 1
+                throw IllegalArgumentException("synthetic unavailable HTTPS configuration")
+            }
+            val port = ProductionProtectedDurableDispatchPort(
+                exchangeProvider = {
+                    val exact = transports.open().exact
+                    ProtectedDurableExactExchange { claim, bearer ->
+                        exact.execute(claim, bearer)
+                    }
+                },
+                claims = ProtectedDurableDispatchClaimBoundary { _, _, _, _, _ ->
+                    claimCount += 1
+                    ProtectedDispatchRequestClaim.NotClaimed
+                },
+                responses = RecordingResponses(ProtectedResponseDisposition.COMMITTED),
+                accessTokenVault = vault,
+                completionClock = COMPLETION_CLOCK,
+            )
+
+            assertEquals(
+                ProtectedDurableDispatchResult.USER_ACTION_REQUIRED,
+                runBlocking { dispatch(port, candidate(M2Endpoint.SYNC_PULL)) },
+            )
+            assertEquals(1, bundleOpenCount)
+            assertEquals(0, claimCount)
+
+            val cancellation = CancellationException("synthetic provider cancellation")
+            val cancellingPort = ProductionProtectedDurableDispatchPort(
+                exchangeProvider = { throw cancellation },
+                claims = ProtectedDurableDispatchClaimBoundary { _, _, _, _, _ ->
+                    claimCount += 1
+                    ProtectedDispatchRequestClaim.NotClaimed
+                },
+                responses = RecordingResponses(ProtectedResponseDisposition.COMMITTED),
+                accessTokenVault = vault,
+                completionClock = COMPLETION_CLOCK,
+            )
+            val propagated = assertThrows(CancellationException::class.java) {
+                runBlocking { dispatch(cancellingPort, candidate(M2Endpoint.SYNC_PULL)) }
+            }
+            assertTrue(propagated === cancellation)
+            assertEquals(0, claimCount)
         } finally {
             vault.close()
         }

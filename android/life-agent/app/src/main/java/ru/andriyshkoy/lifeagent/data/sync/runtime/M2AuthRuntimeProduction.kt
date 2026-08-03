@@ -23,12 +23,12 @@ import ru.andriyshkoy.lifeagent.data.security.KeystoreCredentialTokenHmacKeyring
 import ru.andriyshkoy.lifeagent.data.security.NewDurableRequestPersistence
 import ru.andriyshkoy.lifeagent.data.security.RefreshTokenEnvelope
 import ru.andriyshkoy.lifeagent.data.security.RefreshTokenProtector
+import ru.andriyshkoy.lifeagent.data.sync.transport.LazyProductionM2HttpsTransportBundle
 import ru.andriyshkoy.lifeagent.data.sync.transport.OneShotAuthHttpsNetworkFailure
 import ru.andriyshkoy.lifeagent.data.sync.transport.OneShotAuthHttpsOutcome
 import ru.andriyshkoy.lifeagent.data.sync.transport.OneShotAuthHttpsProtocolFailure
 import ru.andriyshkoy.lifeagent.data.sync.transport.OneShotAuthHttpsRawResponse
 import ru.andriyshkoy.lifeagent.data.sync.transport.OneShotAuthHttpsTransport
-import ru.andriyshkoy.lifeagent.data.sync.transport.ProductionM2HttpsTransportFactory
 import ru.andriyshkoy.lifeagent.data.sync.wire.BootstrapRequest
 import ru.andriyshkoy.lifeagent.data.sync.wire.DecodedApiError
 import ru.andriyshkoy.lifeagent.data.sync.wire.DecodedWireResponse
@@ -42,11 +42,17 @@ import ru.andriyshkoy.lifeagent.data.sync.wire.WipeableSecret
 import ru.andriyshkoy.lifeagent.data.sync.wire.WireRequestCodec
 import ru.andriyshkoy.lifeagent.data.sync.wire.WireResponseCodec
 
-/** Lazy caller-owned construction point; AppContainer wiring is a later slice. */
+/**
+ * Lazy caller-owned construction point; AppContainer wiring is a later slice.
+ * Construction never opens [transports]. The application graph supplies the
+ * same instance to protected exact dispatch so both transports share one
+ * validated configuration and pinned client after the first real exchange.
+ */
 internal fun createProductionM2AuthRuntime(
     context: Context,
     database: LifeAgentDatabase,
     accessTokenVault: AccessTokenVault,
+    transports: LazyProductionM2HttpsTransportBundle,
     uuidGenerator: UuidGenerator = RandomUuidGenerator,
     clock: Clock = Clock.systemUTC(),
     policy: M2AuthRuntimePolicy = M2AuthRuntimePolicy(),
@@ -59,13 +65,27 @@ internal fun createProductionM2AuthRuntime(
         persistence = RoomM2AuthPersistenceBoundary(context, database),
         credentials = credentials,
         exchange = ProductionM2AuthExchangeBoundary(
-            ProductionM2HttpsTransportFactory.createAuth(),
+            LazyProductionM2AuthHttpsTransportProvider(transports),
         ),
         vault = ProductionM2AuthAccessVaultBoundary(accessTokenVault),
         uuidGenerator = uuidGenerator,
         clock = clock,
         policy = policy,
     )
+}
+
+/** Opens the shared pinned auth transport only for an actual auth exchange. */
+internal fun interface M2AuthHttpsTransportProvider {
+    fun open(): OneShotAuthHttpsTransport
+}
+
+internal class LazyProductionM2AuthHttpsTransportProvider(
+    private val transports: LazyProductionM2HttpsTransportBundle,
+) : M2AuthHttpsTransportProvider {
+    override fun open(): OneShotAuthHttpsTransport = transports.open().auth
+
+    override fun toString(): String =
+        "LazyProductionM2AuthHttpsTransportProvider(redacted=true)"
 }
 
 internal class RoomM2AuthPersistenceBoundary(
@@ -155,7 +175,7 @@ internal class RoomM2AuthPersistenceBoundary(
 }
 
 internal class ProductionM2AuthExchangeBoundary(
-    private val transport: OneShotAuthHttpsTransport,
+    private val transportProvider: M2AuthHttpsTransportProvider,
 ) : M2AuthExchangeBoundary {
     override suspend fun enroll(
         binding: EnrollmentAttemptBinding,
@@ -244,7 +264,7 @@ internal class ProductionM2AuthExchangeBoundary(
     private suspend fun execute(
         materialized: ru.andriyshkoy.lifeagent.data.sync.wire.MaterializedWireRequest,
     ): OneShotAuthHttpsOutcome? = try {
-        transport.execute(materialized)
+        transportProvider.open().execute(materialized)
     } catch (error: CancellationException) {
         throw error
     } catch (_: Exception) {

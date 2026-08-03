@@ -191,6 +191,99 @@ class M2AuthRuntimeTest {
     }
 
     @Test
+    fun productionTransportStaysClosedDuringConstructionRecoveryAndLocalOnlyPaths() =
+        runTest {
+            val events = mutableListOf<String>()
+            val persistence = FakePersistence(events)
+            val credentials = FakeCredentials()
+            val vault = FakeVault(events)
+            var transportOpenCount = 0
+            val exchange = ProductionM2AuthExchangeBoundary(
+                M2AuthHttpsTransportProvider {
+                    transportOpenCount += 1
+                    error("Local-only auth flow must not open HTTPS configuration")
+                },
+            )
+
+            val runtime = runtime(persistence, credentials, exchange, vault)
+
+            assertEquals(0, transportOpenCount)
+            val recovery = runtime.recoverInterruptedAuthFlows()
+                as M2AuthRuntimeResult.RecoveryComplete
+            assertEquals(0, recovery.recoveredCount)
+            assertSame(M2AuthRuntimeResult.Unenrolled, runtime.ensureAccess())
+            assertEquals(0, transportOpenCount)
+        }
+
+    @Test
+    fun productionConfigurationFailureIsAmbiguousAndNeverReplayed() = runTest {
+        val events = mutableListOf<String>()
+        val persistence = FakePersistence(events).apply {
+            enrollmentFactory = { requestId -> enrollmentBinding(requestId) }
+        }
+        val vault = FakeVault(events)
+        var transportOpenCount = 0
+        val exchange = ProductionM2AuthExchangeBoundary(
+            M2AuthHttpsTransportProvider {
+                transportOpenCount += 1
+                throw IllegalArgumentException("synthetic unavailable HTTPS configuration")
+            },
+        )
+        val enrollmentCode = WipeableSecret.ascii(ENROLLMENT_CODE)
+
+        val result = runtime(
+            persistence = persistence,
+            credentials = FakeCredentials(),
+            exchange = exchange,
+            vault = vault,
+        ).enroll(enrollmentCode, replaceActiveDevice = true)
+
+        assertSame(M2AuthRuntimeResult.ManualReenrollmentRequired, result)
+        assertEquals(1, transportOpenCount)
+        assertEquals(1, persistence.beginEnrollmentCalls)
+        assertEquals(
+            listOf(Settlement(REQUEST_ID, "auth_outcome_unknown")),
+            persistence.enrollmentUnknowns,
+        )
+        assertSecretClosed(enrollmentCode)
+    }
+
+    @Test
+    fun productionTransportProviderCancellationSettlesAndPropagates() = runTest {
+        val events = mutableListOf<String>()
+        val persistence = FakePersistence(events).apply {
+            enrollmentFactory = { requestId -> enrollmentBinding(requestId) }
+        }
+        val vault = FakeVault(events)
+        var transportOpenCount = 0
+        val cancellation = CancellationException("synthetic provider cancellation")
+        val exchange = ProductionM2AuthExchangeBoundary(
+            M2AuthHttpsTransportProvider {
+                transportOpenCount += 1
+                throw cancellation
+            },
+        )
+        val enrollmentCode = WipeableSecret.ascii(ENROLLMENT_CODE)
+
+        val failure = runCatching {
+            runtime(
+                persistence = persistence,
+                credentials = FakeCredentials(),
+                exchange = exchange,
+                vault = vault,
+            ).enroll(enrollmentCode, replaceActiveDevice = true)
+        }.exceptionOrNull()
+
+        assertTrue(failure === cancellation)
+        assertEquals(1, transportOpenCount)
+        assertEquals(
+            listOf(Settlement(REQUEST_ID, "auth_exchange_cancelled")),
+            persistence.enrollmentUnknowns,
+        )
+        assertSecretClosed(enrollmentCode)
+    }
+
+    @Test
     fun ambiguousRefreshIsQuarantinedWithoutAutomaticReplay() = runTest {
         val events = mutableListOf<String>()
         val observed = activeAccess()
@@ -419,7 +512,7 @@ class M2AuthRuntimeTest {
     private fun runtime(
         persistence: FakePersistence,
         credentials: FakeCredentials,
-        exchange: FakeExchange,
+        exchange: M2AuthExchangeBoundary,
         vault: FakeVault,
         uuidGenerator: UuidGenerator = UuidGenerator { UUID.fromString(REQUEST_ID) },
     ): M2AuthRuntime = M2AuthRuntime(

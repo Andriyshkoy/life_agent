@@ -204,10 +204,7 @@ class DurableRequestBoundaryArchitectureTest {
         )
         assertOnlyAllowedMainMatches(
             pattern = Regex("""\bProductionM2HttpsTransportFactory\b"""),
-            allowedPaths = setOf(
-                EXACT_HTTPS_CONFIGURATION,
-                M2_AUTH_RUNTIME_PRODUCTION,
-            ),
+            allowedPaths = setOf(EXACT_HTTPS_CONFIGURATION),
         )
         assertOnlyAllowedMainMatches(
             pattern = Regex("""\bM2HttpsConfiguration\b"""),
@@ -231,6 +228,7 @@ class DurableRequestBoundaryArchitectureTest {
         )
 
         val factorySource = File(mainSourceRoot(), EXACT_HTTPS_CONFIGURATION).readText()
+        assertFalse(factorySource.contains("fun createAuth("))
         assertSourceTokenCount(
             source = factorySource,
             token = "createPinnedTransport { configuration, client ->",
