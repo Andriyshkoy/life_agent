@@ -39,6 +39,14 @@ class DurableRequestBoundaryArchitectureTest {
             allowedPaths = setOf(TRANSPORT_DAO),
         )
         assertOnlyAllowedMainCallSites(
+            token = "verifyAndClaimForDispatch(",
+            allowedPaths = setOf(PROTECTED_STORE, PROTECTED_RESPONSE_STORE),
+        )
+        assertOnlyAllowedMainMatches(
+            pattern = Regex("""\bProtectedDispatchRequestClaim\b"""),
+            allowedPaths = setOf(PROTECTED_STORE, PROTECTED_RESPONSE_STORE),
+        )
+        assertOnlyAllowedMainCallSites(
             token = "findRunnableRequests(",
             allowedPaths = setOf(TRANSPORT_DAO),
         )
