@@ -1,0 +1,2 @@
+Defaults!/opt/life-agent/production/deploy-from-ci.sh !use_pty
+life-agent-deploy ALL=(root) NOPASSWD:NOSETENV:NOLOG_INPUT:NOLOG_OUTPUT: /opt/life-agent/production/deploy-from-ci.sh ""

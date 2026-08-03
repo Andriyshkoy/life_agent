@@ -10,11 +10,15 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW_PATH = ROOT / ".github/workflows/backend-production.yml"
+CI_WORKFLOW_PATH = ROOT / ".github/workflows/ci.yml"
 PRODUCTION_BUNDLE = (
     Path("infra/production/compose.production.yaml"),
     Path("infra/production/deploy-backend.sh"),
     Path("infra/production/rollback-backend.sh"),
     Path("infra/production/lib.sh"),
+    Path("infra/production/deploy-from-ci.sh"),
+    Path("infra/production/life-agent-production.sudoers"),
+    Path("infra/production/install-production-host.sh"),
 )
 
 
@@ -71,13 +75,26 @@ def validate_workflow(text: str) -> None:
         "successful publication gate": "needs.publish.result == 'success'",
         "protected environment": "    environment: production\n",
         "tracked deploy script": "infra/production/deploy-backend.sh",
+        "fixed root-owned deploy boundary": (
+            "/opt/life-agent/production/deploy-from-ci.sh"
+        ),
+        "tracked bundle attestation": (
+            'echo "bundle_digest=sha256:$bundle_hash" >>"$GITHUB_OUTPUT"'
+        ),
+        "ephemeral registry token": "GHCR_PULL_TOKEN: ${{ github.token }}",
+        "registry token over standard input": (
+            "            printf '%s' \"$GHCR_PULL_TOKEN\"\n"
+        ),
+        "noninteractive privilege boundary": "              sudo -n -- \\\n",
         "strict host verification": "printf '  StrictHostKeyChecking yes\\n'",
         "pinned known hosts": "printf '  UserKnownHostsFile %s\\n'",
         "isolated global known hosts": "printf '  GlobalKnownHostsFile /dev/null\\n'",
         "isolated identity agent": "printf '  IdentityAgent none\\n'",
         "public-key-only authentication": "printf '  PasswordAuthentication no\\n'",
         "noninteractive authentication": "printf '  BatchMode yes\\n'",
-        "deploy digest argument": '            "$IMMUTABLE_IMAGE_REF"\n',
+        "metadata standard-input frame": (
+            '              "$PRODUCTION_BUNDLE_DIGEST"\n'
+        ),
         "serialized production promotion": "  group: backend-production\n",
         "non-cancelling production promotion": "  cancel-in-progress: false\n",
         "checkout credential isolation": "          persist-credentials: false\n",
@@ -94,6 +111,13 @@ def validate_workflow(text: str) -> None:
     require("actions: write" not in text, "production workflow has excess actions access")
     require("id-token: write" not in text, "unused identity-token access is forbidden")
     require("actions/upload-artifact" not in text, "deployment data must not be uploaded")
+    require("scp -F" not in text, "CI-uploaded deployment scripts are forbidden")
+    require(
+        "/tmp/life-agent-release." not in text,
+        "temporary remote deployment scripts are forbidden",
+    )
+    require("read:packages" not in text, "PAT package scopes are forbidden")
+    require("write:packages" not in text, "PAT package scopes are forbidden")
     require("set -x" not in text, "shell tracing can disclose production credentials")
 
     extract_job(text, "verified_main")
@@ -114,6 +138,10 @@ def validate_workflow(text: str) -> None:
     require(
         text.count("packages: write") == 1 and "packages: write" in publish_job,
         "only image publication may write packages",
+    )
+    require(
+        text.count("packages: read") == 1 and "packages: read" in deploy_job,
+        "deployment alone must receive package read access",
     )
     require(
         text.count("environment: production") == 1
@@ -158,6 +186,26 @@ def validate_workflow(text: str) -> None:
         "SSH step must suppress stale main immediately before deployment",
     )
     require(
+        "sudo -n --" in ssh_step,
+        "sudo must never consume the registry token as a password",
+    )
+    require(
+        "printf '%s' \"$GHCR_PULL_TOKEN\"" in ssh_step,
+        "the registry token must travel only over standard input",
+    )
+    require(
+        "/opt/life-agent/production/deploy-from-ci.sh" in ssh_step,
+        "deployment must invoke the fixed root-owned entrypoint",
+    )
+    require(
+        re.search(
+            r"sudo -n -- \\\n\s+/opt/life-agent/production/deploy-from-ci\.sh\n",
+            ssh_step,
+        )
+        is not None,
+        "the constrained sudo entrypoint must receive no command-line arguments",
+    )
+    require(
         '"$PROD_SSH_USER@$PROD_SSH_HOST"' not in text,
         "SSH coordinates must stay out of process arguments",
     )
@@ -176,8 +224,21 @@ def validate_bundle_state(root: Path = ROOT) -> str:
     return "complete" if present else "declared-interface"
 
 
+def validate_ci_integration(text: str) -> None:
+    require(
+        "          python scripts/validate_production_infra.py\n" in text,
+        "CI must run the production infrastructure validator",
+    )
+    require(
+        "          python -m unittest scripts.test_validate_production_infra\n"
+        in text,
+        "CI must run the production infrastructure regression tests",
+    )
+
+
 def main() -> int:
     validate_workflow(WORKFLOW_PATH.read_text(encoding="utf-8"))
+    validate_ci_integration(CI_WORKFLOW_PATH.read_text(encoding="utf-8"))
     bundle_state = validate_bundle_state()
     print(
         "PASS: production backend workflow guards are complete; "

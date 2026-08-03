@@ -8,9 +8,11 @@ import unittest
 from pathlib import Path
 
 from scripts.validate_backend_production_workflow import (
+    CI_WORKFLOW_PATH,
     WORKFLOW_PATH,
     WorkflowValidationError,
     validate_bundle_state,
+    validate_ci_integration,
     validate_workflow,
 )
 
@@ -19,9 +21,20 @@ class BackendProductionWorkflowValidatorTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
+        cls.ci_workflow = CI_WORKFLOW_PATH.read_text(encoding="utf-8")
 
     def test_repository_workflow_is_complete(self) -> None:
         validate_workflow(self.workflow)
+        validate_ci_integration(self.ci_workflow)
+
+    def test_production_infra_gate_cannot_be_removed_from_ci(self) -> None:
+        mutated = self.ci_workflow.replace(
+            "          python scripts/validate_production_infra.py\n",
+            "",
+            1,
+        )
+        with self.assertRaisesRegex(WorkflowValidationError, "infrastructure validator"):
+            validate_ci_integration(mutated)
 
     def test_develop_trigger_is_rejected(self) -> None:
         mutated = self.workflow.replace(
@@ -73,6 +86,30 @@ class BackendProductionWorkflowValidatorTest(unittest.TestCase):
     def test_deployment_cannot_drop_publication_dependency(self) -> None:
         mutated = self.workflow.replace("      - publish\n", "", 1)
         with self.assertRaisesRegex(WorkflowValidationError, "depend on verification"):
+            validate_workflow(mutated)
+
+    def test_deployment_cannot_drop_package_read_access(self) -> None:
+        mutated = self.workflow.replace("      packages: read\n", "", 1)
+        with self.assertRaisesRegex(WorkflowValidationError, "package read access"):
+            validate_workflow(mutated)
+
+    def test_registry_token_cannot_become_a_sudo_password(self) -> None:
+        mutated = self.workflow.replace("sudo -n --", "sudo --", 1)
+        with self.assertRaisesRegex(WorkflowValidationError, "privilege boundary"):
+            validate_workflow(mutated)
+
+    def test_ci_uploaded_root_script_is_rejected(self) -> None:
+        mutated = self.workflow + "\n# scp -F config deploy.sh production:/tmp/\n"
+        with self.assertRaisesRegex(WorkflowValidationError, "CI-uploaded"):
+            validate_workflow(mutated)
+
+    def test_registry_token_must_use_standard_input(self) -> None:
+        mutated = self.workflow.replace(
+            "printf '%s' \"$GHCR_PULL_TOKEN\"",
+            "echo token-redacted",
+            1,
+        )
+        with self.assertRaisesRegex(WorkflowValidationError, "standard input"):
             validate_workflow(mutated)
 
     def test_final_current_main_check_cannot_be_removed(self) -> None:

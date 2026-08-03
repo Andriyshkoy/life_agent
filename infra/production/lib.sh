@@ -8,7 +8,8 @@ readonly LIFE_AGENT_PRODUCTION_ENV_FILE="${LIFE_AGENT_PRODUCTION_ENV_FILE:-/etc/
 readonly LIFE_AGENT_DEPLOY_STATE_DIR="${LIFE_AGENT_DEPLOY_STATE_DIR:-/var/lib/life-agent/deploy}"
 readonly LIFE_AGENT_BACKEND_IMAGE_PREFIX="ghcr.io/andriyshkoy/life_agent/backend@sha256:"
 readonly LIFE_AGENT_ACCOUNT_DIRECTORY="$(getent passwd "${EUID}" | cut -d: -f6)"
-readonly LIFE_AGENT_DOCKER_CONFIG_DIR="${LIFE_AGENT_ACCOUNT_DIRECTORY}/.docker"
+readonly LIFE_AGENT_DEFAULT_DOCKER_CONFIG_DIR="${LIFE_AGENT_ACCOUNT_DIRECTORY}/.docker"
+readonly LIFE_AGENT_DOCKER_CONFIG_DIR="${LIFE_AGENT_DOCKER_CONFIG_DIR:-${LIFE_AGENT_DEFAULT_DOCKER_CONFIG_DIR}}"
 
 life_agent_die() {
     echo "life-agent-deploy: $*" >&2
@@ -223,12 +224,31 @@ life_agent_validate_secret_files() {
     done
 }
 
+life_agent_validate_docker_config_dir() {
+    if [[ "${LIFE_AGENT_DOCKER_CONFIG_DIR}" == "${LIFE_AGENT_DEFAULT_DOCKER_CONFIG_DIR}" ]]; then
+        if [[ -L "${LIFE_AGENT_DOCKER_CONFIG_DIR}" ]] ||
+            [[ -e "${LIFE_AGENT_DOCKER_CONFIG_DIR}" &&
+                ! -d "${LIFE_AGENT_DOCKER_CONFIG_DIR}" ]]; then
+            life_agent_die "the account Docker configuration path is unsafe"
+        fi
+        return 0
+    fi
+
+    if [[ "${EUID}" -ne 0 ]] ||
+        [[ ! "${LIFE_AGENT_DOCKER_CONFIG_DIR}" =~ ^/run/life-agent-ghcr\.[A-Za-z0-9]+$ ]] ||
+        [[ ! -d "${LIFE_AGENT_DOCKER_CONFIG_DIR}" ]] ||
+        [[ -L "${LIFE_AGENT_DOCKER_CONFIG_DIR}" ]] ||
+        [[ "$(stat -c '%u:%g:%a' -- "${LIFE_AGENT_DOCKER_CONFIG_DIR}")" != "0:0:700" ]]; then
+        life_agent_die "the ephemeral Docker configuration path is unsafe"
+    fi
+}
+
 life_agent_compose() {
     env -i \
         PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
         DOCKER_CONFIG="${LIFE_AGENT_DOCKER_CONFIG_DIR}" \
         LIFE_AGENT_BACKEND_IMAGE="${LIFE_AGENT_BACKEND_IMAGE:?}" \
-        /usr/bin/docker-compose \
+        /usr/bin/docker compose \
         --project-directory "${LIFE_AGENT_PRODUCTION_DIR}" \
         --env-file "${LIFE_AGENT_PRODUCTION_ENV_FILE}" \
         --file "${LIFE_AGENT_COMPOSE_FILE}" \
@@ -246,8 +266,12 @@ life_agent_docker() {
 life_agent_prepare_runtime() {
     life_agent_require_root
     if [[ -z "${LIFE_AGENT_ACCOUNT_DIRECTORY}" ]] ||
-        [[ ! -x /usr/bin/docker || ! -x /usr/bin/docker-compose ]]; then
+        [[ ! -x /usr/bin/docker ]]; then
         life_agent_die "required local Docker executables or account metadata are unavailable"
+    fi
+    life_agent_validate_docker_config_dir
+    if ! life_agent_docker compose version >/dev/null 2>&1; then
+        life_agent_die "the Docker Compose plugin is unavailable"
     fi
     life_agent_require_regular_file "${LIFE_AGENT_COMPOSE_FILE}"
     life_agent_validate_environment_file
