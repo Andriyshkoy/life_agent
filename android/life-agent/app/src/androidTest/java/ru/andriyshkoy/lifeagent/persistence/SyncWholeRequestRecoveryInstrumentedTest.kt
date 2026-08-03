@@ -164,6 +164,90 @@ class SyncWholeRequestRecoveryInstrumentedTest {
         }
 
     @Test
+    fun pullBootstrapRequiredAtomicallyGatesFamilyAndReleasesOpenPush() =
+        runBlocking {
+            val outbox = createReadyOutbox()
+            val push = insertAndClaimPush(outbox)
+            val pullRequestId = UUID.randomUUID().toString()
+            val pullAttemptId = UUID.randomUUID().toString()
+            fixture.database.syncTransportDao().insertRequest(
+                fixture.request(
+                    endpointId = "sync_pull",
+                    requestIdentity = pullRequestId,
+                    state = "sending",
+                    attemptCount = 1,
+                    activeAttemptId = pullAttemptId,
+                    leaseExpiresAtEpochMs = SyncM2PersistenceFixture.DEADLINE_MS,
+                ),
+            )
+            val proposed = fixture.bootstrapIntent(pageSize = 500)
+            val responseBody = """{"error":"bootstrap_required"}"""
+                .toByteArray(StandardCharsets.UTF_8)
+            val response = TerminalHttpResponsePersistence(
+                endpointId = "sync_pull",
+                requestIdentity = pullRequestId,
+                expectedAttemptId = pullAttemptId,
+                httpStatus = 409,
+                exactResponseBody = responseBody,
+                responseSha256 = sha256Hex(responseBody),
+                terminalAtUtc = "2030-01-01T00:00:01Z",
+                terminalErrorCode = "bootstrap_required",
+            )
+            var factoryCalls = 0
+
+            assertTrue(
+                fixture.database.withTransaction {
+                    store.commitBootstrapRequiredInCurrentTransaction(
+                        response = response,
+                        proposedIntentFactory = {
+                            factoryCalls += 1
+                            proposed
+                        },
+                    )
+                },
+            )
+            assertFalse(
+                fixture.database.withTransaction {
+                    store.commitBootstrapRequiredInCurrentTransaction(
+                        response = response,
+                        proposedIntentFactory = {
+                            factoryCalls += 1
+                            error("Exact replay must not create another bootstrap intent")
+                        },
+                    )
+                },
+            )
+            assertEquals(1, factoryCalls)
+            val terminalPull = fixture.database.syncTransportDao()
+                .findRequest("sync_pull", pullRequestId)
+            assertEquals("terminal", terminalPull?.state)
+            assertEquals(409, terminalPull?.terminalHttpStatus)
+            assertEquals("bootstrap_required", terminalPull?.terminalErrorCode)
+            val supersededPush = fixture.database.syncTransportDao()
+                .findRequest("sync_push", push.batchId)
+            assertEquals("terminal_local", supersededPush?.state)
+            val released = fixture.database.noteMutationDao()
+                .findOutbox(outbox.operationId)
+            assertEquals("pending", released?.state)
+            assertNull(released?.activeBatchId)
+            val stream = requireNotNull(
+                fixture.database.syncReplicaDao().findStreamState(),
+            )
+            assertEquals("bootstrap_required", stream.phase)
+            assertTrue(stream.bootstrapRequired)
+            assertTrue(
+                requireNotNull(fixture.database.syncAuthDao().findState())
+                    .bootstrapRequired,
+            )
+            assertEquals(
+                proposed.session.bootstrapId,
+                fixture.database.syncReplicaDao()
+                    .findBootstrapSessionWithActiveSlot()
+                    ?.bootstrapId,
+            )
+        }
+
+    @Test
     fun interruptedRefreshReleasesExactPushWaiterOutboxAfterReopen() =
         runBlocking {
             val outbox = createReadyOutbox()

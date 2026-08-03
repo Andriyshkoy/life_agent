@@ -16,6 +16,7 @@ import ru.andriyshkoy.lifeagent.data.local.db.entity.LocalRevisionParentEntity
 import ru.andriyshkoy.lifeagent.data.local.db.entity.SyncBootstrapSessionEntity
 import ru.andriyshkoy.lifeagent.data.local.db.entity.SyncHttpRequestEntity
 import ru.andriyshkoy.lifeagent.data.local.db.entity.SyncPageReceiptEntity
+import ru.andriyshkoy.lifeagent.data.local.db.entity.SyncReplicaCursorEntity
 import ru.andriyshkoy.lifeagent.data.local.db.entity.SyncServerChangeEntity
 import ru.andriyshkoy.lifeagent.data.local.db.entity.SyncStreamStateEntity
 
@@ -72,166 +73,7 @@ class SyncPersistenceStore(
         require(response.endpointId == PUSH_ENDPOINT)
         try {
             database.withTransaction {
-                val request = requireReplicaValue(
-                    transportDao.findRequest(
-                        endpointId = response.endpointId,
-                        requestIdentity = response.requestIdentity,
-                    ),
-                    "push_request_missing",
-                    "Push response has no durable request",
-                )
-                if (isStaleAttemptCallback(request, response)) {
-                    // A newer worker owns the request. The late response may
-                    // neither install its bytes nor reduce its parsed results.
-                    return@withTransaction
-                }
-                val currentStream = replicaDao.findStreamState()
-                if (
-                    request.state != "terminal" &&
-                    (
-                        currentStream == null ||
-                            request.credentialEpochId != currentStream.credentialEpochId ||
-                            request.deviceId != currentStream.deviceId
-                        )
-                ) {
-                    return@withTransaction
-                }
-                val stream = requireReplicaValue(
-                    currentStream,
-                    "sync_stream_missing",
-                    "Push response has no active sync stream",
-                )
-                requireReplica(
-                    request.credentialEpochId == stream.credentialEpochId &&
-                        request.deviceId == stream.deviceId,
-                    "sync_request_binding_drift",
-                    "Push request no longer belongs to the active sync stream",
-                )
-                if (
-                    request.state != "terminal" &&
-                    !requestStore.preflightFreshResponseRequestMetadata(
-                        request,
-                        response.terminalAtUtc,
-                    )
-                ) {
-                    return@withTransaction
-                }
-                val batch = requireReplicaValue(
-                    transportDao.findBatch(response.requestIdentity),
-                    "push_batch_missing",
-                    "Push batch is missing",
-                )
-                requireReplica(
-                    batch.batchId == response.requestIdentity &&
-                        batch.endpointId == response.endpointId &&
-                        batch.requestIdentity == response.requestIdentity &&
-                        request.idempotencyKey == batch.batchId &&
-                        batch.operationCount in 1..100,
-                    "push_response_drift",
-                    "Push response does not bind to its durable batch identity",
-                )
-                val items = transportDao.findBatchItems(batch.batchId)
-                requireReplica(
-                    items.size == batch.operationCount &&
-                        results.map { it.ordinal } == items.indices.toList() &&
-                        items.zipWithNext().all { (previous, next) ->
-                            previous.localSequence < next.localSequence
-                        },
-                    "push_response_drift",
-                    "Push response must contain one result in physical ordinal order",
-                )
-                items.forEach { item ->
-                    val outbox = requireReplicaValue(
-                        mutationDao.findOutbox(item.operationId),
-                        "push_batch_membership_drift",
-                        "Push batch item has no durable outbox operation",
-                    )
-                    requireReplica(
-                        outbox.localSequence == item.localSequence &&
-                            outbox.wireOperationContentSha256 ==
-                            item.wireOperationContentSha256,
-                        "push_batch_membership_drift",
-                        "Push batch item differs from its immutable outbox operation",
-                    )
-                }
-                val installedResponse = installOrVerifyTerminalResponse(response)
-                if (installedResponse) {
-                    requireReplica(
-                        stream.integrityErrorCode == null,
-                        "sync_integrity_already_halted",
-                        "Push sync is already halted",
-                    )
-                }
-
-                results.zip(items).forEach { (result, item) ->
-                    requireReplica(
-                        result.ordinal == item.ordinal,
-                        "push_response_drift",
-                        "Push result moved from its physical batch ordinal",
-                    )
-                    if (!installedResponse) {
-                        verifyPushResultReplay(
-                            response = response,
-                            batchId = batch.batchId,
-                            itemOperationId = item.operationId,
-                            itemWireSha256 = item.wireOperationContentSha256,
-                            result = result,
-                        )
-                    } else {
-                        when (result) {
-                            is PushAckPersistence -> commitAck(
-                                response = response,
-                                batchId = batch.batchId,
-                                itemOperationId = item.operationId,
-                                itemWireSha256 = item.wireOperationContentSha256,
-                                result = result,
-                            )
-
-                            is PushErrorPersistence -> commitError(
-                                response = response,
-                                batchId = batch.batchId,
-                                itemOperationId = item.operationId,
-                                itemWireSha256 = item.wireOperationContentSha256,
-                                result = result,
-                            )
-                        }
-                    }
-                }
-                val terminalIntegrityErrorCode = results
-                    .asSequence()
-                    .filterIsInstance<PushErrorPersistence>()
-                    .map { it.errorCode }
-                    .firstOrNull(TERMINAL_INTEGRITY_ITEM_ERROR_CODES::contains)
-                if (terminalIntegrityErrorCode != null) {
-                    if (installedResponse) {
-                        requireReplica(
-                            replicaDao.markIntegrityHalted(
-                                credentialEpochId = request.credentialEpochId,
-                                deviceId = request.deviceId,
-                                errorCode = terminalIntegrityErrorCode,
-                                updatedAtUtc = response.terminalAtUtc,
-                            ) == 1,
-                            terminalIntegrityErrorCode,
-                            "Terminal push item could not halt the sync stream",
-                        )
-                    } else {
-                        val retainedStream = requireReplicaValue(
-                            replicaDao.findStreamState(),
-                            "sync_stream_missing",
-                            "Terminal push replay has no retained sync stream",
-                        )
-                        requireReplica(
-                            retainedStream.credentialEpochId ==
-                                request.credentialEpochId &&
-                                retainedStream.deviceId == request.deviceId &&
-                                retainedStream.phase == "integrity_halted" &&
-                                retainedStream.integrityErrorCode ==
-                                terminalIntegrityErrorCode,
-                            terminalIntegrityErrorCode,
-                            "Terminal push replay lost its durable stream halt",
-                        )
-                    }
-                }
+                commitPushResponseInCurrentTransaction(response, results)
             }
         } catch (error: ReplicaIntegrityException) {
             haltPushAfterRollback(
@@ -255,6 +97,176 @@ class SyncPersistenceStore(
         }
     }
 
+    internal suspend fun commitPushResponseInCurrentTransaction(
+        response: TerminalHttpResponsePersistence,
+        results: List<PushResultPersistence>,
+    ) {
+        check(database.inTransaction()) {
+            "Push response reduction requires an outer transaction"
+        }
+        require(response.endpointId == PUSH_ENDPOINT)
+        val request = requireReplicaValue(
+            transportDao.findRequest(
+                endpointId = response.endpointId,
+                requestIdentity = response.requestIdentity,
+            ),
+            "push_request_missing",
+            "Push response has no durable request",
+        )
+        if (isStaleAttemptCallback(request, response)) {
+            // A newer worker owns the request. The late response may
+            // neither install its bytes nor reduce its parsed results.
+            return
+        }
+        val currentStream = replicaDao.findStreamState()
+        if (
+            request.state != "terminal" &&
+            (
+                currentStream == null ||
+                    request.credentialEpochId != currentStream.credentialEpochId ||
+                    request.deviceId != currentStream.deviceId
+                )
+        ) {
+            return
+        }
+        val stream = requireReplicaValue(
+            currentStream,
+            "sync_stream_missing",
+            "Push response has no active sync stream",
+        )
+        requireReplica(
+            request.credentialEpochId == stream.credentialEpochId &&
+                request.deviceId == stream.deviceId,
+            "sync_request_binding_drift",
+            "Push request no longer belongs to the active sync stream",
+        )
+        if (
+            request.state != "terminal" &&
+            !requestStore.preflightFreshResponseRequestMetadata(
+                request,
+                response.terminalAtUtc,
+            )
+        ) {
+            return
+        }
+        val batch = requireReplicaValue(
+            transportDao.findBatch(response.requestIdentity),
+            "push_batch_missing",
+            "Push batch is missing",
+        )
+        requireReplica(
+            batch.batchId == response.requestIdentity &&
+                batch.endpointId == response.endpointId &&
+                batch.requestIdentity == response.requestIdentity &&
+                request.idempotencyKey == batch.batchId &&
+                batch.operationCount in 1..100,
+            "push_response_drift",
+            "Push response does not bind to its durable batch identity",
+        )
+        val items = transportDao.findBatchItems(batch.batchId)
+        requireReplica(
+            items.size == batch.operationCount &&
+                results.map { it.ordinal } == items.indices.toList() &&
+                items.zipWithNext().all { (previous, next) ->
+                    previous.localSequence < next.localSequence
+                },
+            "push_response_drift",
+            "Push response must contain one result in physical ordinal order",
+        )
+        items.forEach { item ->
+            val outbox = requireReplicaValue(
+                mutationDao.findOutbox(item.operationId),
+                "push_batch_membership_drift",
+                "Push batch item has no durable outbox operation",
+            )
+            requireReplica(
+                outbox.localSequence == item.localSequence &&
+                    outbox.wireOperationContentSha256 ==
+                    item.wireOperationContentSha256,
+                "push_batch_membership_drift",
+                "Push batch item differs from its immutable outbox operation",
+            )
+        }
+        val installedResponse = installOrVerifyTerminalResponse(response)
+        if (installedResponse) {
+            requireReplica(
+                stream.integrityErrorCode == null,
+                "sync_integrity_already_halted",
+                "Push sync is already halted",
+            )
+        }
+
+        results.zip(items).forEach { (result, item) ->
+            requireReplica(
+                result.ordinal == item.ordinal,
+                "push_response_drift",
+                "Push result moved from its physical batch ordinal",
+            )
+            if (!installedResponse) {
+                verifyPushResultReplay(
+                    response = response,
+                    batchId = batch.batchId,
+                    itemOperationId = item.operationId,
+                    itemWireSha256 = item.wireOperationContentSha256,
+                    result = result,
+                )
+            } else {
+                when (result) {
+                    is PushAckPersistence -> commitAck(
+                        response = response,
+                        batchId = batch.batchId,
+                        itemOperationId = item.operationId,
+                        itemWireSha256 = item.wireOperationContentSha256,
+                        result = result,
+                    )
+
+                    is PushErrorPersistence -> commitError(
+                        response = response,
+                        batchId = batch.batchId,
+                        itemOperationId = item.operationId,
+                        itemWireSha256 = item.wireOperationContentSha256,
+                        result = result,
+                    )
+                }
+            }
+        }
+        val terminalIntegrityErrorCode = results
+            .asSequence()
+            .filterIsInstance<PushErrorPersistence>()
+            .map { it.errorCode }
+            .firstOrNull(TERMINAL_INTEGRITY_ITEM_ERROR_CODES::contains)
+        if (terminalIntegrityErrorCode != null) {
+            if (installedResponse) {
+                requireReplica(
+                    replicaDao.markIntegrityHalted(
+                        credentialEpochId = request.credentialEpochId,
+                        deviceId = request.deviceId,
+                        errorCode = terminalIntegrityErrorCode,
+                        updatedAtUtc = response.terminalAtUtc,
+                    ) == 1,
+                    terminalIntegrityErrorCode,
+                    "Terminal push item could not halt the sync stream",
+                )
+            } else {
+                val retainedStream = requireReplicaValue(
+                    replicaDao.findStreamState(),
+                    "sync_stream_missing",
+                    "Terminal push replay has no retained sync stream",
+                )
+                requireReplica(
+                    retainedStream.credentialEpochId ==
+                        request.credentialEpochId &&
+                        retainedStream.deviceId == request.deviceId &&
+                        retainedStream.phase == "integrity_halted" &&
+                        retainedStream.integrityErrorCode ==
+                        terminalIntegrityErrorCode,
+                    terminalIntegrityErrorCode,
+                    "Terminal push replay lost its durable stream halt",
+                )
+            }
+        }
+    }
+
     internal suspend fun commitBootstrapPage(
         response: TerminalHttpResponsePersistence,
         receipt: SyncPageReceiptEntity,
@@ -264,244 +276,16 @@ class SyncPersistenceStore(
         require(receipt.completeOrHasMore == (continuationFactory == null)) {
             "Exactly one durable continuation is required for a non-final bootstrap page"
         }
-        val bootstrapId = receipt.bootstrapId
         var streamBinding: SyncStreamStateEntity? = null
         try {
             database.withTransaction {
-                requireReplica(
-                    response.endpointId == BOOTSTRAP_ENDPOINT &&
-                        receipt.endpointId == response.endpointId &&
-                        receipt.requestIdentity == response.requestIdentity &&
-                        receipt.receivedAtUtc == response.terminalAtUtc,
-                    "bootstrap_receipt_drift",
-                    "Bootstrap receipt does not bind to its terminal response",
-                )
-                val durableBootstrapId = requireReplicaValue(
-                    bootstrapId,
-                    "bootstrap_receipt_drift",
-                    "Bootstrap receipt has no bootstrap identity",
-                )
-                val request = requireReplicaValue(
-                    transportDao.findRequest(
-                        response.endpointId,
-                        response.requestIdentity,
-                    ),
-                    "sync_request_missing",
-                    "Durable sync request is missing",
-                )
-                if (isStaleAttemptCallback(request, response)) {
-                    return@withTransaction
-                }
-                val session = requireReplicaValue(
-                    replicaDao.findBootstrapSession(durableBootstrapId),
-                    "bootstrap_session_missing",
-                    "Bootstrap staging session is missing",
-                )
-                val stream = requireReplicaValue(
-                    replicaDao.findStreamState(),
-                    "sync_stream_missing",
-                    "Sync stream state is missing",
-                )
-                if (request.state == "terminal") {
-                    requireReplica(
-                        request.credentialEpochId == stream.credentialEpochId &&
-                            request.deviceId == stream.deviceId,
-                        "sync_request_binding_drift",
-                        "Durable request no longer belongs to the active sync stream",
-                    )
-                    requireReplica(
-                        session.credentialEpochId == stream.credentialEpochId &&
-                            session.deviceId == stream.deviceId,
-                        "bootstrap_session_binding_drift",
-                        "Bootstrap session no longer belongs to the active stream",
-                    )
-                    if (session.state in setOf("staging", "complete")) {
-                        streamBinding = stream
-                    }
-                } else {
-                    val activeSession = replicaDao.findBootstrapSessionWithActiveSlot()
-                    if (
-                        session.state != "staging" ||
-                        session.activeSlot != 1 ||
-                        activeSession?.bootstrapId != durableBootstrapId ||
-                        request.credentialEpochId != stream.credentialEpochId ||
-                        request.deviceId != stream.deviceId ||
-                        session.credentialEpochId != stream.credentialEpochId ||
-                        session.deviceId != stream.deviceId
-                    ) {
-                        return@withTransaction
-                    }
-                    if (
-                        !requestStore.preflightFreshResponseRequestMetadata(
-                            request,
-                            response.terminalAtUtc,
-                        )
-                    ) {
-                        return@withTransaction
-                    }
-                }
-                verifyBootstrapRequestBinding(
-                    request = request,
-                    session = session,
-                    expectedPageCursor = receipt.fromCursor,
-                )
-
-                val installedResponse = installOrVerifyTerminalResponse(response)
-                if (installedResponse) {
-                    requireReplica(
-                        session.state == "staging" &&
-                            session.activeSlot == 1 &&
-                            replicaDao.findBootstrapSessionWithActiveSlot()?.bootstrapId ==
-                            durableBootstrapId,
-                        "bootstrap_session_binding_drift",
-                        "New bootstrap page does not belong to the active shadow",
-                    )
-                    requireReplica(
-                        stream.integrityErrorCode == null,
-                        "sync_integrity_already_halted",
-                        "Bootstrap sync is already halted",
-                    )
-                    streamBinding = stream
-                }
-
-                validateBootstrapPageShape(receipt, changes)
-                val decodedPage = changes.map(replicaCodec::decode)
-                decodedPage.forEach { change ->
-                    verifyServerReceiptOverlap(change)
-                }
-                if (!installedResponse) {
-                    val existingReceipt = verifyPageReceiptReplay(receipt)
-                    verifyStagedPageReplay(durableBootstrapId, receipt.pageId, changes)
-                    val retainedTerminalAtUtc = requireReplicaValue(
-                        request.terminalAtUtc,
-                        "bootstrap_receipt_drift",
-                        "Bootstrap replay lost its first terminal timestamp",
-                    )
-                    requireReplica(
-                        existingReceipt.receivedAtUtc == retainedTerminalAtUtc,
-                        "bootstrap_receipt_drift",
-                        "Bootstrap receipt lost its first terminal timestamp",
-                    )
-                    when (session.state) {
-                        "staging" -> requireReplica(
-                            session.activeSlot == 1 &&
-                                replicaDao
-                                    .findBootstrapSessionWithActiveSlot()
-                                    ?.bootstrapId == durableBootstrapId &&
-                                existingReceipt.state == "staged" &&
-                                existingReceipt.appliedAtUtc == null,
-                            "bootstrap_receipt_drift",
-                            "Staging bootstrap replay has a non-staged receipt",
-                        )
-
-                        "complete" -> {
-                            requireReplica(
-                                session.activeSlot == null &&
-                                    existingReceipt.state == "applied" &&
-                                    existingReceipt.appliedAtUtc ==
-                                    session.updatedAtUtc,
-                                "bootstrap_receipt_drift",
-                                "Completed bootstrap replay has a non-applied receipt",
-                            )
-                            verifyMaterializedReplay(decodedPage)
-                        }
-
-                        else -> throw ReplicaIntegrityException(
-                            errorCode = "bootstrap_session_binding_drift",
-                            message = "Bootstrap page replay has no durable active state",
-                        )
-                    }
-                    return@withTransaction
-                }
-                validateBootstrapSessionContinuation(
-                    session = session,
+                commitBootstrapPageCore(
+                    response = response,
                     receipt = receipt,
                     changes = changes,
+                    continuationFactory = continuationFactory,
+                    verifiedStreamObserver = { streamBinding = it },
                 )
-                requireReplica(
-                    replicaDao.findPageReceipt(receipt.pageId) == null &&
-                        replicaDao.findPageReceiptByRequest(
-                            receipt.endpointId,
-                            receipt.requestIdentity,
-                        ) == null,
-                    "bootstrap_page_collision",
-                    "Bootstrap page or request identity is already claimed",
-                )
-
-                val priorChanges = replicaDao.findStagedChanges(durableBootstrapId)
-                    .map(ReplicaChangePersistence::from)
-                validateTopology(
-                    (priorChanges + changes).map(replicaCodec::decode),
-                    ReplicaTopologyState(),
-                )
-                try {
-                    replicaDao.stageBootstrapPage(
-                        receipt = receipt,
-                        changes = changes.map {
-                            it.asStaged(
-                                bootstrapId = durableBootstrapId,
-                                pageId = receipt.pageId,
-                            )
-                        },
-                        responseBodyBytes = response.exactResponseBody.size.toLong(),
-                    )
-                } catch (error: ReplicaIntegrityException) {
-                    throw error
-                } catch (error: CancellationException) {
-                    throw error
-                } catch (error: Exception) {
-                    throw ReplicaIntegrityException(
-                        errorCode = "bootstrap_shadow_drift",
-                        message = "Bootstrap page could not advance the shadow atomically",
-                        cause = error,
-                    )
-                }
-
-                if (receipt.completeOrHasMore) {
-                    promoteBootstrapSnapshot(
-                        bootstrapId = durableBootstrapId,
-                        response = response,
-                        stream = stream,
-                    )
-                } else {
-                    val advancedSession = requireReplicaValue(
-                        replicaDao.findBootstrapSession(durableBootstrapId),
-                        "bootstrap_session_missing",
-                        "Advanced bootstrap staging session is missing",
-                    )
-                    val continuation = checkNotNull(continuationFactory)(advancedSession)
-                    verifyBootstrapRequestBinding(
-                        request = continuation,
-                        session = advancedSession,
-                        expectedPageCursor = receipt.nextCursor,
-                    )
-                    val currentAuth = requireReplicaValue(
-                        authDao.findState(),
-                        "auth_state_missing",
-                        "Protected bootstrap continuation has no credential family",
-                    )
-                    requireReplica(
-                        advancedSession.state == "staging" &&
-                            advancedSession.activeSlot == 1 &&
-                            advancedSession.nextPageCursor == receipt.nextCursor &&
-                            currentAuth.credentialEpochId ==
-                            advancedSession.credentialEpochId &&
-                            currentAuth.deviceId == advancedSession.deviceId &&
-                            currentAuth.state in setOf("active", "refresh_in_flight") &&
-                            currentAuth.bootstrapRequired &&
-                            continuation.state == "ready" &&
-                            continuation.attemptCount == 0 &&
-                            checkNotNull(continuation.accessGenerationUsed) <=
-                            currentAuth.generation &&
-                            transportDao.findOpenBootstrapRequestKeys(
-                                credentialEpochId = advancedSession.credentialEpochId,
-                                deviceId = advancedSession.deviceId,
-                            ).isEmpty(),
-                        "bootstrap_continuation_binding_drift",
-                        "Protected bootstrap continuation does not bind the advanced shadow",
-                    )
-                    transportDao.insertRequest(continuation)
-                }
             }
         } catch (error: ReplicaIntegrityException) {
             haltStreamAfterRollback(
@@ -510,6 +294,269 @@ class SyncPersistenceStore(
                 updatedAtUtc = response.terminalAtUtc,
             )
             throw error
+        }
+    }
+
+    internal suspend fun commitBootstrapPageInCurrentTransaction(
+        response: TerminalHttpResponsePersistence,
+        receipt: SyncPageReceiptEntity,
+        changes: List<ReplicaChangePersistence>,
+        continuationFactory: (suspend (SyncBootstrapSessionEntity) -> SyncHttpRequestEntity)? = null,
+    ) {
+        check(database.inTransaction()) {
+            "Bootstrap page reduction requires an outer transaction"
+        }
+        require(receipt.completeOrHasMore == (continuationFactory == null)) {
+            "Exactly one durable continuation is required for a non-final bootstrap page"
+        }
+        commitBootstrapPageCore(
+            response = response,
+            receipt = receipt,
+            changes = changes,
+            continuationFactory = continuationFactory,
+        )
+    }
+
+    private suspend fun commitBootstrapPageCore(
+        response: TerminalHttpResponsePersistence,
+        receipt: SyncPageReceiptEntity,
+        changes: List<ReplicaChangePersistence>,
+        continuationFactory: (suspend (SyncBootstrapSessionEntity) -> SyncHttpRequestEntity)?,
+        verifiedStreamObserver: (SyncStreamStateEntity) -> Unit = {},
+    ) {
+        val bootstrapId = receipt.bootstrapId
+        requireReplica(
+            response.endpointId == BOOTSTRAP_ENDPOINT &&
+                receipt.endpointId == response.endpointId &&
+                receipt.requestIdentity == response.requestIdentity &&
+                receipt.receivedAtUtc == response.terminalAtUtc,
+            "bootstrap_receipt_drift",
+            "Bootstrap receipt does not bind to its terminal response",
+        )
+        val durableBootstrapId = requireReplicaValue(
+            bootstrapId,
+            "bootstrap_receipt_drift",
+            "Bootstrap receipt has no bootstrap identity",
+        )
+        val request = requireReplicaValue(
+            transportDao.findRequest(
+                response.endpointId,
+                response.requestIdentity,
+            ),
+            "sync_request_missing",
+            "Durable sync request is missing",
+        )
+        if (isStaleAttemptCallback(request, response)) {
+            return
+        }
+        val session = requireReplicaValue(
+            replicaDao.findBootstrapSession(durableBootstrapId),
+            "bootstrap_session_missing",
+            "Bootstrap staging session is missing",
+        )
+        val stream = requireReplicaValue(
+            replicaDao.findStreamState(),
+            "sync_stream_missing",
+            "Sync stream state is missing",
+        )
+        if (request.state == "terminal") {
+            requireReplica(
+                request.credentialEpochId == stream.credentialEpochId &&
+                    request.deviceId == stream.deviceId,
+                "sync_request_binding_drift",
+                "Durable request no longer belongs to the active sync stream",
+            )
+            requireReplica(
+                session.credentialEpochId == stream.credentialEpochId &&
+                    session.deviceId == stream.deviceId,
+                "bootstrap_session_binding_drift",
+                "Bootstrap session no longer belongs to the active stream",
+            )
+            if (session.state in setOf("staging", "complete")) {
+                verifiedStreamObserver(stream)
+            }
+        } else {
+            val activeSession = replicaDao.findBootstrapSessionWithActiveSlot()
+            if (
+                session.state != "staging" ||
+                session.activeSlot != 1 ||
+                activeSession?.bootstrapId != durableBootstrapId ||
+                request.credentialEpochId != stream.credentialEpochId ||
+                request.deviceId != stream.deviceId ||
+                session.credentialEpochId != stream.credentialEpochId ||
+                session.deviceId != stream.deviceId
+            ) {
+                return
+            }
+            if (
+                !requestStore.preflightFreshResponseRequestMetadata(
+                    request,
+                    response.terminalAtUtc,
+                )
+            ) {
+                return
+            }
+        }
+        verifyBootstrapRequestBinding(
+            request = request,
+            session = session,
+            expectedPageCursor = receipt.fromCursor,
+        )
+
+        val installedResponse = installOrVerifyTerminalResponse(response)
+        if (installedResponse) {
+            requireReplica(
+                session.state == "staging" &&
+                    session.activeSlot == 1 &&
+                    replicaDao.findBootstrapSessionWithActiveSlot()?.bootstrapId ==
+                    durableBootstrapId,
+                "bootstrap_session_binding_drift",
+                "New bootstrap page does not belong to the active shadow",
+            )
+            requireReplica(
+                stream.integrityErrorCode == null,
+                "sync_integrity_already_halted",
+                "Bootstrap sync is already halted",
+            )
+            verifiedStreamObserver(stream)
+        }
+
+        validateBootstrapPageShape(receipt, changes)
+        val decodedPage = changes.map(replicaCodec::decode)
+        decodedPage.forEach { change ->
+            verifyServerReceiptOverlap(change)
+        }
+        if (!installedResponse) {
+            val existingReceipt = verifyPageReceiptReplay(receipt)
+            verifyStagedPageReplay(durableBootstrapId, receipt.pageId, changes)
+            val retainedTerminalAtUtc = requireReplicaValue(
+                request.terminalAtUtc,
+                "bootstrap_receipt_drift",
+                "Bootstrap replay lost its first terminal timestamp",
+            )
+            requireReplica(
+                existingReceipt.receivedAtUtc == retainedTerminalAtUtc,
+                "bootstrap_receipt_drift",
+                "Bootstrap receipt lost its first terminal timestamp",
+            )
+            when (session.state) {
+                "staging" -> requireReplica(
+                    session.activeSlot == 1 &&
+                        replicaDao
+                            .findBootstrapSessionWithActiveSlot()
+                            ?.bootstrapId == durableBootstrapId &&
+                        existingReceipt.state == "staged" &&
+                        existingReceipt.appliedAtUtc == null,
+                    "bootstrap_receipt_drift",
+                    "Staging bootstrap replay has a non-staged receipt",
+                )
+
+                "complete" -> {
+                    requireReplica(
+                        session.activeSlot == null &&
+                            existingReceipt.state == "applied" &&
+                            existingReceipt.appliedAtUtc ==
+                            session.updatedAtUtc,
+                        "bootstrap_receipt_drift",
+                        "Completed bootstrap replay has a non-applied receipt",
+                    )
+                    verifyMaterializedReplay(decodedPage)
+                }
+
+                else -> throw ReplicaIntegrityException(
+                    errorCode = "bootstrap_session_binding_drift",
+                    message = "Bootstrap page replay has no durable active state",
+                )
+            }
+            return
+        }
+        validateBootstrapSessionContinuation(
+            session = session,
+            receipt = receipt,
+            changes = changes,
+        )
+        requireReplica(
+            replicaDao.findPageReceipt(receipt.pageId) == null &&
+                replicaDao.findPageReceiptByRequest(
+                    receipt.endpointId,
+                    receipt.requestIdentity,
+                ) == null,
+            "bootstrap_page_collision",
+            "Bootstrap page or request identity is already claimed",
+        )
+        reserveBootstrapCursorLineage(
+            lineageId = durableBootstrapId,
+            receipt = receipt,
+        )
+
+        val priorChanges = replicaDao.findStagedChanges(durableBootstrapId)
+            .map(ReplicaChangePersistence::from)
+        validateTopology(
+            (priorChanges + changes).map(replicaCodec::decode),
+            ReplicaTopologyState(),
+        )
+        try {
+            stageBootstrapPageInCurrentTransaction(
+                receipt = receipt,
+                changes = changes,
+                responseBodyBytes = response.exactResponseBody.size.toLong(),
+            )
+        } catch (error: ReplicaIntegrityException) {
+            throw error
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Exception) {
+            throw ReplicaIntegrityException(
+                errorCode = "bootstrap_shadow_drift",
+                message = "Bootstrap page could not advance the shadow atomically",
+                cause = error,
+            )
+        }
+
+        if (receipt.completeOrHasMore) {
+            promoteBootstrapSnapshot(
+                bootstrapId = durableBootstrapId,
+                response = response,
+                stream = stream,
+            )
+        } else {
+            val advancedSession = requireReplicaValue(
+                replicaDao.findBootstrapSession(durableBootstrapId),
+                "bootstrap_session_missing",
+                "Advanced bootstrap staging session is missing",
+            )
+            val continuation = checkNotNull(continuationFactory)(advancedSession)
+            verifyBootstrapRequestBinding(
+                request = continuation,
+                session = advancedSession,
+                expectedPageCursor = receipt.nextCursor,
+            )
+            val currentAuth = requireReplicaValue(
+                authDao.findState(),
+                "auth_state_missing",
+                "Protected bootstrap continuation has no credential family",
+            )
+            requireReplica(
+                advancedSession.state == "staging" &&
+                    advancedSession.activeSlot == 1 &&
+                    advancedSession.nextPageCursor == receipt.nextCursor &&
+                    currentAuth.credentialEpochId ==
+                    advancedSession.credentialEpochId &&
+                    currentAuth.deviceId == advancedSession.deviceId &&
+                    currentAuth.state in setOf("active", "refresh_in_flight") &&
+                    currentAuth.bootstrapRequired &&
+                    continuation.state == "ready" &&
+                    continuation.attemptCount == 0 &&
+                    checkNotNull(continuation.accessGenerationUsed) <=
+                    currentAuth.generation &&
+                    transportDao.findOpenBootstrapRequestKeys(
+                        credentialEpochId = advancedSession.credentialEpochId,
+                        deviceId = advancedSession.deviceId,
+                    ).isEmpty(),
+                "bootstrap_continuation_binding_drift",
+                "Protected bootstrap continuation does not bind the advanced shadow",
+            )
+            transportDao.insertRequest(continuation)
         }
     }
 
@@ -525,153 +572,11 @@ class SyncPersistenceStore(
         var streamBinding: SyncStreamStateEntity? = null
         try {
             database.withTransaction {
-                requireReplica(
-                    response.endpointId == PULL_ENDPOINT &&
-                        receipt.endpointId == response.endpointId &&
-                        receipt.requestIdentity == response.requestIdentity &&
-                        receipt.receivedAtUtc == response.terminalAtUtc &&
-                        receipt.appliedAtUtc == response.terminalAtUtc,
-                    "pull_receipt_drift",
-                    "Pull receipt does not bind to its terminal response",
-                )
-                val request = requireReplicaValue(
-                    transportDao.findRequest(
-                        response.endpointId,
-                        response.requestIdentity,
-                    ),
-                    "sync_request_missing",
-                    "Durable sync request is missing",
-                )
-                if (isStaleAttemptCallback(request, response)) {
-                    return@withTransaction
-                }
-                val currentStream = replicaDao.findStreamState()
-                if (
-                    request.state != "terminal" &&
-                    (
-                        currentStream == null ||
-                            request.credentialEpochId != currentStream.credentialEpochId ||
-                            request.deviceId != currentStream.deviceId
-                        )
-                ) {
-                    return@withTransaction
-                }
-                val stream = requireReplicaValue(
-                    currentStream,
-                    "sync_stream_missing",
-                    "Sync stream state is missing",
-                )
-                requireReplica(
-                    request.credentialEpochId == stream.credentialEpochId &&
-                        request.deviceId == stream.deviceId,
-                    "sync_request_binding_drift",
-                    "Durable request no longer belongs to the active sync stream",
-                )
-                if (
-                    request.state != "terminal" &&
-                    !requestStore.preflightFreshResponseRequestMetadata(
-                        request,
-                        response.terminalAtUtc,
-                    )
-                ) {
-                    return@withTransaction
-                }
-                streamBinding = stream
-                validatePullPageShape(receipt, changes)
-                val decodedPage = changes.map(replicaCodec::decode)
-                decodedPage.forEach { change ->
-                    verifyServerReceiptOverlap(change)
-                }
-
-                val installedResponse = installOrVerifyTerminalResponse(response)
-                if (!installedResponse) {
-                    val existingReceipt = verifyPageReceiptReplay(receipt)
-                    val retainedTerminalAtUtc = requireReplicaValue(
-                        request.terminalAtUtc,
-                        "pull_receipt_drift",
-                        "Pull replay lost its first terminal timestamp",
-                    )
-                    requireReplica(
-                        existingReceipt.state == "applied" &&
-                            existingReceipt.receivedAtUtc == retainedTerminalAtUtc &&
-                            existingReceipt.appliedAtUtc == retainedTerminalAtUtc,
-                        "pull_receipt_drift",
-                        "Pull replay has a non-applied durable receipt",
-                    )
-                    verifyMaterializedReplay(decodedPage)
-                    return@withTransaction
-                }
-                requireReplica(
-                    stream.integrityErrorCode == null,
-                    "sync_integrity_already_halted",
-                    "Incremental sync is already halted",
-                )
-                requireReplica(
-                    !stream.bootstrapRequired &&
-                        stream.phase in setOf("incremental", "pulling"),
-                    "bootstrap_required",
-                    "Pull cannot bypass an explicit bootstrap requirement",
-                )
-                requireReplica(
-                    replicaDao.findBootstrapSessionWithActiveSlot() == null,
-                    "pull_during_bootstrap",
-                    "Pull cannot apply while bootstrap staging is active",
-                )
-                requireReplica(
-                    receipt.fromCursor == stream.appliedCursor &&
-                        (
-                            changes.isEmpty() ||
-                                changes.first().serverSequence >
-                                stream.lastAppliedServerSequence
-                            ),
-                    "pull_cursor_invalid",
-                    "Pull page does not continue the committed stream position",
-                )
-                requireReplica(
-                    replicaDao.findPageReceipt(receipt.pageId) == null &&
-                        replicaDao.findPageReceiptByRequest(
-                            receipt.endpointId,
-                            receipt.requestIdentity,
-                        ) == null,
-                    "pull_page_collision",
-                    "Pull page or request identity is already claimed",
-                )
-
-                val topology = buildAppliedTopology(stream.lastAppliedServerSequence)
-                verifyExistingPullCoverage(
-                    exclusiveServerSequence = stream.lastAppliedServerSequence,
-                    incoming = decodedPage,
-                )
-                validateTopology(decodedPage, topology)
-                replicaDao.insertPageReceipt(receipt)
-                decodedPage.forEach { change ->
-                    materializeReplicaChange(
-                        change = change,
-                        endpointId = response.endpointId,
-                        requestIdentity = response.requestIdentity,
-                        verifiedAtUtc = response.terminalAtUtc,
-                    )
-                }
-                val nextLastSequence =
-                    changes.lastOrNull()?.serverSequence
-                        ?: stream.lastAppliedServerSequence
-                requireReplica(
-                    replicaDao.compareAndAdvanceCursor(
-                        credentialEpochId = stream.credentialEpochId,
-                        deviceId = stream.deviceId,
-                        expectedCursor = stream.appliedCursor,
-                        expectedServerSequence = stream.lastAppliedServerSequence,
-                        nextCursor = requireReplicaValue(
-                            receipt.nextCursor,
-                            "pull_cursor_invalid",
-                            "Pull receipt has no next cursor",
-                        ),
-                        lastServerSequence = nextLastSequence,
-                        nextPhase = if (receipt.completeOrHasMore) "pulling" else "incremental",
-                        updatedAtUtc = response.terminalAtUtc,
-                    ) == 1,
-                    "pull_cursor_cas_failed",
-                    "Pull data and cursor could not advance together",
+                commitPullPageCore(
+                    response = response,
+                    receipt = receipt,
+                    changes = changes,
+                    verifiedStreamObserver = { streamBinding = it },
                 )
             }
         } catch (error: ReplicaIntegrityException) {
@@ -682,6 +587,188 @@ class SyncPersistenceStore(
             )
             throw error
         }
+    }
+
+    internal suspend fun commitPullPageInCurrentTransaction(
+        response: TerminalHttpResponsePersistence,
+        receipt: SyncPageReceiptEntity,
+        changes: List<ReplicaChangePersistence>,
+    ) {
+        check(database.inTransaction()) {
+            "Pull page reduction requires an outer transaction"
+        }
+        commitPullPageCore(
+            response = response,
+            receipt = receipt,
+            changes = changes,
+        )
+    }
+
+    private suspend fun commitPullPageCore(
+        response: TerminalHttpResponsePersistence,
+        receipt: SyncPageReceiptEntity,
+        changes: List<ReplicaChangePersistence>,
+        verifiedStreamObserver: (SyncStreamStateEntity) -> Unit = {},
+    ) {
+        requireReplica(
+            response.endpointId == PULL_ENDPOINT &&
+                receipt.endpointId == response.endpointId &&
+                receipt.requestIdentity == response.requestIdentity &&
+                receipt.receivedAtUtc == response.terminalAtUtc &&
+                receipt.appliedAtUtc == response.terminalAtUtc,
+            "pull_receipt_drift",
+            "Pull receipt does not bind to its terminal response",
+        )
+        val request = requireReplicaValue(
+            transportDao.findRequest(
+                response.endpointId,
+                response.requestIdentity,
+            ),
+            "sync_request_missing",
+            "Durable sync request is missing",
+        )
+        if (isStaleAttemptCallback(request, response)) {
+            return
+        }
+        val currentStream = replicaDao.findStreamState()
+        if (
+            request.state != "terminal" &&
+            (
+                currentStream == null ||
+                    request.credentialEpochId != currentStream.credentialEpochId ||
+                    request.deviceId != currentStream.deviceId
+                )
+        ) {
+            return
+        }
+        val stream = requireReplicaValue(
+            currentStream,
+            "sync_stream_missing",
+            "Sync stream state is missing",
+        )
+        requireReplica(
+            request.credentialEpochId == stream.credentialEpochId &&
+                request.deviceId == stream.deviceId,
+            "sync_request_binding_drift",
+            "Durable request no longer belongs to the active sync stream",
+        )
+        if (
+            request.state != "terminal" &&
+            !requestStore.preflightFreshResponseRequestMetadata(
+                request,
+                response.terminalAtUtc,
+            )
+        ) {
+            return
+        }
+        verifiedStreamObserver(stream)
+        validatePullPageShape(receipt, changes)
+        val decodedPage = changes.map(replicaCodec::decode)
+        decodedPage.forEach { change ->
+            verifyServerReceiptOverlap(change)
+        }
+
+        val installedResponse = installOrVerifyTerminalResponse(response)
+        if (!installedResponse) {
+            val existingReceipt = verifyPageReceiptReplay(receipt)
+            val retainedTerminalAtUtc = requireReplicaValue(
+                request.terminalAtUtc,
+                "pull_receipt_drift",
+                "Pull replay lost its first terminal timestamp",
+            )
+            requireReplica(
+                existingReceipt.state == "applied" &&
+                    existingReceipt.receivedAtUtc == retainedTerminalAtUtc &&
+                    existingReceipt.appliedAtUtc == retainedTerminalAtUtc,
+                "pull_receipt_drift",
+                "Pull replay has a non-applied durable receipt",
+            )
+            verifyMaterializedReplay(decodedPage)
+            return
+        }
+        requireReplica(
+            stream.integrityErrorCode == null,
+            "sync_integrity_already_halted",
+            "Incremental sync is already halted",
+        )
+        requireReplica(
+            !stream.bootstrapRequired &&
+                stream.phase in setOf("incremental", "pulling"),
+            "bootstrap_required",
+            "Pull cannot bypass an explicit bootstrap requirement",
+        )
+        requireReplica(
+            replicaDao.findBootstrapSessionWithActiveSlot() == null,
+            "pull_during_bootstrap",
+            "Pull cannot apply while bootstrap staging is active",
+        )
+        requireReplica(
+            receipt.fromCursor == stream.appliedCursor &&
+                (
+                    changes.isEmpty() ||
+                        changes.first().serverSequence >
+                        stream.lastAppliedServerSequence
+                    ),
+            "pull_cursor_invalid",
+            "Pull page does not continue the committed stream position",
+        )
+        val replicaLineageId = requireReplicaValue(
+            stream.replicaLineageId,
+            "pull_cursor_invalid",
+            "Pull stream has no authoritative cursor lineage",
+        )
+        reservePullCursorLineage(
+            lineageId = replicaLineageId,
+            receipt = receipt,
+            changes = changes,
+        )
+        requireReplica(
+            replicaDao.findPageReceipt(receipt.pageId) == null &&
+                replicaDao.findPageReceiptByRequest(
+                    receipt.endpointId,
+                    receipt.requestIdentity,
+                ) == null,
+            "pull_page_collision",
+            "Pull page or request identity is already claimed",
+        )
+
+        val topology = buildAppliedTopology(stream.lastAppliedServerSequence)
+        verifyExistingPullCoverage(
+            exclusiveServerSequence = stream.lastAppliedServerSequence,
+            incoming = decodedPage,
+        )
+        validateTopology(decodedPage, topology)
+        replicaDao.insertPageReceipt(receipt)
+        decodedPage.forEach { change ->
+            materializeReplicaChange(
+                change = change,
+                endpointId = response.endpointId,
+                requestIdentity = response.requestIdentity,
+                verifiedAtUtc = response.terminalAtUtc,
+            )
+        }
+        val nextLastSequence =
+            changes.lastOrNull()?.serverSequence
+                ?: stream.lastAppliedServerSequence
+        requireReplica(
+            replicaDao.compareAndAdvanceCursor(
+                credentialEpochId = stream.credentialEpochId,
+                deviceId = stream.deviceId,
+                replicaLineageId = replicaLineageId,
+                expectedCursor = stream.appliedCursor,
+                expectedServerSequence = stream.lastAppliedServerSequence,
+                nextCursor = requireReplicaValue(
+                    receipt.nextCursor,
+                    "pull_cursor_invalid",
+                    "Pull receipt has no next cursor",
+                ),
+                lastServerSequence = nextLastSequence,
+                nextPhase = if (receipt.completeOrHasMore) "pulling" else "incremental",
+                updatedAtUtc = response.terminalAtUtc,
+            ) == 1,
+            "pull_cursor_cas_failed",
+            "Pull data and cursor could not advance together",
+        )
     }
 
     /**
@@ -721,181 +808,12 @@ class SyncPersistenceStore(
         var streamBinding: SyncStreamStateEntity? = null
         try {
             database.withTransaction {
-                val request = requireReplicaValue(
-                    transportDao.findRequest(response.endpointId, response.requestIdentity),
-                    "bootstrap_request_missing",
-                    "Expired bootstrap request is missing",
-                )
-                if (isStaleAttemptCallback(request, response)) {
-                    return@withTransaction
-                }
-                val session = requireReplicaValue(
-                    replicaDao.findBootstrapSession(bootstrapId),
-                    "bootstrap_session_missing",
-                    "Expired bootstrap session is missing",
-                )
-                if (request.state == "terminal") {
-                    requireReplica(
-                        !installOrVerifyTerminalResponse(response),
-                        "bootstrap_expiry_replay_drift",
-                        "Expired bootstrap replay unexpectedly reinstalled its response",
-                    )
-                    val retainedTerminalAtUtc = requireReplicaValue(
-                        request.terminalAtUtc,
-                        "bootstrap_expiry_replay_drift",
-                        "Expired bootstrap replay lost its first terminal timestamp",
-                    )
-                    verifyBootstrapExpiryReplay(
-                        response = response,
-                        session = session,
-                        retainedTerminalAtUtc = retainedTerminalAtUtc,
-                    )
-                    return@withTransaction
-                }
-                val activeSession = replicaDao.findBootstrapSessionWithActiveSlot()
-                if (
-                    session.state != "staging" ||
-                    session.activeSlot != 1 ||
-                    activeSession?.bootstrapId != bootstrapId
-                ) {
-                    // A callback for a superseded shadow is a legitimate late
-                    // arrival. It must not authenticate its old candidate
-                    // against the replacement session or halt the new stream.
-                    return@withTransaction
-                }
-                val stream = replicaDao.findStreamState() ?: return@withTransaction
-                val currentAuth = authDao.findState() ?: return@withTransaction
-                if (
-                    request.credentialEpochId != session.credentialEpochId ||
-                    request.deviceId != session.deviceId ||
-                    stream.credentialEpochId != session.credentialEpochId ||
-                    stream.deviceId != session.deviceId ||
-                    currentAuth.credentialEpochId != session.credentialEpochId ||
-                    currentAuth.deviceId != session.deviceId ||
-                    currentAuth.state !in setOf("active", "refresh_in_flight")
-                ) {
-                    return@withTransaction
-                }
-                if (
-                    !requestStore.preflightFreshResponseRequestMetadata(
-                        request,
-                        response.terminalAtUtc,
-                    )
-                ) {
-                    return@withTransaction
-                }
-                if (!existingCandidateVerifier(session)) {
-                    return@withTransaction
-                }
-                verifyBootstrapRequestBinding(
-                    request = request,
-                    session = session,
-                    expectedPageCursor = session.nextPageCursor,
-                )
-                streamBinding = stream
-                requireReplica(
-                    installOrVerifyTerminalResponse(response),
-                    "bootstrap_expiry_replay_drift",
-                    "Fresh expired bootstrap response was not installed",
-                )
-                val stagedChangeCount =
-                    replicaDao.countStagedBootstrapChanges(bootstrapId)
-                requireReplica(
-                    replicaDao.deleteStagedBootstrapChanges(bootstrapId) ==
-                        stagedChangeCount,
-                    "bootstrap_expiry_staging_drift",
-                    "Expired bootstrap did not discard every staged change",
-                )
-                requireReplica(
-                    replicaDao.deleteStagedBootstrapReceipts(bootstrapId) ==
-                        session.stagedPageCount,
-                    "bootstrap_expiry_staging_drift",
-                    "Expired bootstrap did not discard every staged page",
-                )
-                requireReplica(
-                    replicaDao.countStagedBootstrapChanges(bootstrapId) == 0,
-                    "bootstrap_expiry_staging_drift",
-                    "Expired bootstrap retained staged changes",
-                )
-                val expiryReceipt = bootstrapExpiryReceipt(response, session)
-                requireReplica(
-                    replicaDao.findPageReceipt(expiryReceipt.pageId) == null &&
-                        replicaDao.findPageReceiptByRequest(
-                            expiryReceipt.endpointId,
-                            expiryReceipt.requestIdentity,
-                        ) == null,
-                    "bootstrap_expiry_receipt_collision",
-                    "Expired bootstrap receipt identity is already claimed",
-                )
-                replicaDao.insertPageReceipt(expiryReceipt)
-                requireReplica(
-                    replicaDao.markBootstrapExpired(
-                        bootstrapId = bootstrapId,
-                        credentialEpochId = request.credentialEpochId,
-                        deviceId = request.deviceId,
-                        updatedAtUtc = response.terminalAtUtc,
-                    ) == 1,
-                    "bootstrap_expiry_binding_drift",
-                    "Expired bootstrap shadow could not retain its terminal binding",
-                )
-                requireReplica(
-                    replicaDao.requireBootstrap(
-                        credentialEpochId = request.credentialEpochId,
-                        deviceId = request.deviceId,
-                        updatedAtUtc = response.terminalAtUtc,
-                    ) == 1,
-                    "sync_stream_missing",
-                    "Expired bootstrap could not restore bootstrap-required phase",
-                )
-                requireReplica(
-                    authDao.setBootstrapRequired(
-                        credentialEpochId = request.credentialEpochId,
-                        deviceId = request.deviceId,
-                        bootstrapRequired = true,
-                        updatedAtUtc = response.terminalAtUtc,
-                    ) == 1,
-                    "auth_stream_binding_drift",
-                    "Expired bootstrap could not gate its credential family",
-                )
-                val replacementIntent = replacementFactory()
-                validateBootstrapIntent(replacementIntent)
-                val replacementAuth = requireReplicaValue(
-                    authDao.findState(),
-                    "auth_state_missing",
-                    "Replacement bootstrap has no credential family",
-                )
-                requireReplica(
-                    replacementIntent.session.credentialEpochId ==
-                        request.credentialEpochId &&
-                        replacementIntent.session.deviceId == request.deviceId &&
-                        replacementAuth.credentialEpochId == request.credentialEpochId &&
-                        replacementAuth.deviceId == request.deviceId &&
-                        replacementAuth.state in setOf("active", "refresh_in_flight") &&
-                        replacementAuth.bootstrapRequired &&
-                        checkNotNull(replacementIntent.firstRequest.accessGenerationUsed) <=
-                        replacementAuth.generation,
-                    "bootstrap_replacement_binding_drift",
-                    "Replacement bootstrap intent belongs to another stream",
-                )
-                val retainedRequestIdentity =
-                    SyncRequestPersistenceStore(database)
-                        .installOrRetainBootstrapIntent(
-                            expectedCredentialEpochId =
-                                request.credentialEpochId,
-                            expectedDeviceId = request.deviceId,
-                            proposedIntent = replacementIntent,
-                            updatedAtUtc = response.terminalAtUtc,
-                        )
-                releaseOpenPushBatchesForBootstrap(
-                    credentialEpochId = request.credentialEpochId,
-                    deviceId = request.deviceId,
-                )
-                transportDao.invalidateSupersededSyncRequests(
-                    credentialEpochId = request.credentialEpochId,
-                    deviceId = request.deviceId,
-                    retainedBootstrapRequestIdentity =
-                        retainedRequestIdentity,
-                    terminalAtUtc = response.terminalAtUtc,
+                commitBootstrapCursorExpiredCore(
+                    response = response,
+                    bootstrapId = bootstrapId,
+                    replacementFactory = replacementFactory,
+                    existingCandidateVerifier = existingCandidateVerifier,
+                    verifiedStreamObserver = { streamBinding = it },
                 )
             }
         } catch (error: ReplicaIntegrityException) {
@@ -908,6 +826,210 @@ class SyncPersistenceStore(
         }
     }
 
+    internal suspend fun commitBootstrapCursorExpiredInCurrentTransaction(
+        response: TerminalHttpResponsePersistence,
+        bootstrapId: String,
+        replacementFactory: suspend () -> BootstrapIntentPersistence,
+        existingCandidateVerifier: suspend (SyncBootstrapSessionEntity) -> Boolean = { true },
+    ) {
+        check(database.inTransaction()) {
+            "Bootstrap expiry reduction requires an outer transaction"
+        }
+        require(response.endpointId == BOOTSTRAP_ENDPOINT)
+        require(response.terminalErrorCode == CURSOR_EXPIRED)
+        commitBootstrapCursorExpiredCore(
+            response = response,
+            bootstrapId = bootstrapId,
+            replacementFactory = replacementFactory,
+            existingCandidateVerifier = existingCandidateVerifier,
+        )
+    }
+
+    private suspend fun commitBootstrapCursorExpiredCore(
+        response: TerminalHttpResponsePersistence,
+        bootstrapId: String,
+        replacementFactory: suspend () -> BootstrapIntentPersistence,
+        existingCandidateVerifier: suspend (SyncBootstrapSessionEntity) -> Boolean,
+        verifiedStreamObserver: (SyncStreamStateEntity) -> Unit = {},
+    ) {
+        val request = requireReplicaValue(
+            transportDao.findRequest(response.endpointId, response.requestIdentity),
+            "bootstrap_request_missing",
+            "Expired bootstrap request is missing",
+        )
+        if (isStaleAttemptCallback(request, response)) {
+            return
+        }
+        val session = requireReplicaValue(
+            replicaDao.findBootstrapSession(bootstrapId),
+            "bootstrap_session_missing",
+            "Expired bootstrap session is missing",
+        )
+        if (request.state == "terminal") {
+            requireReplica(
+                !installOrVerifyTerminalResponse(response),
+                "bootstrap_expiry_replay_drift",
+                "Expired bootstrap replay unexpectedly reinstalled its response",
+            )
+            val retainedTerminalAtUtc = requireReplicaValue(
+                request.terminalAtUtc,
+                "bootstrap_expiry_replay_drift",
+                "Expired bootstrap replay lost its first terminal timestamp",
+            )
+            verifyBootstrapExpiryReplay(
+                response = response,
+                session = session,
+                retainedTerminalAtUtc = retainedTerminalAtUtc,
+            )
+            return
+        }
+        val activeSession = replicaDao.findBootstrapSessionWithActiveSlot()
+        if (
+            session.state != "staging" ||
+            session.activeSlot != 1 ||
+            activeSession?.bootstrapId != bootstrapId
+        ) {
+            // A callback for a superseded shadow is a legitimate late
+            // arrival. It must not authenticate its old candidate
+            // against the replacement session or halt the new stream.
+            return
+        }
+        val stream = replicaDao.findStreamState() ?: return
+        val currentAuth = authDao.findState() ?: return
+        if (
+            request.credentialEpochId != session.credentialEpochId ||
+            request.deviceId != session.deviceId ||
+            stream.credentialEpochId != session.credentialEpochId ||
+            stream.deviceId != session.deviceId ||
+            currentAuth.credentialEpochId != session.credentialEpochId ||
+            currentAuth.deviceId != session.deviceId ||
+            currentAuth.state !in setOf("active", "refresh_in_flight")
+        ) {
+            return
+        }
+        if (
+            !requestStore.preflightFreshResponseRequestMetadata(
+                request,
+                response.terminalAtUtc,
+            )
+        ) {
+            return
+        }
+        if (!existingCandidateVerifier(session)) {
+            return
+        }
+        verifyBootstrapRequestBinding(
+            request = request,
+            session = session,
+            expectedPageCursor = session.nextPageCursor,
+        )
+        verifiedStreamObserver(stream)
+        requireReplica(
+            installOrVerifyTerminalResponse(response),
+            "bootstrap_expiry_replay_drift",
+            "Fresh expired bootstrap response was not installed",
+        )
+        val stagedChangeCount =
+            replicaDao.countStagedBootstrapChanges(bootstrapId)
+        requireReplica(
+            replicaDao.deleteStagedBootstrapChanges(bootstrapId) ==
+                stagedChangeCount,
+            "bootstrap_expiry_staging_drift",
+            "Expired bootstrap did not discard every staged change",
+        )
+        requireReplica(
+            replicaDao.deleteStagedBootstrapReceipts(bootstrapId) ==
+                session.stagedPageCount,
+            "bootstrap_expiry_staging_drift",
+            "Expired bootstrap did not discard every staged page",
+        )
+        requireReplica(
+            replicaDao.countStagedBootstrapChanges(bootstrapId) == 0,
+            "bootstrap_expiry_staging_drift",
+            "Expired bootstrap retained staged changes",
+        )
+        val expiryReceipt = bootstrapExpiryReceipt(response, session)
+        requireReplica(
+            replicaDao.findPageReceipt(expiryReceipt.pageId) == null &&
+                replicaDao.findPageReceiptByRequest(
+                    expiryReceipt.endpointId,
+                    expiryReceipt.requestIdentity,
+                ) == null,
+            "bootstrap_expiry_receipt_collision",
+            "Expired bootstrap receipt identity is already claimed",
+        )
+        replicaDao.insertPageReceipt(expiryReceipt)
+        requireReplica(
+            replicaDao.markBootstrapExpired(
+                bootstrapId = bootstrapId,
+                credentialEpochId = request.credentialEpochId,
+                deviceId = request.deviceId,
+                updatedAtUtc = response.terminalAtUtc,
+            ) == 1,
+            "bootstrap_expiry_binding_drift",
+            "Expired bootstrap shadow could not retain its terminal binding",
+        )
+        requireReplica(
+            replicaDao.requireBootstrap(
+                credentialEpochId = request.credentialEpochId,
+                deviceId = request.deviceId,
+                updatedAtUtc = response.terminalAtUtc,
+            ) == 1,
+            "sync_stream_missing",
+            "Expired bootstrap could not restore bootstrap-required phase",
+        )
+        requireReplica(
+            authDao.setBootstrapRequired(
+                credentialEpochId = request.credentialEpochId,
+                deviceId = request.deviceId,
+                bootstrapRequired = true,
+                updatedAtUtc = response.terminalAtUtc,
+            ) == 1,
+            "auth_stream_binding_drift",
+            "Expired bootstrap could not gate its credential family",
+        )
+        val replacementIntent = replacementFactory()
+        validateBootstrapIntent(replacementIntent)
+        val replacementAuth = requireReplicaValue(
+            authDao.findState(),
+            "auth_state_missing",
+            "Replacement bootstrap has no credential family",
+        )
+        requireReplica(
+            replacementIntent.session.credentialEpochId ==
+                request.credentialEpochId &&
+                replacementIntent.session.deviceId == request.deviceId &&
+                replacementAuth.credentialEpochId == request.credentialEpochId &&
+                replacementAuth.deviceId == request.deviceId &&
+                replacementAuth.state in setOf("active", "refresh_in_flight") &&
+                replacementAuth.bootstrapRequired &&
+                checkNotNull(replacementIntent.firstRequest.accessGenerationUsed) <=
+                replacementAuth.generation,
+            "bootstrap_replacement_binding_drift",
+            "Replacement bootstrap intent belongs to another stream",
+        )
+        val retainedRequestIdentity =
+            SyncRequestPersistenceStore(database)
+                .installOrRetainBootstrapIntent(
+                    expectedCredentialEpochId =
+                        request.credentialEpochId,
+                    expectedDeviceId = request.deviceId,
+                    proposedIntent = replacementIntent,
+                    updatedAtUtc = response.terminalAtUtc,
+                )
+        releaseOpenPushBatchesForBootstrap(
+            credentialEpochId = request.credentialEpochId,
+            deviceId = request.deviceId,
+        )
+        transportDao.invalidateSupersededSyncRequests(
+            credentialEpochId = request.credentialEpochId,
+            deviceId = request.deviceId,
+            retainedBootstrapRequestIdentity =
+                retainedRequestIdentity,
+            terminalAtUtc = response.terminalAtUtc,
+        )
+    }
+
     /**
      * cursor_invalid is a protocol-integrity failure, never an automatic
      * bootstrap recovery signal.
@@ -918,170 +1040,9 @@ class SyncPersistenceStore(
         var streamBinding: SyncStreamStateEntity? = null
         try {
             database.withTransaction {
-                val request = requireReplicaValue(
-                    transportDao.findRequest(response.endpointId, response.requestIdentity),
-                    "sync_request_missing",
-                    "Cursor-invalid request is missing",
-                )
-                if (request.state == "terminal") {
-                    val stream = replicaDao.findStreamState()
-                    val activeStream = stream?.takeIf {
-                        request.credentialEpochId == it.credentialEpochId &&
-                            request.deviceId == it.deviceId
-                    }
-                    val activeBinding =
-                        if (
-                            response.endpointId == BOOTSTRAP_ENDPOINT &&
-                            activeStream != null
-                        ) {
-                            val requestBody = bootstrapRequestBody(request)
-                            val bootstrapId = bootstrapRequestString(
-                                requestBody,
-                                "bootstrap_id",
-                            )
-                            val session = replicaDao.findBootstrapSession(bootstrapId)
-                            if (
-                                session != null &&
-                                session.state == "staging" &&
-                                session.activeSlot == 1 &&
-                                replicaDao
-                                    .findBootstrapSessionWithActiveSlot()
-                                    ?.bootstrapId == bootstrapId
-                            ) {
-                                streamBinding = activeStream
-                                verifyBootstrapRequestBinding(
-                                    request = request,
-                                    session = session,
-                                    expectedPageCursor = session.nextPageCursor,
-                                )
-                                activeStream
-                            } else {
-                                streamBinding = null
-                                null
-                            }
-                        } else {
-                            streamBinding = activeStream
-                            activeStream
-                        }
-                    requireReplica(
-                        !installOrVerifyTerminalResponse(response),
-                        "terminal_response_drift",
-                        "Cursor-invalid replay unexpectedly replaced its receipt",
-                    )
-                    if (activeBinding != null) {
-                        requireReplica(
-                            activeBinding.phase == "integrity_halted" &&
-                                activeBinding.integrityErrorCode == CURSOR_INVALID,
-                            CURSOR_INVALID,
-                            "Cursor-invalid replay lost its durable stream halt",
-                        )
-                    }
-                    return@withTransaction
-                }
-                if (isStaleAttemptCallback(request, response)) {
-                    return@withTransaction
-                }
-                val stream = replicaDao.findStreamState()
-                if (response.endpointId == BOOTSTRAP_ENDPOINT) {
-                    val tentativeStream = stream?.takeIf {
-                        request.credentialEpochId == it.credentialEpochId &&
-                            request.deviceId == it.deviceId
-                    }
-                    streamBinding = tentativeStream
-                    if (tentativeStream == null) {
-                        streamBinding = null
-                        requireReplica(
-                            transportDao.markSupersededBootstrapRequest(
-                                requestIdentity = request.requestIdentity,
-                                credentialEpochId = request.credentialEpochId,
-                                deviceId = request.deviceId,
-                                expectedAttemptId = response.expectedAttemptId,
-                                terminalAtUtc = response.terminalAtUtc,
-                            ) == 1,
-                            "bootstrap_supersession_drift",
-                            "Historical bootstrap request lost its terminal CAS",
-                        )
-                        return@withTransaction
-                    }
-                    val requestBody = bootstrapRequestBody(request)
-                    val bootstrapId = bootstrapRequestString(
-                        requestBody,
-                        "bootstrap_id",
-                    )
-                    val session = replicaDao.findBootstrapSession(bootstrapId)
-                    if (
-                        session == null ||
-                        session.state != "staging" ||
-                        session.activeSlot != 1 ||
-                        replicaDao
-                            .findBootstrapSessionWithActiveSlot()
-                            ?.bootstrapId != bootstrapId
-                    ) {
-                        streamBinding = null
-                        requireReplica(
-                            transportDao.markSupersededBootstrapRequest(
-                                requestIdentity = request.requestIdentity,
-                                credentialEpochId = request.credentialEpochId,
-                                deviceId = request.deviceId,
-                                expectedAttemptId = response.expectedAttemptId,
-                                terminalAtUtc = response.terminalAtUtc,
-                            ) == 1,
-                            "bootstrap_supersession_drift",
-                            "Superseded bootstrap request lost its terminal CAS",
-                        )
-                        return@withTransaction
-                    }
-                    if (
-                        !requestStore.preflightFreshResponseRequestMetadata(
-                            request,
-                            response.terminalAtUtc,
-                        )
-                    ) {
-                        return@withTransaction
-                    }
-                    verifyBootstrapRequestBinding(
-                        request = request,
-                        session = session,
-                        expectedPageCursor = session.nextPageCursor,
-                    )
-                } else if (
-                    !requestStore.preflightFreshResponseRequestMetadata(
-                        request,
-                        response.terminalAtUtc,
-                    )
-                ) {
-                    return@withTransaction
-                }
-                val activeStream = requireReplicaValue(
-                    stream,
-                    "sync_stream_missing",
-                    "Cursor-invalid response has no active sync stream",
-                )
-                requireReplica(
-                    request.credentialEpochId == activeStream.credentialEpochId &&
-                        request.deviceId == activeStream.deviceId,
-                    "sync_request_binding_drift",
-                    "Cursor-invalid request no longer belongs to the active stream",
-                )
-                streamBinding = activeStream
-                if (!installOrVerifyTerminalResponse(response)) {
-                    requireReplica(
-                        activeStream.phase == "integrity_halted" &&
-                            activeStream.integrityErrorCode == CURSOR_INVALID,
-                        CURSOR_INVALID,
-                        "Cursor-invalid replay lost its durable stream halt",
-                    )
-                    return@withTransaction
-                }
-                requireReplica(
-                    replicaDao.markIntegrityHalted(
-                        credentialEpochId = request.credentialEpochId,
-                        deviceId = request.deviceId,
-                        errorCode = CURSOR_INVALID,
-                        updatedAtUtc = response.terminalAtUtc,
-                    ) == 1,
-                    "sync_stream_missing",
-                    "Cursor-invalid response could not halt the sync stream",
+                commitCursorInvalidCore(
+                    response = response,
+                    verifiedStreamObserver = { streamBinding = it },
                 )
             }
         } catch (error: ReplicaIntegrityException) {
@@ -1092,6 +1053,188 @@ class SyncPersistenceStore(
             )
             throw error
         }
+    }
+
+    internal suspend fun commitCursorInvalidInCurrentTransaction(
+        response: TerminalHttpResponsePersistence,
+    ) {
+        check(database.inTransaction()) {
+            "Cursor-invalid reduction requires an outer transaction"
+        }
+        require(response.endpointId == BOOTSTRAP_ENDPOINT || response.endpointId == PULL_ENDPOINT)
+        require(response.terminalErrorCode == CURSOR_INVALID)
+        commitCursorInvalidCore(response)
+    }
+
+    private suspend fun commitCursorInvalidCore(
+        response: TerminalHttpResponsePersistence,
+        verifiedStreamObserver: (SyncStreamStateEntity?) -> Unit = {},
+    ) {
+        val request = requireReplicaValue(
+            transportDao.findRequest(response.endpointId, response.requestIdentity),
+            "sync_request_missing",
+            "Cursor-invalid request is missing",
+        )
+        if (request.state == "terminal") {
+            val stream = replicaDao.findStreamState()
+            val activeStream = stream?.takeIf {
+                request.credentialEpochId == it.credentialEpochId &&
+                    request.deviceId == it.deviceId
+            }
+            val activeBinding =
+                if (
+                    response.endpointId == BOOTSTRAP_ENDPOINT &&
+                    activeStream != null
+                ) {
+                    val requestBody = bootstrapRequestBody(request)
+                    val bootstrapId = bootstrapRequestString(
+                        requestBody,
+                        "bootstrap_id",
+                    )
+                    val session = replicaDao.findBootstrapSession(bootstrapId)
+                    if (
+                        session != null &&
+                        session.state == "staging" &&
+                        session.activeSlot == 1 &&
+                        replicaDao
+                            .findBootstrapSessionWithActiveSlot()
+                            ?.bootstrapId == bootstrapId
+                    ) {
+                        verifiedStreamObserver(activeStream)
+                        verifyBootstrapRequestBinding(
+                            request = request,
+                            session = session,
+                            expectedPageCursor = session.nextPageCursor,
+                        )
+                        activeStream
+                    } else {
+                        verifiedStreamObserver(null)
+                        null
+                    }
+                } else {
+                    verifiedStreamObserver(activeStream)
+                    activeStream
+                }
+            requireReplica(
+                !installOrVerifyTerminalResponse(response),
+                "terminal_response_drift",
+                "Cursor-invalid replay unexpectedly replaced its receipt",
+            )
+            if (activeBinding != null) {
+                requireReplica(
+                    activeBinding.phase == "integrity_halted" &&
+                        activeBinding.integrityErrorCode == CURSOR_INVALID,
+                    CURSOR_INVALID,
+                    "Cursor-invalid replay lost its durable stream halt",
+                )
+            }
+            return
+        }
+        if (isStaleAttemptCallback(request, response)) {
+            return
+        }
+        val stream = replicaDao.findStreamState()
+        if (response.endpointId == BOOTSTRAP_ENDPOINT) {
+            val tentativeStream = stream?.takeIf {
+                request.credentialEpochId == it.credentialEpochId &&
+                    request.deviceId == it.deviceId
+            }
+            verifiedStreamObserver(tentativeStream)
+            if (tentativeStream == null) {
+                verifiedStreamObserver(null)
+                requireReplica(
+                    transportDao.markSupersededBootstrapRequest(
+                        requestIdentity = request.requestIdentity,
+                        credentialEpochId = request.credentialEpochId,
+                        deviceId = request.deviceId,
+                        expectedAttemptId = response.expectedAttemptId,
+                        terminalAtUtc = response.terminalAtUtc,
+                    ) == 1,
+                    "bootstrap_supersession_drift",
+                    "Historical bootstrap request lost its terminal CAS",
+                )
+                return
+            }
+            val requestBody = bootstrapRequestBody(request)
+            val bootstrapId = bootstrapRequestString(
+                requestBody,
+                "bootstrap_id",
+            )
+            val session = replicaDao.findBootstrapSession(bootstrapId)
+            if (
+                session == null ||
+                session.state != "staging" ||
+                session.activeSlot != 1 ||
+                replicaDao
+                    .findBootstrapSessionWithActiveSlot()
+                    ?.bootstrapId != bootstrapId
+            ) {
+                verifiedStreamObserver(null)
+                requireReplica(
+                    transportDao.markSupersededBootstrapRequest(
+                        requestIdentity = request.requestIdentity,
+                        credentialEpochId = request.credentialEpochId,
+                        deviceId = request.deviceId,
+                        expectedAttemptId = response.expectedAttemptId,
+                        terminalAtUtc = response.terminalAtUtc,
+                    ) == 1,
+                    "bootstrap_supersession_drift",
+                    "Superseded bootstrap request lost its terminal CAS",
+                )
+                return
+            }
+            if (
+                !requestStore.preflightFreshResponseRequestMetadata(
+                    request,
+                    response.terminalAtUtc,
+                )
+            ) {
+                return
+            }
+            verifyBootstrapRequestBinding(
+                request = request,
+                session = session,
+                expectedPageCursor = session.nextPageCursor,
+            )
+        } else if (
+            !requestStore.preflightFreshResponseRequestMetadata(
+                request,
+                response.terminalAtUtc,
+            )
+        ) {
+            return
+        }
+        val activeStream = requireReplicaValue(
+            stream,
+            "sync_stream_missing",
+            "Cursor-invalid response has no active sync stream",
+        )
+        requireReplica(
+            request.credentialEpochId == activeStream.credentialEpochId &&
+                request.deviceId == activeStream.deviceId,
+            "sync_request_binding_drift",
+            "Cursor-invalid request no longer belongs to the active stream",
+        )
+        verifiedStreamObserver(activeStream)
+        if (!installOrVerifyTerminalResponse(response)) {
+            requireReplica(
+                activeStream.phase == "integrity_halted" &&
+                    activeStream.integrityErrorCode == CURSOR_INVALID,
+                CURSOR_INVALID,
+                "Cursor-invalid replay lost its durable stream halt",
+            )
+            return
+        }
+        requireReplica(
+            replicaDao.markIntegrityHalted(
+                credentialEpochId = request.credentialEpochId,
+                deviceId = request.deviceId,
+                errorCode = CURSOR_INVALID,
+                updatedAtUtc = response.terminalAtUtc,
+            ) == 1,
+            "sync_stream_missing",
+            "Cursor-invalid response could not halt the sync stream",
+        )
     }
 
     private fun isStaleAttemptCallback(
@@ -1263,11 +1406,19 @@ class SyncPersistenceStore(
             )
         } else {
             requireReplica(
-                receipt.nextCursor != null && changes.isNotEmpty(),
+                receipt.nextCursor != null &&
+                    receipt.nextCursor != receipt.fromCursor &&
+                    changes.isNotEmpty(),
                 "bootstrap_cursor_invalid",
-                "An incomplete bootstrap page needs changes and a continuation cursor",
+                "An incomplete bootstrap page needs a new continuation cursor and changes",
             )
         }
+        requireReplica(
+            receipt.incrementalCursor != receipt.fromCursor &&
+                receipt.incrementalCursor != receipt.nextCursor,
+            "bootstrap_cursor_invalid",
+            "The incremental cursor cannot alias this page's pagination cursors",
+        )
         if (changes.isEmpty()) {
             requireReplica(
                 receipt.completeOrHasMore && receipt.nextCursor == null,
@@ -1283,9 +1434,26 @@ class SyncPersistenceStore(
         receipt: SyncPageReceiptEntity,
         changes: List<ReplicaChangePersistence>,
     ) {
+        val hasExactInitialMetadata =
+            session.nextPageIndex == 0 &&
+                session.stagedPageCount == 0 &&
+                session.stagedBodyBytes == 0L &&
+                session.snapshotId == null &&
+                session.nextPageCursor == null &&
+                session.candidateIncrementalCursor == null &&
+                session.lastStagedServerSequence == null
+        val hasExactProgressedMetadata =
+            session.nextPageIndex > 0 &&
+                session.nextPageIndex == session.stagedPageCount &&
+                session.stagedBodyBytes > 0L &&
+                session.snapshotId != null &&
+                session.nextPageCursor != null &&
+                session.candidateIncrementalCursor != null &&
+                session.lastStagedServerSequence != null
         requireReplica(
             session.state == "staging" &&
                 session.activeSlot == 1 &&
+                (hasExactInitialMetadata || hasExactProgressedMetadata) &&
                 session.nextPageIndex == receipt.pageIndex &&
                 session.nextPageCursor == receipt.fromCursor &&
                 (session.snapshotId == null || session.snapshotId == receipt.snapshotId) &&
@@ -1306,6 +1474,64 @@ class SyncPersistenceStore(
         )
     }
 
+    private suspend fun stageBootstrapPageInCurrentTransaction(
+        receipt: SyncPageReceiptEntity,
+        changes: List<ReplicaChangePersistence>,
+        responseBodyBytes: Long,
+    ) {
+        check(database.inTransaction()) {
+            "Bootstrap staging requires an outer transaction"
+        }
+        val bootstrapId = checkNotNull(receipt.bootstrapId)
+        val snapshotId = checkNotNull(receipt.snapshotId)
+        val incrementalCursor = checkNotNull(receipt.incrementalCursor)
+        require(receipt.state == "staged")
+        require(receipt.endpointId == BOOTSTRAP_ENDPOINT)
+        require(responseBodyBytes >= 0)
+        require(replicaDao.terminalRequestExists(receipt.endpointId, receipt.requestIdentity)) {
+            "Bootstrap page may only be staged from a terminal verified request"
+        }
+        require(receipt.changeCount == changes.size)
+        val sequences = changes.map { it.serverSequence }
+        require(sequences.zipWithNext().all { (previous, next) -> previous < next }) {
+            "Bootstrap page sequences must be strictly increasing"
+        }
+        if (changes.isEmpty()) {
+            require(receipt.firstServerSequence == null)
+            require(receipt.lastServerSequence == null)
+        } else {
+            require(receipt.firstServerSequence == sequences.first())
+            require(receipt.lastServerSequence == sequences.last())
+        }
+        replicaDao.insertPageReceipt(receipt)
+        if (changes.isNotEmpty()) {
+            replicaDao.insertStagedChanges(
+                changes.map {
+                    it.asStaged(
+                        bootstrapId = bootstrapId,
+                        pageId = receipt.pageId,
+                    )
+                },
+            )
+        }
+        check(
+            replicaDao.advanceBootstrapSession(
+                bootstrapId = bootstrapId,
+                expectedPageIndex = receipt.pageIndex,
+                expectedPageCursor = receipt.fromCursor,
+                snapshotId = snapshotId,
+                nextPageCursor = receipt.nextCursor,
+                incrementalCursor = incrementalCursor,
+                firstServerSequence = receipt.firstServerSequence,
+                lastServerSequence = receipt.lastServerSequence,
+                responseBodyBytes = responseBodyBytes,
+                updatedAtUtc = receipt.receivedAtUtc,
+            ) == 1,
+        ) {
+            "Bootstrap page does not continue the active staging session"
+        }
+    }
+
     private fun validatePullPageShape(
         receipt: SyncPageReceiptEntity,
         changes: List<ReplicaChangePersistence>,
@@ -1317,6 +1543,7 @@ class SyncPersistenceStore(
                 receipt.state == "applied" &&
                 receipt.appliedAtUtc != null &&
                 receipt.pageIndex >= 0 &&
+                receipt.fromCursor != null &&
                 receipt.nextCursor != null,
             "pull_receipt_invalid",
             "Pull receipt has an invalid durable state",
@@ -1374,6 +1601,133 @@ class SyncPersistenceStore(
                     receipt.lastServerSequence == changes.last().serverSequence,
                 "page_receipt_projection_drift",
                 "Page sequence bounds differ from the verified changes",
+            )
+        }
+    }
+
+    private suspend fun reserveBootstrapCursorLineage(
+        lineageId: String,
+        receipt: SyncPageReceiptEntity,
+    ) {
+        check(database.inTransaction()) {
+            "Bootstrap cursor reservation requires an outer transaction"
+        }
+        receipt.fromCursor?.let { fromCursor ->
+            requireReplica(
+                replicaDao.findReplicaCursor(lineageId, fromCursor)?.role ==
+                    SyncReplicaCursorEntity.ROLE_BOOTSTRAP_PAGE,
+                "bootstrap_cursor_invalid",
+                "Bootstrap page cursor is absent from its authoritative lineage",
+            )
+        }
+        val incrementalCursor = requireReplicaValue(
+            receipt.incrementalCursor,
+            "bootstrap_cursor_invalid",
+            "Bootstrap page has no incremental cursor",
+        )
+        receipt.nextCursor?.let { nextCursor ->
+            reserveNewReplicaCursor(
+                lineageId = lineageId,
+                cursorValue = nextCursor,
+                role = SyncReplicaCursorEntity.ROLE_BOOTSTRAP_PAGE,
+                errorCode = "bootstrap_cursor_invalid",
+            )
+        }
+        if (receipt.completeOrHasMore) {
+            reserveNewReplicaCursor(
+                lineageId = lineageId,
+                cursorValue = incrementalCursor,
+                role = SyncReplicaCursorEntity.ROLE_INCREMENTAL,
+                errorCode = "bootstrap_cursor_invalid",
+            )
+        } else {
+            requireReplica(
+                replicaDao.findReplicaCursor(lineageId, incrementalCursor) == null,
+                "bootstrap_cursor_invalid",
+                "Bootstrap incremental cursor aliases retained pagination history",
+            )
+        }
+    }
+
+    private suspend fun reservePullCursorLineage(
+        lineageId: String,
+        receipt: SyncPageReceiptEntity,
+        changes: List<ReplicaChangePersistence>,
+    ) {
+        check(database.inTransaction()) {
+            "Pull cursor reservation requires an outer transaction"
+        }
+        val fromCursor = requireReplicaValue(
+            receipt.fromCursor,
+            "pull_cursor_invalid",
+            "Pull page has no source cursor",
+        )
+        val retainedFrom = replicaDao.findReplicaCursor(lineageId, fromCursor)
+        requireReplica(
+            retainedFrom?.role == SyncReplicaCursorEntity.ROLE_INCREMENTAL,
+            "pull_cursor_invalid",
+            "Pull source cursor is absent from its authoritative lineage",
+        )
+        val retainedIncrementalCursorCount = replicaDao.countReplicaCursorsByRole(
+            lineageId = lineageId,
+            role = SyncReplicaCursorEntity.ROLE_INCREMENTAL,
+        )
+        requireReplica(
+            retainedIncrementalCursorCount > 0 &&
+                receipt.pageIndex == retainedIncrementalCursorCount - 1,
+            "pull_cursor_invalid",
+            "Pull page index differs from its authoritative cursor lineage",
+        )
+        val nextCursor = requireReplicaValue(
+            receipt.nextCursor,
+            "pull_cursor_invalid",
+            "Pull page has no next cursor",
+        )
+        if (changes.isEmpty()) {
+            requireReplica(
+                !receipt.completeOrHasMore && nextCursor == fromCursor,
+                "pull_cursor_invalid",
+                "Only an empty terminal pull may reuse its current cursor",
+            )
+            return
+        }
+        reserveNewReplicaCursor(
+            lineageId = lineageId,
+            cursorValue = nextCursor,
+            role = SyncReplicaCursorEntity.ROLE_INCREMENTAL,
+            errorCode = "pull_cursor_invalid",
+        )
+    }
+
+    private suspend fun reserveNewReplicaCursor(
+        lineageId: String,
+        cursorValue: String,
+        role: String,
+        errorCode: String,
+    ) {
+        requireReplica(
+            replicaDao.countReplicaCursor(lineageId, cursorValue) == 0 &&
+                replicaDao.findReplicaCursor(lineageId, cursorValue) == null,
+            errorCode,
+            "Replica cursor collides with retained lineage history",
+        )
+        try {
+            replicaDao.insertReplicaCursor(
+                SyncReplicaCursorEntity(
+                    lineageId = lineageId,
+                    cursorValue = cursorValue,
+                    role = role,
+                ),
+            )
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: ReplicaIntegrityException) {
+            throw error
+        } catch (error: Exception) {
+            throw ReplicaIntegrityException(
+                errorCode = errorCode,
+                message = "Replica cursor reservation collided atomically",
+                cause = error,
             )
         }
     }
@@ -1503,6 +1857,7 @@ class SyncPersistenceStore(
             replicaDao.promoteBootstrapCursor(
                 credentialEpochId = stream.credentialEpochId,
                 deviceId = stream.deviceId,
+                replicaLineageId = bootstrapId,
                 incrementalCursor = incrementalCursor,
                 lastServerSequence = topology.lastServerSequence,
                 updatedAtUtc = response.terminalAtUtc,
@@ -2180,6 +2535,30 @@ class SyncPersistenceStore(
         errorCode: String,
         message: String,
     ): T = value ?: throw ReplicaIntegrityException(errorCode, message)
+
+    internal suspend fun haltVerifiedRouteAfterRollback(
+        credentialEpochId: String,
+        endpointId: String,
+        error: ReplicaIntegrityException,
+        updatedAtUtc: String,
+    ) {
+        check(!database.inTransaction()) {
+            "Verified route halt must run only after the response transaction rolled back"
+        }
+        require(endpointId in setOf(PUSH_ENDPOINT, BOOTSTRAP_ENDPOINT, PULL_ENDPOINT))
+        val stream = try {
+            replicaDao.findStreamState()
+        } catch (error: CancellationException) {
+            throw error
+        } catch (_: Exception) {
+            null
+        }?.takeIf { it.credentialEpochId == credentialEpochId }
+        haltStreamAfterRollback(
+            stream = stream,
+            error = error,
+            updatedAtUtc = updatedAtUtc,
+        )
+    }
 
     private suspend fun haltStreamAfterRollback(
         stream: SyncStreamStateEntity?,

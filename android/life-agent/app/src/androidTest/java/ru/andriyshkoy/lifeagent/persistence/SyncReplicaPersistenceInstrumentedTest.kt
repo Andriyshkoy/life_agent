@@ -45,6 +45,7 @@ import ru.andriyshkoy.lifeagent.data.local.db.entity.SyncAuthTokenFingerprintEnt
 import ru.andriyshkoy.lifeagent.data.local.db.entity.SyncBootstrapSessionEntity
 import ru.andriyshkoy.lifeagent.data.local.db.entity.SyncHttpRequestEntity
 import ru.andriyshkoy.lifeagent.data.local.db.entity.SyncPageReceiptEntity
+import ru.andriyshkoy.lifeagent.data.local.db.entity.SyncReplicaCursorEntity
 import ru.andriyshkoy.lifeagent.data.local.db.entity.SyncStreamStateEntity
 import ru.andriyshkoy.lifeagent.data.local.serialization.CanonicalNoteCodec
 import ru.andriyshkoy.lifeagent.notes.data.RoomNotesRepository
@@ -134,6 +135,74 @@ class SyncReplicaPersistenceInstrumentedTest {
         assertEquals("sending", request.state)
         assertNull(request.terminalAtUtc)
     }
+
+    @Test
+    fun progressedBootstrapRejectsNullableWildcardMetadataBeforeReservation() =
+        runBlocking {
+            seedStream(appliedCursor = "cursor-before-wildcard-session")
+            seedBootstrapSession()
+            val fromCursor = "retained-bootstrap-page-cursor"
+            requireDatabase().openHelper.writableDatabase.execSQL(
+                """
+                UPDATE sync_bootstrap_session
+                SET next_page_index = 1,
+                    staged_page_count = 1,
+                    staged_body_bytes = 128,
+                    next_page_cursor = ?,
+                    last_staged_server_sequence = 1,
+                    snapshot_id = NULL,
+                    candidate_incremental_cursor = NULL
+                WHERE bootstrap_id = ?
+                """.trimIndent(),
+                arrayOf<Any?>(fromCursor, BOOTSTRAP_ID),
+            )
+            val change = fixture.change(sequence = 2)
+            val requestId = uuid(1_050)
+            val attemptId = uuid(1_051)
+            val pageId = uuid(1_052)
+            val response = terminalResponse(
+                endpoint = "sync_bootstrap",
+                requestId = requestId,
+                attemptId = attemptId,
+                body = "bootstrap-wildcard-session",
+                terminalAt = "2030-01-01T00:09:00Z",
+            )
+            seedSendingRequest(response, attemptId)
+
+            val failure = assertThrows(ReplicaIntegrityException::class.java) {
+                runBlocking {
+                    SyncPersistenceStore(requireDatabase()).commitBootstrapPage(
+                        response = response,
+                        receipt = bootstrapReceipt(
+                            requestId = requestId,
+                            pageId = pageId,
+                            pageIndex = 1,
+                            fromCursor = fromCursor,
+                            nextCursor = null,
+                            complete = true,
+                            changes = listOf(change),
+                            receivedAt = response.terminalAtUtc,
+                        ),
+                        changes = listOf(change),
+                    )
+                }
+            }
+            assertEquals("bootstrap_shadow_drift", failure.errorCode)
+            assertEquals(
+                0,
+                requireDatabase().syncReplicaDao().countReplicaCursorsByRole(
+                    BOOTSTRAP_ID,
+                    "incremental",
+                ),
+            )
+            assertNull(requireDatabase().syncReplicaDao().findPageReceipt(pageId))
+            val request = requireNotNull(
+                requireDatabase().syncTransportDao()
+                    .findRequest("sync_bootstrap", requestId),
+            )
+            assertEquals("sending", request.state)
+            assertNull(request.exactResponseBody)
+        }
 
     @Test
     fun bootstrapPromotionPreservesReceiptNewerThanSnapshotThenPullRedeliversIt() =
@@ -574,6 +643,13 @@ class SyncReplicaPersistenceInstrumentedTest {
                 .findServerChange(collidingRoot.operationId),
         )
         assertNull(requireDatabase().syncReplicaDao().findPageReceipt(pageId))
+        assertEquals(
+            0,
+            requireDatabase().syncReplicaDao().countReplicaCursor(
+                BOOTSTRAP_ID,
+                "bootstrap-incremental-cursor",
+            ),
+        )
         val request = requireNotNull(
             requireDatabase()
                 .syncTransportDao()
@@ -886,6 +962,7 @@ class SyncReplicaPersistenceInstrumentedTest {
             val badReceipt = pullReceipt(
                 requestId = badRequestId,
                 pageId = badPageId,
+                pageIndex = 1,
                 fromCursor = "pull-cursor-two",
                 nextCursor = "pull-cursor-three",
                 hasMore = false,
@@ -1030,6 +1107,13 @@ class SyncReplicaPersistenceInstrumentedTest {
             WHERE singleton_id = 1
             """.trimIndent(),
         )
+        requireDatabase().syncReplicaDao().insertReplicaCursor(
+            SyncReplicaCursorEntity(
+                lineageId = BOOTSTRAP_ID,
+                cursorValue = "lagging-pull-cursor",
+                role = SyncReplicaCursorEntity.ROLE_INCREMENTAL,
+            ),
+        )
         val pullRequestId = uuid(254)
         val pullAttemptId = uuid(255)
         val pullResponse = terminalResponse(
@@ -1045,6 +1129,7 @@ class SyncReplicaPersistenceInstrumentedTest {
             receipt = pullReceipt(
                 requestId = pullRequestId,
                 pageId = uuid(256),
+                pageIndex = 1,
                 fromCursor = "lagging-pull-cursor",
                 nextCursor = "cursor-through-sequence-one",
                 hasMore = true,
@@ -1087,6 +1172,7 @@ class SyncReplicaPersistenceInstrumentedTest {
         val badReceipt = pullReceipt(
             requestId = badRequestId,
             pageId = badPageId,
+            pageIndex = 2,
             fromCursor = "cursor-through-sequence-one",
             nextCursor = "cursor-through-sequence-three",
             hasMore = false,
@@ -2190,6 +2276,7 @@ class SyncReplicaPersistenceInstrumentedTest {
     private fun pullReceipt(
         requestId: String,
         pageId: String,
+        pageIndex: Int = 0,
         fromCursor: String,
         nextCursor: String,
         hasMore: Boolean,
@@ -2200,7 +2287,7 @@ class SyncReplicaPersistenceInstrumentedTest {
         endpointId = "sync_pull",
         requestIdentity = requestId,
         bootstrapId = null,
-        pageIndex = 0,
+        pageIndex = pageIndex,
         snapshotId = null,
         fromCursor = fromCursor,
         nextCursor = nextCursor,

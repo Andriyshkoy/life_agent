@@ -87,8 +87,299 @@ data class SyncRequestKey(
     override fun toString(): String = "SyncRequestKey(endpoint=$endpointId,redacted=true)"
 }
 
+/**
+ * Body-blind dispatch discovery result.
+ *
+ * The projection intentionally contains only route, authority, and attempt
+ * scheduling metadata. Durable request bytes remain owned by the protected
+ * request boundary and are authenticated only when that boundary claims the
+ * candidate.
+ */
+data class SyncRunnableRequestCandidate(
+    @ColumnInfo(name = "endpoint_id")
+    val endpointId: String,
+    @ColumnInfo(name = "request_identity")
+    val requestIdentity: String,
+    @ColumnInfo(name = "credential_epoch_id")
+    val credentialEpochId: String,
+    @ColumnInfo(name = "device_id")
+    val deviceId: String,
+    @ColumnInfo(name = "access_generation_used")
+    val accessGenerationUsed: Long,
+    @ColumnInfo(name = "state")
+    val state: String,
+    @ColumnInfo(name = "attempt_count")
+    val attemptCount: Int,
+    @ColumnInfo(name = "attempt_budget")
+    val attemptBudget: Int,
+    @ColumnInfo(name = "deadline_at_epoch_ms")
+    val deadlineAtEpochMs: Long,
+    @ColumnInfo(name = "next_attempt_at_epoch_ms")
+    val nextAttemptAtEpochMs: Long?,
+    @ColumnInfo(name = "last_attempt_at_epoch_ms")
+    val lastAttemptAtEpochMs: Long?,
+    @ColumnInfo(name = "lease_expires_at_epoch_ms")
+    val leaseExpiresAtEpochMs: Long?,
+    @ColumnInfo(name = "active_attempt_id")
+    val activeAttemptId: String?,
+    @ColumnInfo(name = "scheduled_at_epoch_ms")
+    val scheduledAtEpochMs: Long,
+    @ColumnInfo(name = "route_priority")
+    val routePriority: Int,
+) {
+    override fun toString(): String =
+        "SyncRunnableRequestCandidate(endpoint=$endpointId,state=$state,redacted=true)"
+}
+
+/**
+ * Body-blind response-routing metadata projected without trusting SQLite's
+ * dynamic storage classes.
+ *
+ * Every nullable value is produced by a guarded CASE expression. Callers must
+ * require both [hasRoomSafeStorageClasses] and [hasRoomSafeEntityShape] before
+ * hydrating the corresponding [SyncHttpRequestEntity] with SELECT *.
+ */
+data class SyncResponseRouteSnapshot(
+    @ColumnInfo(name = "endpoint_id_safe")
+    val endpointId: String?,
+    @ColumnInfo(name = "request_identity_safe")
+    val requestIdentity: String?,
+    @ColumnInfo(name = "protocol_version_safe")
+    val protocolVersion: String?,
+    @ColumnInfo(name = "credential_epoch_id_safe")
+    val credentialEpochId: String?,
+    @ColumnInfo(name = "device_id_safe")
+    val deviceId: String?,
+    @ColumnInfo(name = "idempotency_key_safe")
+    val idempotencyKey: String?,
+    @ColumnInfo(name = "body_storage_kind_safe")
+    val bodyStorageKind: String?,
+    @ColumnInfo(name = "state_safe")
+    val state: String?,
+    @ColumnInfo(name = "active_attempt_id_safe")
+    val activeAttemptId: String?,
+    @ColumnInfo(name = "access_generation_used_safe")
+    val accessGenerationUsed: Long?,
+    @ColumnInfo(name = "attempt_count_safe")
+    val attemptCount: Long?,
+    @ColumnInfo(name = "has_room_safe_required_text_storage")
+    val hasRoomSafeRequiredTextStorage: Boolean,
+    @ColumnInfo(name = "has_room_safe_nullable_text_storage")
+    val hasRoomSafeNullableTextStorage: Boolean,
+    @ColumnInfo(name = "has_room_safe_required_integer_storage")
+    val hasRoomSafeRequiredIntegerStorage: Boolean,
+    @ColumnInfo(name = "has_room_safe_nullable_integer_storage")
+    val hasRoomSafeNullableIntegerStorage: Boolean,
+    @ColumnInfo(name = "has_room_safe_required_blob_storage")
+    val hasRoomSafeRequiredBlobStorage: Boolean,
+    @ColumnInfo(name = "has_room_safe_nullable_blob_storage")
+    val hasRoomSafeNullableBlobStorage: Boolean,
+    @ColumnInfo(name = "has_room_safe_entity_shape")
+    val hasRoomSafeEntityShape: Boolean,
+    @ColumnInfo(name = "has_fresh_response_metadata_shape")
+    val hasFreshResponseMetadataShape: Boolean,
+) {
+    val hasRoomSafeStorageClasses: Boolean
+        get() = hasRoomSafeRequiredTextStorage &&
+            hasRoomSafeNullableTextStorage &&
+            hasRoomSafeRequiredIntegerStorage &&
+            hasRoomSafeNullableIntegerStorage &&
+            hasRoomSafeRequiredBlobStorage &&
+            hasRoomSafeNullableBlobStorage
+
+    val canHydrateRequestEntity: Boolean
+        get() = hasRoomSafeStorageClasses && hasRoomSafeEntityShape
+
+    override fun toString(): String =
+        "SyncResponseRouteSnapshot(endpoint=$endpointId,state=$state,redacted=true)"
+}
+
 @Dao
 interface SyncTransportDao {
+    @Query(
+        """
+        SELECT
+          CASE WHEN typeof(endpoint_id) = 'text'
+            THEN endpoint_id ELSE NULL END AS endpoint_id_safe,
+          CASE WHEN typeof(request_identity) = 'text'
+            THEN request_identity ELSE NULL END AS request_identity_safe,
+          CASE WHEN typeof(protocol_version) = 'text'
+            THEN protocol_version ELSE NULL END AS protocol_version_safe,
+          CASE WHEN typeof(credential_epoch_id) = 'text'
+            THEN credential_epoch_id ELSE NULL END AS credential_epoch_id_safe,
+          CASE WHEN typeof(device_id) = 'text'
+            THEN device_id ELSE NULL END AS device_id_safe,
+          CASE WHEN typeof(idempotency_key) = 'text'
+            THEN idempotency_key ELSE NULL END AS idempotency_key_safe,
+          CASE WHEN typeof(body_storage_kind) = 'text'
+            THEN body_storage_kind ELSE NULL END AS body_storage_kind_safe,
+          CASE WHEN typeof(state) = 'text'
+            THEN state ELSE NULL END AS state_safe,
+          CASE WHEN typeof(active_attempt_id) = 'text'
+            THEN active_attempt_id ELSE NULL END AS active_attempt_id_safe,
+          CASE WHEN typeof(access_generation_used) = 'integer'
+            THEN access_generation_used ELSE NULL END AS access_generation_used_safe,
+          CASE WHEN typeof(attempt_count) = 'integer'
+            THEN attempt_count ELSE NULL END AS attempt_count_safe,
+          CASE WHEN
+            typeof(endpoint_id) = 'text'
+            AND typeof(request_identity) = 'text'
+            AND typeof(protocol_version) = 'text'
+            AND typeof(credential_epoch_id) = 'text'
+            AND typeof(device_id) = 'text'
+            AND typeof(body_storage_kind) = 'text'
+            AND typeof(state) = 'text'
+            AND typeof(created_at_utc) = 'text'
+            AND typeof(updated_at_utc) = 'text'
+            THEN 1 ELSE 0
+          END AS has_room_safe_required_text_storage,
+          CASE WHEN
+            typeof(idempotency_key) IN ('null', 'text')
+            AND typeof(sealed_body_key_alias) IN ('null', 'text')
+            AND typeof(active_attempt_id) IN ('null', 'text')
+            AND typeof(response_sha256) IN ('null', 'text')
+            AND typeof(terminal_at_utc) IN ('null', 'text')
+            AND typeof(terminal_error_code) IN ('null', 'text')
+            THEN 1 ELSE 0
+          END AS has_room_safe_nullable_text_storage,
+          CASE WHEN
+            typeof(request_body_octet_count) = 'integer'
+            AND typeof(hmac_key_generation) = 'integer'
+            AND typeof(attempt_count) = 'integer'
+            AND typeof(attempt_budget) = 'integer'
+            AND typeof(deadline_at_epoch_ms) = 'integer'
+            AND typeof(refresh_attempted) = 'integer'
+            AND typeof(original_retry_count) = 'integer'
+            THEN 1 ELSE 0
+          END AS has_room_safe_required_integer_storage,
+          CASE WHEN
+            typeof(sealed_body_key_generation) IN ('null', 'integer')
+            AND typeof(sealed_body_aad_version) IN ('null', 'integer')
+            AND typeof(next_attempt_at_epoch_ms) IN ('null', 'integer')
+            AND typeof(last_attempt_at_epoch_ms) IN ('null', 'integer')
+            AND typeof(lease_expires_at_epoch_ms) IN ('null', 'integer')
+            AND typeof(access_generation_used) IN ('null', 'integer')
+            AND typeof(terminal_http_status) IN ('null', 'integer')
+            THEN 1 ELSE 0
+          END AS has_room_safe_nullable_integer_storage,
+          CASE WHEN typeof(raw_body_hmac) = 'blob'
+            THEN 1 ELSE 0
+          END AS has_room_safe_required_blob_storage,
+          CASE WHEN
+            typeof(raw_request_body) IN ('null', 'blob')
+            AND typeof(sealed_body_ciphertext) IN ('null', 'blob')
+            AND typeof(sealed_body_nonce) IN ('null', 'blob')
+            AND typeof(exact_response_body) IN ('null', 'blob')
+            THEN 1 ELSE 0
+          END AS has_room_safe_nullable_blob_storage,
+          CASE WHEN
+            typeof(endpoint_id) = 'text'
+            AND endpoint_id IN (
+              'auth_revoke',
+              'sync_push',
+              'sync_bootstrap',
+              'sync_pull'
+            )
+            AND typeof(request_body_octet_count) = 'integer'
+            AND request_body_octet_count > 0
+            AND typeof(raw_body_hmac) = 'blob'
+            AND length(raw_body_hmac) = 32
+            AND typeof(hmac_key_generation) = 'integer'
+            AND hmac_key_generation = 1
+            AND (
+              (
+                typeof(body_storage_kind) = 'text'
+                AND body_storage_kind = 'raw'
+                AND endpoint_id != 'auth_revoke'
+                AND typeof(raw_request_body) = 'blob'
+                AND length(raw_request_body) > 0
+                AND request_body_octet_count = length(raw_request_body)
+                AND typeof(sealed_body_ciphertext) = 'null'
+                AND typeof(sealed_body_nonce) = 'null'
+                AND typeof(sealed_body_key_alias) = 'null'
+                AND typeof(sealed_body_key_generation) = 'null'
+                AND typeof(sealed_body_aad_version) = 'null'
+              )
+              OR
+              (
+                typeof(body_storage_kind) = 'text'
+                AND body_storage_kind = 'keystore_aead'
+                AND endpoint_id = 'auth_revoke'
+                AND typeof(raw_request_body) = 'null'
+                AND typeof(sealed_body_ciphertext) = 'blob'
+                AND length(sealed_body_ciphertext) > 0
+                AND typeof(sealed_body_nonce) = 'blob'
+                AND length(sealed_body_nonce) > 0
+                AND typeof(sealed_body_key_alias) = 'text'
+                AND length(trim(sealed_body_key_alias)) > 0
+                AND typeof(sealed_body_key_generation) = 'integer'
+                AND sealed_body_key_generation > 0
+                AND sealed_body_key_generation <= 2147483647
+                AND typeof(sealed_body_aad_version) = 'integer'
+                AND sealed_body_aad_version > 0
+                AND sealed_body_aad_version <= 2147483647
+              )
+            )
+            THEN 1 ELSE 0
+          END AS has_room_safe_entity_shape,
+          CASE WHEN
+            typeof(state) = 'text'
+            AND state = 'sending'
+            AND typeof(attempt_count) = 'integer'
+            AND typeof(attempt_budget) = 'integer'
+            AND attempt_count >= 1
+            AND attempt_budget > 0
+            AND attempt_count <= attempt_budget
+            AND attempt_count <= 2147483647
+            AND attempt_budget <= 2147483647
+            AND typeof(deadline_at_epoch_ms) = 'integer'
+            AND deadline_at_epoch_ms > 0
+            AND typeof(next_attempt_at_epoch_ms) = 'null'
+            AND typeof(last_attempt_at_epoch_ms) = 'integer'
+            AND last_attempt_at_epoch_ms > 0
+            AND typeof(lease_expires_at_epoch_ms) = 'integer'
+            AND lease_expires_at_epoch_ms > last_attempt_at_epoch_ms
+            AND lease_expires_at_epoch_ms <= deadline_at_epoch_ms
+            AND typeof(access_generation_used) = 'integer'
+            AND access_generation_used > 0
+            AND typeof(refresh_attempted) = 'integer'
+            AND refresh_attempted IN (0, 1)
+            AND typeof(original_retry_count) = 'integer'
+            AND original_retry_count IN (0, 1)
+            AND typeof(active_attempt_id) = 'text'
+            AND length(trim(active_attempt_id)) > 0
+            AND typeof(terminal_http_status) = 'null'
+            AND typeof(exact_response_body) = 'null'
+            AND typeof(response_sha256) = 'null'
+            AND typeof(terminal_at_utc) = 'null'
+            THEN 1 ELSE 0
+          END AS has_fresh_response_metadata_shape
+        FROM sync_http_request
+        WHERE (
+            typeof(active_attempt_id) = 'text'
+            AND active_attempt_id = :expectedAttemptId
+          )
+          OR (
+            typeof(endpoint_id) = 'text'
+            AND endpoint_id = :endpointId
+            AND typeof(request_identity) = 'text'
+            AND request_identity = :requestIdentity
+          )
+        ORDER BY CASE
+          WHEN typeof(active_attempt_id) = 'text'
+           AND active_attempt_id = :expectedAttemptId
+            THEN 0
+          ELSE 1
+        END
+        LIMIT 1
+        """,
+    )
+    suspend fun findResponseRouteSnapshot(
+        endpointId: String,
+        requestIdentity: String,
+        expectedAttemptId: String,
+    ): SyncResponseRouteSnapshot?
+
     @Query(
         """
         SELECT * FROM sync_http_request
@@ -205,6 +496,318 @@ interface SyncTransportDao {
         deviceId: String,
     ): List<SyncBootstrapSessionEntity>
 
+    @Query(
+        """
+        SELECT
+          request.endpoint_id,
+          request.request_identity,
+          request.credential_epoch_id,
+          request.device_id,
+          request.access_generation_used,
+          request.state,
+          request.attempt_count,
+          request.attempt_budget,
+          request.deadline_at_epoch_ms,
+          request.next_attempt_at_epoch_ms,
+          request.last_attempt_at_epoch_ms,
+          request.lease_expires_at_epoch_ms,
+          request.active_attempt_id,
+          CASE request.state
+            WHEN 'retry_wait' THEN request.next_attempt_at_epoch_ms
+            ELSE :nowEpochMs
+          END AS scheduled_at_epoch_ms,
+          CASE request.endpoint_id
+            WHEN 'auth_revoke' THEN 0
+            WHEN 'sync_bootstrap' THEN 1
+            WHEN 'sync_push' THEN 2
+            WHEN 'sync_pull' THEN 3
+            ELSE 4
+          END AS route_priority
+        FROM sync_http_request AS request
+        WHERE (
+            (
+              request.state = 'ready'
+              AND request.next_attempt_at_epoch_ms IS NULL
+            )
+            OR (
+              request.state = 'retry_wait'
+              AND request.next_attempt_at_epoch_ms IS NOT NULL
+              AND request.next_attempt_at_epoch_ms <= :nowEpochMs
+            )
+          )
+          AND request.attempt_count < request.attempt_budget
+          AND request.deadline_at_epoch_ms > :nowEpochMs
+          AND (
+            (
+              request.endpoint_id = 'auth_revoke'
+              AND EXISTS (
+                SELECT 1
+                FROM sync_auth_state AS auth
+                JOIN local_identity_state AS identity
+                  ON identity.singleton_id = 1
+                 AND identity.installation_id = auth.installation_id
+                 AND identity.local_owner_id = auth.local_owner_id
+                JOIN local_installation AS installation
+                  ON installation.installation_id = identity.installation_id
+                 AND installation.server_device_id = auth.device_id
+                JOIN local_owner AS owner
+                  ON owner.installation_id = identity.installation_id
+                 AND owner.local_owner_id = identity.local_owner_id
+                 AND owner.server_person_id = auth.person_id
+                WHERE auth.singleton_id = 1
+                  AND auth.credential_epoch_id = request.credential_epoch_id
+                  AND auth.device_id = request.device_id
+                  AND auth.generation = request.access_generation_used
+                  AND auth.state = 'revoke_pending'
+              )
+            )
+            OR (
+              request.endpoint_id IN (
+                'sync_push',
+                'sync_bootstrap',
+                'sync_pull'
+              )
+              AND EXISTS (
+                SELECT 1
+                FROM sync_stream_state AS stream
+                JOIN sync_auth_state AS auth
+                  ON auth.singleton_id = 1
+                 AND auth.credential_epoch_id = stream.credential_epoch_id
+                 AND auth.device_id = stream.device_id
+                JOIN local_identity_state AS identity
+                  ON identity.singleton_id = 1
+                 AND identity.installation_id = auth.installation_id
+                 AND identity.local_owner_id = auth.local_owner_id
+                JOIN local_installation AS installation
+                  ON installation.installation_id = identity.installation_id
+                 AND installation.server_device_id = auth.device_id
+                JOIN local_owner AS owner
+                  ON owner.installation_id = identity.installation_id
+                 AND owner.local_owner_id = identity.local_owner_id
+                 AND owner.server_person_id = auth.person_id
+                WHERE stream.singleton_id = 1
+                  AND stream.credential_epoch_id = request.credential_epoch_id
+                  AND stream.device_id = request.device_id
+                  AND stream.integrity_error_code IS NULL
+                  AND stream.phase != 'integrity_halted'
+                  AND auth.state = 'active'
+                  AND auth.access_expires_at_epoch_ms > :nowEpochMs
+                  AND auth.family_expires_at_epoch_ms > :nowEpochMs
+                  AND NOT EXISTS (
+                    SELECT 1
+                    FROM sync_auth_attempt AS enrollment
+                    WHERE enrollment.endpoint_id = 'auth_enroll'
+                      AND enrollment.state = 'dispatching'
+                      AND enrollment.installation_id = identity.installation_id
+                      AND enrollment.local_owner_id = identity.local_owner_id
+                      AND (
+                        enrollment.credential_epoch_id IS NULL
+                        OR (
+                          enrollment.credential_epoch_id = auth.credential_epoch_id
+                          AND enrollment.expected_device_id = auth.device_id
+                          AND enrollment.expected_generation = auth.generation
+                        )
+                      )
+                  )
+                  AND (
+                    (
+                      request.endpoint_id = 'sync_bootstrap'
+                      AND stream.phase = 'bootstrap_required'
+                      AND stream.bootstrap_required = 1
+                      AND EXISTS (
+                        SELECT 1
+                        FROM sync_bootstrap_session AS session
+                        WHERE session.credential_epoch_id = stream.credential_epoch_id
+                          AND session.device_id = stream.device_id
+                          AND session.state = 'staging'
+                          AND session.active_slot = 1
+                      )
+                    )
+                    OR (
+                      request.endpoint_id = 'sync_push'
+                      AND stream.phase = 'incremental'
+                      AND stream.bootstrap_required = 0
+                    )
+                    OR (
+                      request.endpoint_id = 'sync_pull'
+                      AND stream.phase IN ('incremental', 'pulling')
+                      AND stream.bootstrap_required = 0
+                    )
+                  )
+              )
+            )
+          )
+        ORDER BY
+          route_priority,
+          scheduled_at_epoch_ms,
+          request.created_at_utc,
+          request.request_identity
+        LIMIT :limit
+        """,
+    )
+    suspend fun findRunnableRequestCandidateRows(
+        nowEpochMs: Long,
+        limit: Int,
+    ): List<SyncRunnableRequestCandidate>
+
+    @Transaction
+    suspend fun findRunnableRequestCandidates(
+        nowEpochMs: Long,
+        limit: Int,
+    ): List<SyncRunnableRequestCandidate> {
+        require(limit > 0)
+        return findRunnableRequestCandidateRows(nowEpochMs, limit)
+    }
+
+    @Query(
+        """
+        SELECT MIN(
+          CASE request.state
+            WHEN 'retry_wait' THEN request.next_attempt_at_epoch_ms
+            ELSE :nowEpochMs
+          END
+        )
+        FROM sync_http_request AS request
+        WHERE (
+            (
+              request.state = 'ready'
+              AND request.next_attempt_at_epoch_ms IS NULL
+            )
+            OR (
+              request.state = 'retry_wait'
+              AND request.next_attempt_at_epoch_ms IS NOT NULL
+            )
+          )
+          AND request.attempt_count < request.attempt_budget
+          AND request.deadline_at_epoch_ms > :nowEpochMs
+          AND (
+            (
+              request.endpoint_id = 'auth_revoke'
+              AND EXISTS (
+                SELECT 1
+                FROM sync_auth_state AS auth
+                JOIN local_identity_state AS identity
+                  ON identity.singleton_id = 1
+                 AND identity.installation_id = auth.installation_id
+                 AND identity.local_owner_id = auth.local_owner_id
+                JOIN local_installation AS installation
+                  ON installation.installation_id = identity.installation_id
+                 AND installation.server_device_id = auth.device_id
+                JOIN local_owner AS owner
+                  ON owner.installation_id = identity.installation_id
+                 AND owner.local_owner_id = identity.local_owner_id
+                 AND owner.server_person_id = auth.person_id
+                WHERE auth.singleton_id = 1
+                  AND auth.credential_epoch_id = request.credential_epoch_id
+                  AND auth.device_id = request.device_id
+                  AND auth.generation = request.access_generation_used
+                  AND auth.state = 'revoke_pending'
+              )
+            )
+            OR (
+              request.endpoint_id IN (
+                'sync_push',
+                'sync_bootstrap',
+                'sync_pull'
+              )
+              AND EXISTS (
+                SELECT 1
+                FROM sync_stream_state AS stream
+                JOIN sync_auth_state AS auth
+                  ON auth.singleton_id = 1
+                 AND auth.credential_epoch_id = stream.credential_epoch_id
+                 AND auth.device_id = stream.device_id
+                JOIN local_identity_state AS identity
+                  ON identity.singleton_id = 1
+                 AND identity.installation_id = auth.installation_id
+                 AND identity.local_owner_id = auth.local_owner_id
+                JOIN local_installation AS installation
+                  ON installation.installation_id = identity.installation_id
+                 AND installation.server_device_id = auth.device_id
+                JOIN local_owner AS owner
+                  ON owner.installation_id = identity.installation_id
+                 AND owner.local_owner_id = identity.local_owner_id
+                 AND owner.server_person_id = auth.person_id
+                WHERE stream.singleton_id = 1
+                  AND stream.credential_epoch_id = request.credential_epoch_id
+                  AND stream.device_id = request.device_id
+                  AND stream.integrity_error_code IS NULL
+                  AND stream.phase != 'integrity_halted'
+                  AND auth.state = 'active'
+                  AND auth.access_expires_at_epoch_ms > :nowEpochMs
+                  AND auth.family_expires_at_epoch_ms > :nowEpochMs
+                  AND NOT EXISTS (
+                    SELECT 1
+                    FROM sync_auth_attempt AS enrollment
+                    WHERE enrollment.endpoint_id = 'auth_enroll'
+                      AND enrollment.state = 'dispatching'
+                      AND enrollment.installation_id = identity.installation_id
+                      AND enrollment.local_owner_id = identity.local_owner_id
+                      AND (
+                        enrollment.credential_epoch_id IS NULL
+                        OR (
+                          enrollment.credential_epoch_id = auth.credential_epoch_id
+                          AND enrollment.expected_device_id = auth.device_id
+                          AND enrollment.expected_generation = auth.generation
+                        )
+                      )
+                  )
+                  AND (
+                    (
+                      request.endpoint_id = 'sync_bootstrap'
+                      AND stream.phase = 'bootstrap_required'
+                      AND stream.bootstrap_required = 1
+                      AND EXISTS (
+                        SELECT 1
+                        FROM sync_bootstrap_session AS session
+                        WHERE session.credential_epoch_id = stream.credential_epoch_id
+                          AND session.device_id = stream.device_id
+                          AND session.state = 'staging'
+                          AND session.active_slot = 1
+                      )
+                    )
+                    OR (
+                      request.endpoint_id = 'sync_push'
+                      AND stream.phase = 'incremental'
+                      AND stream.bootstrap_required = 0
+                    )
+                    OR (
+                      request.endpoint_id = 'sync_pull'
+                      AND stream.phase IN ('incremental', 'pulling')
+                      AND stream.bootstrap_required = 0
+                    )
+                  )
+              )
+            )
+          )
+        """,
+    )
+    suspend fun findEarliestDispatchCandidateAtEpochMs(nowEpochMs: Long): Long?
+
+    @Query(
+        """
+        SELECT MIN(
+          CASE
+            WHEN lease_expires_at_epoch_ms <= :nowEpochMs THEN :nowEpochMs
+            ELSE lease_expires_at_epoch_ms
+          END
+        )
+        FROM sync_http_request
+        WHERE state = 'sending'
+          AND lease_expires_at_epoch_ms IS NOT NULL
+        """,
+    )
+    suspend fun findEarliestSendingRecoveryAtEpochMs(nowEpochMs: Long): Long?
+
+    @Transaction
+    suspend fun findEarliestRequestWakeAtEpochMs(nowEpochMs: Long): Long? =
+        listOfNotNull(
+            findEarliestDispatchCandidateAtEpochMs(nowEpochMs),
+            findEarliestSendingRecoveryAtEpochMs(nowEpochMs),
+            findEarliestTerminalizationAtEpochMs(nowEpochMs),
+        ).minOrNull()
+
+    // Legacy entity hydration retained for persistence and recovery tests.
     @Query(
         """
         SELECT request.* FROM sync_http_request AS request
@@ -1244,6 +1847,82 @@ interface SyncTransportDao {
 
     @Query(
         """
+        SELECT EXISTS(
+          SELECT 1
+          FROM sync_http_request
+          WHERE endpoint_id = :endpointId
+            AND request_identity = :requestIdentity
+            AND typeof(state) = 'text'
+            AND state = 'terminal'
+            AND typeof(terminal_http_status) = 'integer'
+            AND terminal_http_status = :httpStatus
+            AND typeof(exact_response_body) = 'blob'
+            AND exact_response_body = :exactResponseBody
+            AND typeof(response_sha256) = 'text'
+            AND response_sha256 = :responseSha256
+            AND typeof(terminal_at_utc) = 'text'
+            AND typeof(terminal_error_code) IN ('null', 'text')
+        )
+        """,
+    )
+    suspend fun matchesExactTerminalResponse(
+        endpointId: String,
+        requestIdentity: String,
+        httpStatus: Int,
+        exactResponseBody: ByteArray,
+        responseSha256: String,
+    ): Boolean
+
+    @Query(
+        """
+        UPDATE sync_http_request
+        SET state = 'integrity_failure',
+            terminal_http_status = NULL,
+            exact_response_body = NULL,
+            response_sha256 = NULL,
+            terminal_at_utc = :failedAtUtc,
+            terminal_error_code = :failureCode,
+            next_attempt_at_epoch_ms = NULL,
+            lease_expires_at_epoch_ms = NULL,
+            active_attempt_id = NULL,
+            updated_at_utc = :failedAtUtc
+        WHERE typeof(endpoint_id) = 'text'
+          AND endpoint_id = :endpointId
+          AND typeof(request_identity) = 'text'
+          AND request_identity = :requestIdentity
+          AND typeof(state) = 'text'
+          AND state = 'sending'
+          AND typeof(active_attempt_id) = 'text'
+          AND active_attempt_id = :expectedAttemptId
+          AND (
+            (
+              typeof(credential_epoch_id) = 'text'
+              AND credential_epoch_id = :credentialEpochId
+            )
+            OR typeof(credential_epoch_id) != 'text'
+          )
+          AND (
+            (
+              typeof(access_generation_used) = 'integer'
+              AND access_generation_used = :accessGenerationUsed
+            )
+            OR typeof(access_generation_used) != 'integer'
+            OR access_generation_used IS NULL
+          )
+        """,
+    )
+    suspend fun quarantineFreshResponseMetadata(
+        endpointId: String,
+        requestIdentity: String,
+        credentialEpochId: String,
+        accessGenerationUsed: Long,
+        expectedAttemptId: String,
+        failedAtUtc: String,
+        failureCode: String,
+    ): Int
+
+    @Query(
+        """
         UPDATE sync_http_request
         SET state = 'terminal_local',
             next_attempt_at_epoch_ms = NULL,
@@ -1359,6 +2038,46 @@ interface SyncTransportDao {
         nextAttemptAtEpochMs: Long,
         lastErrorCode: String?,
         updatedAtUtc: String,
+    ): Int
+
+    @Query(
+        """
+        UPDATE sync_http_request
+        SET state = 'terminal_local',
+            next_attempt_at_epoch_ms = NULL,
+            lease_expires_at_epoch_ms = NULL,
+            active_attempt_id = NULL,
+            terminal_at_utc = :terminalAtUtc,
+            terminal_error_code = :failureCode,
+            updated_at_utc = :terminalAtUtc
+        WHERE typeof(endpoint_id) = 'text'
+          AND endpoint_id = :endpointId
+          AND typeof(request_identity) = 'text'
+          AND request_identity = :requestIdentity
+          AND typeof(state) = 'text'
+          AND state = 'sending'
+          AND typeof(active_attempt_id) = 'text'
+          AND active_attempt_id = :expectedAttemptId
+          AND typeof(attempt_count) = 'integer'
+          AND typeof(attempt_budget) = 'integer'
+          AND typeof(deadline_at_epoch_ms) = 'integer'
+          AND terminal_http_status IS NULL
+          AND exact_response_body IS NULL
+          AND response_sha256 IS NULL
+          AND terminal_at_utc IS NULL
+          AND (
+            attempt_count >= attempt_budget
+            OR :proposedNextAttemptAtEpochMs >= deadline_at_epoch_ms
+          )
+        """,
+    )
+    suspend fun terminalizeCompletedRetryFailure(
+        endpointId: String,
+        requestIdentity: String,
+        expectedAttemptId: String,
+        proposedNextAttemptAtEpochMs: Long,
+        terminalAtUtc: String,
+        failureCode: String,
     ): Int
 
     /**

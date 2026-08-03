@@ -29,6 +29,7 @@ import ru.andriyshkoy.lifeagent.data.local.db.entity.SyncHttpRequestEntity
 import ru.andriyshkoy.lifeagent.data.local.db.entity.SyncPageReceiptEntity
 import ru.andriyshkoy.lifeagent.data.local.db.entity.SyncPushBatchEntity
 import ru.andriyshkoy.lifeagent.data.local.db.entity.SyncPushBatchItemEntity
+import ru.andriyshkoy.lifeagent.data.local.db.entity.SyncReplicaCursorEntity
 import ru.andriyshkoy.lifeagent.data.local.db.entity.SyncServerChangeEntity
 import ru.andriyshkoy.lifeagent.data.local.db.entity.SyncStagedChangeEntity
 import ru.andriyshkoy.lifeagent.data.local.db.entity.SyncStreamStateEntity
@@ -56,10 +57,11 @@ import ru.andriyshkoy.lifeagent.data.local.db.entity.SyncStreamStateEntity
         SyncServerChangeEntity::class,
         SyncStreamStateEntity::class,
         SyncBootstrapSessionEntity::class,
+        SyncReplicaCursorEntity::class,
         SyncPageReceiptEntity::class,
         SyncStagedChangeEntity::class,
     ],
-    version = 3,
+    version = 4,
     exportSchema = true,
 )
 abstract class LifeAgentDatabase : RoomDatabase() {
@@ -79,6 +81,6 @@ abstract class LifeAgentDatabase : RoomDatabase() {
 
     companion object {
         const val NAME = "life-agent.db"
-        const val VERSION = 3
+        const val VERSION = 4
     }
 }
