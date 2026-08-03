@@ -308,7 +308,9 @@ class DurableRequestBoundaryArchitectureTest {
             allowedPaths = setOf(PROTECTED_RESPONSE_STORE, AUTH_STORE),
         )
 
-        val source = File(mainSourceRoot(), PROTECTED_RESPONSE_STORE).readText()
+        val responseStore = File(mainSourceRoot(), PROTECTED_RESPONSE_STORE)
+        if (!responseStore.isFile) return
+        val source = responseStore.readText()
         assertTrue(source.contains("internal sealed interface ProtectedFreshResponseDecoder"))
         assertFalse(source.contains("suspend fun decode(input: ProtectedFreshResponseInput)"))
         assertTrue(

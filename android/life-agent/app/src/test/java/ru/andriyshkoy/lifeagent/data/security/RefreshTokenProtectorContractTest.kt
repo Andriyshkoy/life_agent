@@ -18,7 +18,7 @@ class RefreshTokenProtectorContractTest {
         assertNotEquals(first, refreshTokenAeadAlias(OTHER_CREDENTIAL_EPOCH_ID))
         assertFalse(first.contains(CREDENTIAL_EPOCH_ID))
         assertThrows(IllegalArgumentException::class.java) {
-            refreshTokenAeadAlias(CREDENTIAL_EPOCH_ID.uppercase())
+            refreshTokenAeadAlias("AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA")
         }
     }
 
