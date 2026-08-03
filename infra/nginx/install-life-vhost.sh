@@ -195,28 +195,30 @@ install -T -o root -g root -m 0644 \
 nginx -t
 systemctl reload nginx
 
-readonly expected_health='{"status":"ok","service":"life-agent","phase":"bootstrap"}'
-actual_health=""
+health_body="$(mktemp "${backup_dir}/health.XXXXXXXX")"
+readonly health_body
+health_status=""
 health_exit_status=1
 
 # systemctl reload returns after signalling nginx; a newly loaded worker may need
 # a short moment before it serves the new SNI vhost. A single immediate request
 # can therefore still see the previous default certificate and trigger a false
 # rollback. Keep this probe bounded, validate TLS on every attempt, and require
-# the exact health body before declaring success.
+# an empty HTTP 204 before declaring success.
 for probe_attempt in {1..20}; do
-    if actual_health="$(
+    if health_status="$(
         curl \
-            --fail \
             --silent \
             --noproxy '*' \
             --connect-timeout 2 \
             --max-time 5 \
+            --output "${health_body}" \
+            --write-out '%{http_code}' \
             --resolve "${domain}:443:127.0.0.1" \
             "https://${domain}/healthz" \
             2>/dev/null
     )"; then
-        if [[ "${actual_health}" == "${expected_health}" ]]; then
+        if [[ "${health_status}" == "204" && ! -s "${health_body}" ]]; then
             health_exit_status=0
             break
         fi
@@ -226,12 +228,12 @@ for probe_attempt in {1..20}; do
     fi
     sleep 1
 done
-readonly actual_health
+readonly health_status
 
 if [[ "${health_exit_status}" -ne 0 ]]; then
     echo \
-        "HTTPS health probe did not converge; last status ${health_exit_status}," \
-        "body: ${actual_health}" \
+        "HTTPS health probe did not converge; last curl status ${health_exit_status}," \
+        "HTTP status ${health_status}" \
         >&2
     rollback_and_exit "${health_exit_status}"
 fi
