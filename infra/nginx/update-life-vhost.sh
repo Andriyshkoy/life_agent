@@ -60,14 +60,23 @@ install -T -o root -g root -m 0644 "${source}" "${target}"
 nginx -t
 systemctl reload nginx
 
-curl \
-    --fail \
-    --silent \
-    --show-error \
-    --noproxy '*' \
-    --resolve "${domain}:443:127.0.0.1" \
-    "https://${domain}/healthz" \
-    >/dev/null
+health_body="$(mktemp "${backup_dir}/health.XXXXXXXX")"
+readonly health_body
+health_status="$(
+    curl \
+        --silent \
+        --show-error \
+        --noproxy '*' \
+        --output "${health_body}" \
+        --write-out '%{http_code}' \
+        --resolve "${domain}:443:127.0.0.1" \
+        "https://${domain}/healthz"
+)"
+readonly health_status
+if [[ "${health_status}" != "204" || -s "${health_body}" ]]; then
+    echo "Unexpected content-bearing public health response." >&2
+    false
+fi
 
 redirect_location="$(
     curl \
