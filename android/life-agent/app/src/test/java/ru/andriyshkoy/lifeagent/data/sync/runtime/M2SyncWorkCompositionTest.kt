@@ -111,6 +111,85 @@ class M2SyncWorkCompositionTest {
     }
 
     @Test
+    fun trustedUnauthorizedRefreshesDistinctAuthorityBeforeSuccessorRetry() = runTest {
+        var phase = TrustedUnauthorizedPhase.READY_N
+        var ensureAccessCalls = 0
+        var dispatchCalls = 0
+        val predecessor = AccessTokenKey(CREDENTIAL_EPOCH_ID, 1L)
+        val successor = AccessTokenKey(CREDENTIAL_EPOCH_ID, 2L)
+        val auth = object : M2SyncAuthRuntimeBoundary {
+            override suspend fun recoverInterrupted(): M2AuthRuntimeResult =
+                M2AuthRuntimeResult.RecoveryComplete(0)
+
+            override suspend fun ensureAccess(): M2AuthRuntimeResult {
+                ensureAccessCalls += 1
+                return if (ensureAccessCalls == 1) {
+                    M2AuthRuntimeResult.AccessReady(
+                        predecessor,
+                        AuthAccessSource.VAULT,
+                    )
+                } else {
+                    assertEquals(TrustedUnauthorizedPhase.WAITING_REFRESH, phase)
+                    phase = TrustedUnauthorizedPhase.RETRY_N_PLUS_ONE
+                    M2AuthRuntimeResult.AccessReady(
+                        successor,
+                        AuthAccessSource.REFRESH,
+                    )
+                }
+            }
+        }
+        val port = port(
+            auth = auth,
+            planning = {
+                when (phase) {
+                    TrustedUnauthorizedPhase.READY_N -> retained(
+                        DurableSyncRequestKind.PUSH,
+                        PUSH_CANDIDATE.copy(accessGenerationUsed = 1L),
+                    )
+
+                    TrustedUnauthorizedPhase.WAITING_REFRESH ->
+                        noRequest(DurableSyncNoRequestReason.REFRESH_REQUIRED)
+
+                    TrustedUnauthorizedPhase.RETRY_N_PLUS_ONE -> retained(
+                        DurableSyncRequestKind.PUSH,
+                        PUSH_CANDIDATE.copy(accessGenerationUsed = 2L),
+                    )
+
+                    TrustedUnauthorizedPhase.COMPLETE ->
+                        noRequest(DurableSyncNoRequestReason.AUTHORITY_MISSING)
+                }
+            },
+            dispatch = { candidate ->
+                dispatchCalls += 1
+                when (phase) {
+                    TrustedUnauthorizedPhase.READY_N -> {
+                        assertEquals(1L, candidate.accessGenerationUsed)
+                        phase = TrustedUnauthorizedPhase.WAITING_REFRESH
+                    }
+
+                    TrustedUnauthorizedPhase.RETRY_N_PLUS_ONE -> {
+                        assertEquals(2L, candidate.accessGenerationUsed)
+                        phase = TrustedUnauthorizedPhase.COMPLETE
+                    }
+
+                    else -> fail("Dispatch ran without released durable authority")
+                }
+                ProtectedSyncDispatchDisposition.PROGRESSED
+            },
+        )
+
+        assertEquals(SyncWorkExecutionDisposition.RETRY, port.runOneBoundedSync())
+        assertEquals(2, ensureAccessCalls)
+        assertEquals(1, dispatchCalls)
+        assertEquals(TrustedUnauthorizedPhase.RETRY_N_PLUS_ONE, phase)
+
+        assertEquals(SyncWorkExecutionDisposition.COMPLETE, port.runOneBoundedSync())
+        assertEquals(2, ensureAccessCalls)
+        assertEquals(2, dispatchCalls)
+        assertEquals(TrustedUnauthorizedPhase.COMPLETE, phase)
+    }
+
+    @Test
     fun aCreatedRequestMustResolveToTheSameRetainedAuthority() = runTest {
         val outcomes = ArrayDeque<ProtectedSyncRequestPlanningOutcome>().apply {
             add(
@@ -348,6 +427,26 @@ class M2SyncWorkCompositionTest {
     }
 
     @Test
+    fun ambiguousWaitingMetadataCannotReachAuthOrDispatch() = runTest {
+        val auth = FakeAuthBoundary()
+        var dispatchCalls = 0
+        val port = port(
+            auth = auth,
+            planning = {
+                noRequest(DurableSyncNoRequestReason.OPEN_REQUEST_REQUIRES_RECOVERY)
+            },
+            dispatch = {
+                dispatchCalls += 1
+                ProtectedSyncDispatchDisposition.PROGRESSED
+            },
+        )
+
+        assertEquals(SyncWorkExecutionDisposition.RETRY, port.runOneBoundedSync())
+        assertEquals(0, auth.ensureAccessCalls)
+        assertEquals(0, dispatchCalls)
+    }
+
+    @Test
     fun noProgressClearsCachedAuthorityBeforeTheBackedOffRetry() = runTest {
         var requestPresent = true
         var dispatchCalls = 0
@@ -503,6 +602,13 @@ class M2SyncWorkCompositionTest {
             ensureAccessCalls += 1
             return ensureAccessBlock()
         }
+    }
+
+    private enum class TrustedUnauthorizedPhase {
+        READY_N,
+        WAITING_REFRESH,
+        RETRY_N_PLUS_ONE,
+        COMPLETE,
     }
 
     private companion object {

@@ -63,8 +63,12 @@ class DurableRequestBoundaryArchitectureTest {
             allowedPaths = setOf(PROTECTED_STORE, TRANSPORT_DAO),
         )
         assertOnlyAllowedMainCallSites(
-            token = "findWaitingRefreshRequests(",
-            allowedPaths = setOf(AUTH_STORE, TRANSPORT_DAO),
+            token = "findWaitingRefreshAuthoritySnapshots(",
+            allowedPaths = setOf(
+                AUTH_STORE,
+                PROTECTED_PLANNING_FACADE,
+                TRANSPORT_DAO,
+            ),
         )
         assertOnlyAllowedMainCallSites(
             token = "findRequestsNeedingLocalTerminalization(",

@@ -399,7 +399,7 @@ private class M2SyncCoordinatorActionSource(
         reason: DurableSyncNoRequestReason,
     ): SyncCoordinatorActionSnapshot = when (reason) {
         DurableSyncNoRequestReason.REFRESH_REQUIRED ->
-            SyncCoordinatorActionSnapshot(listOf(MissingAccessCoordinatorCandidate))
+            SyncCoordinatorActionSnapshot(listOf(DurableRefreshCoordinatorCandidate))
 
         DurableSyncNoRequestReason.AUTHORITY_MISSING ->
             noAction(SyncWorkExecutionDisposition.COMPLETE)
@@ -433,7 +433,9 @@ private class M2SyncCoordinatorActionPort(
     override suspend fun performOne(
         candidate: SyncCoordinatorActionCandidate,
     ): SyncCoordinatorActionDisposition = when (candidate) {
-        MissingAccessCoordinatorCandidate -> ensureAccess()
+        MissingAccessCoordinatorCandidate,
+        DurableRefreshCoordinatorCandidate,
+        -> ensureAccess()
         is DurableRequestCoordinatorCandidate -> dispatch(candidate)
         else -> SyncCoordinatorActionDisposition.NO_PROGRESS
     }
@@ -512,6 +514,16 @@ private class M2SyncAccessAuthorityState {
 private object MissingAccessCoordinatorCandidate : SyncCoordinatorActionCandidate(
     action = SyncCoordinatorAction.REFRESH_MISSING_ACCESS_TOKEN,
     deduplicationKey = "missing-access-authority",
+)
+
+/**
+ * A durable refresh signal uses a distinct authority from the first process
+ * token lookup. One bounded run may therefore obtain N, receive a trusted 401,
+ * and then rotate to N+1 without tripping duplicate-authority protection.
+ */
+private object DurableRefreshCoordinatorCandidate : SyncCoordinatorActionCandidate(
+    action = SyncCoordinatorAction.REFRESH_MISSING_ACCESS_TOKEN,
+    deduplicationKey = "durable-refresh-authority",
 )
 
 private class DurableRequestCoordinatorCandidate(

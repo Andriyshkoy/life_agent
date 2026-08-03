@@ -7,37 +7,88 @@ import org.junit.Test
 
 class DurableSyncRequestPlanningPolicyTest {
     @Test
-    fun everyExistingRequestSubsetUsesTheSingleDeterministicPriorityOrder() {
-        val kinds = DurableSyncRequestKind.entries
-        for (mask in 1 until (1 shl kinds.size)) {
-            val retained = kinds.filterIndexed { index, _ -> mask and (1 shl index) != 0 }.toSet()
-            val expected = kinds.first { it in retained }
-            for (auth in DurableSyncPlannerAuth.entries) {
-                for (stream in DurableSyncPlannerStream.entries) {
-                    for (session in listOf(false, true)) {
-                        for (outbox in listOf(false, true)) {
-                            val actual = decide(
-                                auth = auth,
-                                stream = stream,
-                                session = session,
-                                outbox = outbox,
-                                retained = retained,
-                                otherOpen = true,
-                            )
-                            assertEquals(
-                                DurableSyncRequestPlan.RetainExisting(expected),
-                                actual,
-                            )
-                        }
-                    }
-                }
+    fun revokeAlwaysOutranksRefreshAndEverySyncRoute() {
+        val retained = DurableSyncRequestKind.entries.toSet()
+        for (auth in DurableSyncPlannerAuth.entries) {
+            for (stream in DurableSyncPlannerStream.entries) {
+                assertEquals(
+                    DurableSyncRequestPlan.RetainExisting(DurableSyncRequestKind.REVOKE),
+                    decide(
+                        auth = auth,
+                        stream = stream,
+                        session = true,
+                        outbox = true,
+                        retained = retained,
+                        waitingAmbiguous = true,
+                        otherOpen = true,
+                    ),
+                )
             }
         }
     }
 
     @Test
-    fun unresolvedOpenRequestBlocksEveryNewIntent() {
+    fun currentWaiterAndExpiredAccessOutrankBootstrapPushAndPull() {
+        val nonRevoke = setOf(
+            DurableSyncRequestKind.BOOTSTRAP,
+            DurableSyncRequestKind.PUSH,
+            DurableSyncRequestKind.PULL,
+        )
+        listOf(
+            decide(
+                auth = DurableSyncPlannerAuth.ACTIVE_CURRENT,
+                stream = DurableSyncPlannerStream.BOOTSTRAP_REQUIRED,
+                session = true,
+                outbox = true,
+                retained = nonRevoke,
+                waitingCurrent = true,
+                otherOpen = true,
+            ),
+            decide(
+                auth = DurableSyncPlannerAuth.REFRESH_REQUIRED,
+                stream = DurableSyncPlannerStream.INCREMENTAL_WITH_CURSOR,
+                session = false,
+                outbox = true,
+                retained = nonRevoke,
+                otherOpen = true,
+            ),
+        ).forEach { plan ->
+            assertEquals(
+                noRequest(DurableSyncNoRequestReason.REFRESH_REQUIRED),
+                plan,
+            )
+        }
+    }
+
+    @Test
+    fun nonRevokeExistingRequestsKeepBootstrapPushPullOrder() {
+        val ordered = listOf(
+            DurableSyncRequestKind.BOOTSTRAP,
+            DurableSyncRequestKind.PUSH,
+            DurableSyncRequestKind.PULL,
+        )
+        for (mask in 1 until (1 shl ordered.size)) {
+            val retained = ordered
+                .filterIndexed { index, _ -> mask and (1 shl index) != 0 }
+                .toSet()
+            assertEquals(
+                DurableSyncRequestPlan.RetainExisting(ordered.first { it in retained }),
+                decide(
+                    auth = DurableSyncPlannerAuth.ACTIVE_CURRENT,
+                    stream = DurableSyncPlannerStream.INCREMENTAL_WITH_CURSOR,
+                    session = false,
+                    outbox = true,
+                    retained = retained,
+                    otherOpen = true,
+                ),
+            )
+        }
+    }
+
+    @Test
+    fun unresolvedOpenRequestBlocksEveryNewIntentWithoutRefreshAuthority() {
         for (auth in DurableSyncPlannerAuth.entries) {
+            if (auth == DurableSyncPlannerAuth.REFRESH_REQUIRED) continue
             for (stream in DurableSyncPlannerStream.entries) {
                 for (session in listOf(false, true)) {
                     for (outbox in listOf(false, true)) {
@@ -55,6 +106,28 @@ class DurableSyncRequestPlanningPolicyTest {
                 }
             }
         }
+    }
+
+    @Test
+    fun ambiguousWaitingMetadataBlocksExpiredAccessAndEveryNonRevokeRoute() {
+        val plan = decide(
+            auth = DurableSyncPlannerAuth.REFRESH_REQUIRED,
+            stream = DurableSyncPlannerStream.INCREMENTAL_WITH_CURSOR,
+            session = false,
+            outbox = true,
+            retained = setOf(
+                DurableSyncRequestKind.BOOTSTRAP,
+                DurableSyncRequestKind.PUSH,
+                DurableSyncRequestKind.PULL,
+            ),
+            waitingAmbiguous = true,
+            otherOpen = true,
+        )
+
+        assertEquals(
+            noRequest(DurableSyncNoRequestReason.OPEN_REQUEST_REQUIRES_RECOVERY),
+            plan,
+        )
     }
 
     @Test
@@ -317,6 +390,8 @@ class DurableSyncRequestPlanningPolicyTest {
         session: Boolean,
         outbox: Boolean,
         retained: Set<DurableSyncRequestKind> = emptySet(),
+        waitingCurrent: Boolean = false,
+        waitingAmbiguous: Boolean = false,
         otherOpen: Boolean = false,
     ): DurableSyncRequestPlan = DurableSyncRequestPlanningPolicy.decide(
         DurableSyncRequestPlanningSnapshot(
@@ -325,6 +400,8 @@ class DurableSyncRequestPlanningPolicyTest {
             activeBootstrapSessionPresent = session,
             actionableOutboxPresent = outbox,
             retainedExistingRequests = retained,
+            currentAuthorityWaitingRefreshPresent = waitingCurrent,
+            waitingRefreshMetadataAmbiguous = waitingAmbiguous,
             otherOpenRequestBlocksCreation = otherOpen,
         ),
     )
