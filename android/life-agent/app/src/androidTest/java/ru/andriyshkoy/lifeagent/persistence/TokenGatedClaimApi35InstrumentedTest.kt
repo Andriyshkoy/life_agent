@@ -61,7 +61,9 @@ class TokenGatedClaimApi35InstrumentedTest {
             personId = SyncM2PersistenceFixture.PERSON_ID,
         )
         fixture.installActiveAuth(generation = 1)
-        fixture.seedIncrementalStream()
+        fixture.database.syncReplicaDao().insertStreamState(
+            fixture.streamState().copy(appliedCursor = DEFAULT_CURSOR),
+        )
         val request = PullRequest(
             requestId = UUID.randomUUID().toString(),
             deviceId = SyncM2PersistenceFixture.DEVICE_ID,
