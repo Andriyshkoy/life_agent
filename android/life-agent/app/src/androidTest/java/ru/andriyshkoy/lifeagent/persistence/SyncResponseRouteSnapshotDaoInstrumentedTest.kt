@@ -191,7 +191,7 @@ class SyncResponseRouteSnapshotDaoInstrumentedTest {
             WHERE endpoint_id = 'sync_pull'
               AND request_identity = ?
             """.trimIndent(),
-            arrayOf(
+            arrayOf<Any>(
                 Int.MAX_VALUE.toLong() + 1,
                 Int.MAX_VALUE.toLong() + 2,
                 wideIntegerRequest.requestIdentity,
