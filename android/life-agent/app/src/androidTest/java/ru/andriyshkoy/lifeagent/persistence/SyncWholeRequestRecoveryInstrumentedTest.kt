@@ -81,17 +81,6 @@ class SyncWholeRequestRecoveryInstrumentedTest {
                 state = "waiting_refresh",
                 refreshAttempted = true,
             )
-            val oldBootstrapId = UUID.randomUUID().toString()
-            val oldBootstrapRequest = fixture.request(
-                endpointId = "sync_bootstrap",
-                requestIdentity = UUID.randomUUID().toString(),
-                state = "sending",
-                attemptCount = 1,
-                activeAttemptId = UUID.randomUUID().toString(),
-                bootstrapId = oldBootstrapId,
-                leaseExpiresAtEpochMs = SyncM2PersistenceFixture.DEADLINE_MS,
-            )
-            fixture.database.syncTransportDao().insertRequest(oldBootstrapRequest)
             val proposed = fixture.bootstrapIntent(pageSize = 500)
             val response = bootstrapRequiredResponse(push)
 
@@ -116,21 +105,12 @@ class SyncWholeRequestRecoveryInstrumentedTest {
             assertEquals(operationSha, released.wireOperationContentSha256)
             assertEquals(localSequence, released.localSequence)
 
-            listOf(readyPull, retryPull, waitingPull, oldBootstrapRequest).forEach {
+            listOf(readyPull, retryPull, waitingPull).forEach {
                 val invalidated = fixture.database.syncTransportDao()
                     .findRequest(it.endpointId, it.requestIdentity)
                 assertEquals("terminal_local", invalidated?.state)
                 assertNull(invalidated?.activeAttemptId)
             }
-            assertEquals(
-                "bootstrap_superseded",
-                fixture.database.syncTransportDao()
-                    .findRequest(
-                        oldBootstrapRequest.endpointId,
-                        oldBootstrapRequest.requestIdentity,
-                    )
-                    ?.terminalErrorCode,
-            )
             assertEquals(
                 "ready",
                 fixture.database.syncTransportDao()
@@ -160,6 +140,67 @@ class SyncWholeRequestRecoveryInstrumentedTest {
                 fixture.database.syncTransportDao()
                     .findRunnableRequests(SyncM2PersistenceFixture.NOW_MS, 20)
                 .map { it.requestIdentity },
+            )
+        }
+
+    @Test
+    fun unboundOpenBootstrapDefersBootstrapRequiredWithoutMutation() =
+        runBlocking {
+            val outbox = createReadyOutbox()
+            val push = insertAndClaimPush(outbox)
+            val unboundBootstrap = fixture.request(
+                endpointId = "sync_bootstrap",
+                requestIdentity = UUID.randomUUID().toString(),
+                state = "sending",
+                attemptCount = 1,
+                activeAttemptId = UUID.randomUUID().toString(),
+                bootstrapId = UUID.randomUUID().toString(),
+                leaseExpiresAtEpochMs = SyncM2PersistenceFixture.DEADLINE_MS,
+            )
+            fixture.database.syncTransportDao().insertRequest(unboundBootstrap)
+            val proposed = fixture.bootstrapIntent(pageSize = 500)
+
+            assertFalse(
+                store.commitPushBootstrapRequired(
+                    bootstrapRequiredResponse(push),
+                    proposed,
+                ),
+            )
+
+            val retainedPush = fixture.database.syncTransportDao()
+                .findRequest("sync_push", push.batchId)
+            assertEquals("sending", retainedPush?.state)
+            assertEquals(push.attemptId, retainedPush?.activeAttemptId)
+            val retainedOutbox = fixture.database.noteMutationDao()
+                .findOutbox(outbox.operationId)
+            assertEquals("batched", retainedOutbox?.state)
+            assertEquals(push.batchId, retainedOutbox?.activeBatchId)
+            assertEquals(
+                "sending",
+                fixture.database.syncTransportDao()
+                    .findRequest(
+                        unboundBootstrap.endpointId,
+                        unboundBootstrap.requestIdentity,
+                    )
+                    ?.state,
+            )
+            assertNull(
+                fixture.database.syncTransportDao().findRequest(
+                    proposed.firstRequest.endpointId,
+                    proposed.firstRequest.requestIdentity,
+                ),
+            )
+            assertNull(
+                fixture.database.syncReplicaDao()
+                    .findBootstrapSession(proposed.session.bootstrapId),
+            )
+            assertFalse(
+                requireNotNull(fixture.database.syncAuthDao().findState())
+                    .bootstrapRequired,
+            )
+            assertEquals(
+                "incremental",
+                fixture.database.syncReplicaDao().findStreamState()?.phase,
             )
         }
 
