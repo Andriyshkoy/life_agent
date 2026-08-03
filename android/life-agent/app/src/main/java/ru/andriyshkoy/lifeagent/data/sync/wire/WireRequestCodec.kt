@@ -128,15 +128,12 @@ internal object WireRequestCodec {
 
         val evidence = when (endpoint) {
             M2Endpoint.AUTH_REVOKE -> {
-                val root = parseCanonicalDurableRequest(endpoint, bytes)
-                root.requireConstant("protocol_version", M2_PROTOCOL_VERSION)
-                root.requireConstant("message_type", endpoint.requestMessageType)
-                root.requireExactFields(REVOKE_REQUEST_FIELDS)
-                val requestId = requireCanonicalUuid(root.requireString("request_id"))
-                val deviceId = requireCanonicalUuid(root.requireString("device_id"))
-                val generation = root.requireInteger("generation", 1L..JSON_SAFE_INTEGER_MAX)
-                requireRefreshToken(root.requireString("refresh_token"))
-                DurableRequestCorrelation(requestId, deviceId, generation)
+                val revoke = decodeDurableRevokeEvidence(bytes)
+                DurableRequestCorrelation(
+                    revoke.requestId,
+                    revoke.deviceId,
+                    revoke.generation,
+                )
             }
 
             M2Endpoint.SYNC_BOOTSTRAP -> {
@@ -152,6 +149,24 @@ internal object WireRequestCodec {
             else -> schemaFailure()
         }
         return evidence
+    }
+
+    /**
+     * Revalidates a canonical authenticated revoke body without retaining or
+     * reconstructing its refresh token in the returned evidence.
+     */
+    fun decodeDurableRevokeEvidence(bytes: ByteArray): DurableRevokeEvidence {
+        val endpoint = M2Endpoint.AUTH_REVOKE
+        val root = parseCanonicalDurableRequest(endpoint, bytes)
+        root.requireExactFields(REVOKE_REQUEST_FIELDS)
+        root.requireConstant("protocol_version", M2_PROTOCOL_VERSION)
+        root.requireConstant("message_type", endpoint.requestMessageType)
+        requireRefreshToken(root.requireString("refresh_token"))
+        return DurableRevokeEvidence(
+            requestId = requireCanonicalUuid(root.requireString("request_id")),
+            deviceId = requireCanonicalUuid(root.requireString("device_id")),
+            generation = root.requireInteger("generation", 1L..JSON_SAFE_INTEGER_MAX),
+        )
     }
 
     fun decodeDurablePushEvidence(bytes: ByteArray): DurablePushEvidence {
@@ -441,6 +456,14 @@ internal data class DurableRequestCorrelation(
     val credentialGeneration: Long?,
 ) {
     override fun toString(): String = "DurableRequestCorrelation(redacted=true)"
+}
+
+internal data class DurableRevokeEvidence(
+    val requestId: String,
+    val deviceId: String,
+    val generation: Long,
+) {
+    override fun toString(): String = "DurableRevokeEvidence(redacted=true)"
 }
 
 internal data class DurablePushEvidence(
