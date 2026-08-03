@@ -99,7 +99,7 @@ class MainActivityOfflinePersistenceInstrumentedTest {
     @Test
     fun acceptanceFlowIsOfflineAppendOnlyAndRestoredAcrossActivityRecreation() {
         acceptanceStep("wait for initial persistent state") {
-            assertNoNetworkPermissions()
+            assertMinimalNetworkPermissions()
             waitForReadyApplication()
         }
 
@@ -230,7 +230,7 @@ class MainActivityOfflinePersistenceInstrumentedTest {
 
     @Test
     fun fullAppCaptureRemainsUsableAtTwoHundredPercentFontScale() {
-        assertNoNetworkPermissions()
+        assertMinimalNetworkPermissions()
         waitForReadyApplication()
 
         val originalFontScale = activityFontScale()
@@ -262,7 +262,7 @@ class MainActivityOfflinePersistenceInstrumentedTest {
 
     @Test
     fun phase1SeedSyntheticNoteForExternalColdStart() {
-        assertNoNetworkPermissions()
+        assertMinimalNetworkPermissions()
         assertAirplaneModeWhenRequired()
         waitForReadyApplication()
 
@@ -282,7 +282,7 @@ class MainActivityOfflinePersistenceInstrumentedTest {
 
     @Test
     fun phase2VerifySyntheticNoteAfterExternalColdStart() {
-        assertNoNetworkPermissions()
+        assertMinimalNetworkPermissions()
         assertAirplaneModeWhenRequired()
         waitForReadyApplication()
 
@@ -354,7 +354,7 @@ class MainActivityOfflinePersistenceInstrumentedTest {
         nodes[lastIndex].performClick()
     }
 
-    private fun assertNoNetworkPermissions() {
+    private fun assertMinimalNetworkPermissions() {
         @Suppress("DEPRECATION")
         val requested = context.packageManager
             .getPackageInfo(context.packageName, PackageManager.GET_PERMISSIONS)
@@ -362,7 +362,7 @@ class MainActivityOfflinePersistenceInstrumentedTest {
             .orEmpty()
             .toSet()
 
-        assertFalse(requested.contains(Manifest.permission.INTERNET))
+        assertTrue(requested.contains(Manifest.permission.INTERNET))
         assertFalse(requested.contains(Manifest.permission.ACCESS_NETWORK_STATE))
         assertFalse(requested.contains(Manifest.permission.CHANGE_NETWORK_STATE))
     }

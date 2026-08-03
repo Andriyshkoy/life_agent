@@ -20,6 +20,7 @@ APP_ROOT = ROOT / "android" / "life-agent" / "app" / "src" / "main"
 SOURCE_MANIFEST = APP_ROOT / "AndroidManifest.xml"
 LEGACY_RULES = APP_ROOT / "res" / "xml" / "backup_rules_legacy.xml"
 EXTRACTION_RULES = APP_ROOT / "res" / "xml" / "data_extraction_rules.xml"
+NETWORK_SECURITY_CONFIG = APP_ROOT / "res" / "xml" / "network_security_config.xml"
 
 ANDROID_NAMESPACE = "http://schemas.android.com/apk/res/android"
 ANDROID_ATTRIBUTE = f"{{{ANDROID_NAMESPACE}}}"
@@ -42,8 +43,16 @@ REQUIRED_APPLICATION_ATTRIBUTES = {
     "allowBackup": "false",
     "dataExtractionRules": "@xml/data_extraction_rules",
     "fullBackupContent": "@xml/backup_rules_legacy",
+    "networkSecurityConfig": "@xml/network_security_config",
     "usesCleartextTraffic": "false",
 }
+REQUIRED_PERMISSIONS = frozenset({"android.permission.INTERNET"})
+FORBIDDEN_PERMISSIONS = frozenset(
+    {
+        "android.permission.ACCESS_NETWORK_STATE",
+        "android.permission.CHANGE_NETWORK_STATE",
+    }
+)
 
 
 class SecurityValidationError(AssertionError):
@@ -117,6 +126,50 @@ def validate_manifest(path: Path) -> None:
                 f"{path}: android:{attribute} must be {expected!r}, got {actual!r}"
             )
 
+    permissions = [
+        child.attrib.get(f"{ANDROID_ATTRIBUTE}name")
+        for child in root
+        if local_name(child) == "uses-permission"
+    ]
+    duplicate_permissions = sorted(
+        permission
+        for permission in set(permissions)
+        if permission is not None and permissions.count(permission) > 1
+    )
+    if duplicate_permissions:
+        fail(f"{path}: duplicate permissions: {duplicate_permissions}")
+    missing_permissions = sorted(REQUIRED_PERMISSIONS - set(permissions))
+    if missing_permissions:
+        fail(f"{path}: required permissions missing: {', '.join(missing_permissions)}")
+    forbidden_permissions = sorted(FORBIDDEN_PERMISSIONS & set(permissions))
+    if forbidden_permissions:
+        fail(f"{path}: forbidden permissions present: {', '.join(forbidden_permissions)}")
+
+
+def validate_network_security_config(path: Path) -> None:
+    root = parse_xml(path)
+    if local_name(root) != "network-security-config":
+        fail(f"{path}: expected <network-security-config>")
+
+    children = list(root)
+    if len(children) != 1 or local_name(children[0]) != "base-config":
+        fail(f"{path}: expected exactly one <base-config>")
+    base_config = children[0]
+    if base_config.attrib.get("cleartextTrafficPermitted") != "false":
+        fail(f"{path}: base cleartextTrafficPermitted must be 'false'")
+
+    base_children = list(base_config)
+    if len(base_children) != 1 or local_name(base_children[0]) != "trust-anchors":
+        fail(f"{path}: expected exactly one <trust-anchors>")
+    trust_anchors = base_children[0]
+    certificates = list(trust_anchors)
+    if (
+        len(certificates) != 1
+        or local_name(certificates[0]) != "certificates"
+        or certificates[0].attrib != {"src": "system"}
+    ):
+        fail(f"{path}: trust anchors must contain only system certificates")
+
 
 def validate_legacy_rules(path: Path) -> None:
     root = parse_xml(path)
@@ -160,6 +213,7 @@ def validate_all(merged_manifests: Iterable[Path] = ()) -> None:
     validate_manifest(SOURCE_MANIFEST)
     validate_legacy_rules(LEGACY_RULES)
     validate_extraction_rules(EXTRACTION_RULES)
+    validate_network_security_config(NETWORK_SECURITY_CONFIG)
     for manifest in merged_manifests:
         validate_manifest(manifest)
 
@@ -179,7 +233,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(sys.argv[1:] if argv is None else argv)
     validate_all(args.merged_manifest)
-    checked = 3 + len(args.merged_manifest)
+    checked = 4 + len(args.merged_manifest)
     print(
         "PASS: "
         f"{checked} Android security declarations; "

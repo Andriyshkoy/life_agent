@@ -109,27 +109,27 @@ class DurableRequestBoundaryArchitectureTest {
         )
         assertOnlyAllowedMainMatches(
             pattern = Regex("""\bcommitPushResponse\b"""),
-            allowedPaths = setOf(PROTECTED_STORE, SYNC_PERSISTENCE_STORE),
+            allowedPaths = setOf(SYNC_PERSISTENCE_STORE),
         )
         assertOnlyAllowedMainMatches(
             pattern = Regex("""\bcommitPullPage\b"""),
-            allowedPaths = setOf(PROTECTED_STORE, SYNC_PERSISTENCE_STORE),
+            allowedPaths = setOf(SYNC_PERSISTENCE_STORE),
         )
         assertOnlyAllowedMainMatches(
             pattern = Regex("""\bcommitCursorInvalid\b"""),
-            allowedPaths = setOf(PROTECTED_STORE, SYNC_PERSISTENCE_STORE),
+            allowedPaths = setOf(SYNC_PERSISTENCE_STORE),
         )
         assertOnlyAllowedMainMatches(
             pattern = Regex("""\bhandleTrustedSyncUnauthorized\b"""),
-            allowedPaths = setOf(PROTECTED_STORE, AUTH_STORE),
+            allowedPaths = setOf(AUTH_STORE),
         )
         assertOnlyAllowedMainMatches(
             pattern = Regex("""\bcommitRevokeTerminal\b"""),
-            allowedPaths = setOf(PROTECTED_STORE, AUTH_STORE),
+            allowedPaths = setOf(AUTH_STORE),
         )
         assertOnlyAllowedMainMatches(
             pattern = Regex("""\bquarantineRevokeIntegrity\b"""),
-            allowedPaths = setOf(PROTECTED_STORE, AUTH_STORE),
+            allowedPaths = setOf(AUTH_STORE),
         )
         assertOnlyAllowedMainMatches(
             pattern = Regex("""\bpreflightFreshResponseRequestMetadata\b"""),
@@ -148,6 +148,62 @@ class DurableRequestBoundaryArchitectureTest {
         assertFalse(source.contains("val bootstrapRequest: SyncHttpRequestEntity"))
         assertFalse(source.contains("suspend fun beginRevoke("))
         assertFalse(source.contains("transportDao.insertRequest("))
+    }
+
+    @Test
+    fun exactHttpsTransportStaysDormantBehindOpaqueProtectedClaims() {
+        assertOnlyAllowedMainMatches(
+            pattern = Regex("""\bokhttp3\."""),
+            allowedPaths = EXACT_HTTPS_FILES,
+        )
+        assertOnlyAllowedMainCallSites(
+            token = "newCall(",
+            allowedPaths = setOf(EXACT_HTTPS_TRANSPORT),
+        )
+        assertOnlyAllowedMainCallSites(
+            token = "consumeBody(",
+            allowedPaths = setOf(REQUEST_PROTECTION, EXACT_HTTPS_TRANSPORT),
+        )
+        assertOnlyAllowedMainMatches(
+            pattern = Regex(
+                """\b(?:ExactHttps(?:Transport|Outcome|RawResponse)|""" +
+                    """ProductionM2HttpsTransportFactory|M2HttpsConfiguration)\b""",
+            ),
+            allowedPaths = EXACT_HTTPS_FILES,
+        )
+        assertOnlyAllowedMainMatches(
+            pattern = Regex("""BuildConfig\.LIFE_AGENT_API_(?:ORIGIN|SPKI_PINS)"""),
+            allowedPaths = setOf(EXACT_HTTPS_CONFIGURATION),
+        )
+
+        val transportSource = EXACT_HTTPS_FILES.joinToString("\n") { path ->
+            File(mainSourceRoot(), path).readText()
+        }
+        listOf(
+            "WireResponseCodec",
+            "SyncPersistenceStore",
+            "SyncAuthPersistenceStore",
+            "SyncRequestPersistenceStore",
+            "WorkManager",
+            "CoroutineWorker",
+        ).forEach { forbidden ->
+            assertFalse("Transport references forbidden $forbidden", transportSource.contains(forbidden))
+        }
+
+        val appGraph = File(mainSourceRoot(), APP_CONTAINER).readText()
+        assertFalse(appGraph.contains("ExactHttps"))
+
+        val allMainSource = mainSourceRoot().walkTopDown()
+            .filter { it.isFile && it.extension in setOf("kt", "java") }
+            .joinToString("\n") { it.readText() }
+        assertFalse(
+            "Tracked production source contains a concrete HTTPS coordinate",
+            Regex("""https://[A-Za-z0-9]""").containsMatchIn(allMainSource),
+        )
+        assertFalse(
+            "Tracked production source contains a concrete SPKI pin",
+            Regex("""sha256/[A-Za-z0-9+/]{43}=""").containsMatchIn(allMainSource),
+        )
     }
 
     private fun assertOnlyAllowedMainCallSites(
@@ -195,6 +251,13 @@ class DurableRequestBoundaryArchitectureTest {
         const val TRANSPORT_DAO = "java/$DB_PACKAGE/dao/SyncTransportDao.kt"
         const val REQUEST_PROTECTION =
             "java/$SECURITY_PACKAGE/DurableSyncRequestProtection.kt"
+        const val APP_CONTAINER = "java/ru/andriyshkoy/lifeagent/AppContainer.kt"
+        const val TRANSPORT_PACKAGE = "ru/andriyshkoy/lifeagent/data/sync/transport"
+        const val EXACT_HTTPS_CONFIGURATION =
+            "java/$TRANSPORT_PACKAGE/M2HttpsConfiguration.kt"
+        const val EXACT_HTTPS_TRANSPORT =
+            "java/$TRANSPORT_PACKAGE/ExactHttpsTransport.kt"
+        val EXACT_HTTPS_FILES = setOf(EXACT_HTTPS_CONFIGURATION, EXACT_HTTPS_TRANSPORT)
         val APPROVED_TRANSPORT_DAO_OWNERS = setOf(
             PROTECTED_STORE,
             AUTH_STORE,

@@ -12,6 +12,7 @@ from scripts.validate_android_security import (
     validate_all,
     validate_extraction_rules,
     validate_manifest,
+    validate_network_security_config,
 )
 
 
@@ -81,16 +82,65 @@ class AndroidSecurityValidatorTest(unittest.TestCase):
     def test_allow_backup_must_remain_false(self) -> None:
         xml = f"""\
 <manifest xmlns:android="{ANDROID_NS}">
+  <uses-permission android:name="android.permission.INTERNET" />
   <application
       android:allowBackup="true"
       android:dataExtractionRules="@xml/data_extraction_rules"
       android:fullBackupContent="@xml/backup_rules_legacy"
+      android:networkSecurityConfig="@xml/network_security_config"
       android:usesCleartextTraffic="false" />
 </manifest>
 """
         path = self.write_temporary_xml(xml)
         with self.assertRaisesRegex(SecurityValidationError, "allowBackup"):
             validate_manifest(path)
+
+    def test_internet_permission_is_required(self) -> None:
+        xml = self.valid_manifest().replace(
+            '  <uses-permission android:name="android.permission.INTERNET" />\n',
+            "",
+        )
+        path = self.write_temporary_xml(xml)
+        with self.assertRaisesRegex(SecurityValidationError, "required permissions missing"):
+            validate_manifest(path)
+
+    def test_network_management_permissions_are_forbidden(self) -> None:
+        xml = self.valid_manifest().replace(
+            "  <application",
+            "  <uses-permission "
+            'android:name="android.permission.ACCESS_NETWORK_STATE" />\n'
+            "  <application",
+        )
+        path = self.write_temporary_xml(xml)
+        with self.assertRaisesRegex(SecurityValidationError, "forbidden permissions present"):
+            validate_manifest(path)
+
+    def test_network_security_config_requires_only_system_trust(self) -> None:
+        xml = """\
+<network-security-config>
+  <base-config cleartextTrafficPermitted="false">
+    <trust-anchors>
+      <certificates src="user" />
+    </trust-anchors>
+  </base-config>
+</network-security-config>
+"""
+        path = self.write_temporary_xml(xml)
+        with self.assertRaisesRegex(SecurityValidationError, "only system certificates"):
+            validate_network_security_config(path)
+
+    def valid_manifest(self) -> str:
+        return f"""\
+<manifest xmlns:android="{ANDROID_NS}">
+  <uses-permission android:name="android.permission.INTERNET" />
+  <application
+      android:allowBackup="false"
+      android:dataExtractionRules="@xml/data_extraction_rules"
+      android:fullBackupContent="@xml/backup_rules_legacy"
+      android:networkSecurityConfig="@xml/network_security_config"
+      android:usesCleartextTraffic="false" />
+</manifest>
+"""
 
     def write_temporary_xml(self, content: str) -> Path:
         temporary_directory = tempfile.TemporaryDirectory()
