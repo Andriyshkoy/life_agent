@@ -3,6 +3,7 @@ package ru.andriyshkoy.lifeagent.data.sync.runtime
 import java.util.concurrent.CancellationException
 import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.sync.Mutex
@@ -14,6 +15,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Test
 
+@OptIn(ExperimentalCoroutinesApi::class)
 class BoundedSyncCoordinatorTest {
     @Test
     fun recoveryIsFirstAndRunStopsAtFourTotalTransitions() = runTest {

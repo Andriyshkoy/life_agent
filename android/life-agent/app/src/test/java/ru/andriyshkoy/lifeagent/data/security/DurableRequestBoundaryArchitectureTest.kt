@@ -20,6 +20,7 @@ class DurableRequestBoundaryArchitectureTest {
             token = "insertRequest(",
             allowedPaths = setOf(
                 PROTECTED_STORE,
+                PROTECTED_PLANNING_FACADE,
                 SYNC_PERSISTENCE_STORE,
                 SYNC_REQUEST_STORE,
                 TRANSPORT_DAO,
@@ -89,6 +90,7 @@ class DurableRequestBoundaryArchitectureTest {
             pattern = Regex("""\bBootstrapIntentPersistence\b"""),
             allowedPaths = setOf(
                 PROTECTED_STORE,
+                PROTECTED_PLANNING_FACADE,
                 PROTECTED_RESPONSE_STORE,
                 SYNC_PERSISTENCE_STORE,
                 SYNC_REQUEST_STORE,
@@ -104,7 +106,11 @@ class DurableRequestBoundaryArchitectureTest {
         )
         assertOnlyAllowedMainMatches(
             pattern = Regex("""\binstallOrRetainBootstrapIntent\b"""),
-            allowedPaths = setOf(SYNC_PERSISTENCE_STORE, SYNC_REQUEST_STORE),
+            allowedPaths = setOf(
+                PROTECTED_PLANNING_FACADE,
+                SYNC_PERSISTENCE_STORE,
+                SYNC_REQUEST_STORE,
+            ),
         )
         assertOnlyAllowedMainMatches(
             pattern = Regex("""\bcommitBootstrapPage\b"""),
@@ -172,6 +178,7 @@ class DurableRequestBoundaryArchitectureTest {
         assertOnlyAllowedMainCallSites(
             token = "consumeBody(",
             allowedPaths = HTTPS_CALL_OWNERS + setOf(
+                M2_AUTH_RUNTIME_PRODUCTION,
                 REQUEST_PROTECTION,
                 PROTECTED_RESPONSE_STORE,
             ),
@@ -189,7 +196,10 @@ class DurableRequestBoundaryArchitectureTest {
         )
         assertOnlyAllowedMainMatches(
             pattern = Regex("""\bProductionM2HttpsTransportFactory\b"""),
-            allowedPaths = setOf(EXACT_HTTPS_CONFIGURATION),
+            allowedPaths = setOf(
+                EXACT_HTTPS_CONFIGURATION,
+                M2_AUTH_RUNTIME_PRODUCTION,
+            ),
         )
         assertOnlyAllowedMainMatches(
             pattern = Regex("""\bM2HttpsConfiguration\b"""),
@@ -199,6 +209,7 @@ class DurableRequestBoundaryArchitectureTest {
             pattern = Regex("""\bOneShotAuthHttpsTransport\b"""),
             allowedPaths = setOf(
                 EXACT_HTTPS_CONFIGURATION,
+                M2_AUTH_RUNTIME_PRODUCTION,
                 ONE_SHOT_AUTH_HTTPS_TRANSPORT,
             ),
         )
@@ -215,7 +226,7 @@ class DurableRequestBoundaryArchitectureTest {
         assertSourceTokenCount(
             source = factorySource,
             token = "createPinnedTransport { configuration, client ->",
-            expectedCount = 2,
+            expectedCount = 1,
         )
         listOf(
             "private inline fun <T> createPinnedTransport(",
@@ -286,7 +297,11 @@ class DurableRequestBoundaryArchitectureTest {
     fun durableResponseReductionStaysBehindOneClosedProductionDecoder() {
         assertOnlyAllowedMainMatches(
             pattern = Regex("""\bWireResponseCodec\b"""),
-            allowedPaths = setOf(PROTECTED_RESPONSE_STORE, WIRE_RESPONSE_CODEC),
+            allowedPaths = setOf(
+                M2_AUTH_RUNTIME_PRODUCTION,
+                PROTECTED_RESPONSE_STORE,
+                WIRE_RESPONSE_CODEC,
+            ),
         )
         assertOnlyAllowedMainMatches(
             pattern = Regex(
@@ -376,6 +391,10 @@ class DurableRequestBoundaryArchitectureTest {
         const val AUTH_STORE = "java/$DB_PACKAGE/SyncAuthPersistenceStore.kt"
         const val LIFE_AGENT_DATABASE = "java/$DB_PACKAGE/LifeAgentDatabase.kt"
         const val PROTECTED_STORE = "java/$DB_PACKAGE/ProtectedSyncRequestStore.kt"
+        // This facade owns body-blind planning and atomic insertion of entities
+        // that ProtectedSyncRequestStore has already constructed and protected.
+        const val PROTECTED_PLANNING_FACADE =
+            "java/$DB_PACKAGE/ProtectedSyncRequestPlanningFacade.kt"
         const val PROTECTED_RESPONSE_STORE =
             "java/$DB_PACKAGE/ProtectedSyncResponseStore.kt"
         const val SYNC_PERSISTENCE_STORE = "java/$DB_PACKAGE/SyncPersistenceStore.kt"
@@ -393,6 +412,8 @@ class DurableRequestBoundaryArchitectureTest {
             "java/$TRANSPORT_PACKAGE/ExactHttpsTransport.kt"
         const val ONE_SHOT_AUTH_HTTPS_TRANSPORT =
             "java/$TRANSPORT_PACKAGE/OneShotAuthHttpsTransport.kt"
+        const val M2_AUTH_RUNTIME_PRODUCTION =
+            "java/ru/andriyshkoy/lifeagent/data/sync/runtime/M2AuthRuntimeProduction.kt"
         val EXACT_HTTPS_FILES = setOf(EXACT_HTTPS_CONFIGURATION, EXACT_HTTPS_TRANSPORT)
         val HTTPS_CALL_OWNERS = setOf(
             EXACT_HTTPS_TRANSPORT,
@@ -401,6 +422,7 @@ class DurableRequestBoundaryArchitectureTest {
         val HTTPS_TRANSPORT_FILES = EXACT_HTTPS_FILES + ONE_SHOT_AUTH_HTTPS_TRANSPORT
         val APPROVED_TRANSPORT_DAO_OWNERS = setOf(
             PROTECTED_STORE,
+            PROTECTED_PLANNING_FACADE,
             PROTECTED_RESPONSE_STORE,
             AUTH_STORE,
             SYNC_PERSISTENCE_STORE,

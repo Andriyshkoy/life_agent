@@ -3,18 +3,47 @@ package ru.andriyshkoy.lifeagent.data.sync.transport
 import java.util.Base64
 import javax.net.ssl.SSLPeerUnverifiedException
 import okhttp3.CertificatePinner
+import okhttp3.OkHttpClient
 import okhttp3.tls.HeldCertificate
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import ru.andriyshkoy.lifeagent.data.sync.wire.M2Endpoint
 
 class M2HttpsConfigurationTest {
+    @Test
+    fun deploymentPresenceDistinguishesAbsentPartialAndUnvalidatedValues() {
+        assertEquals(
+            M2HttpsDeploymentPresence.ABSENT,
+            m2HttpsDeploymentPresence(rawOrigin = "", rawSpkiPins = ""),
+        )
+        listOf(
+            "" to FIRST_PIN,
+            SYNTHETIC_ORIGIN to "",
+        ).forEach { (origin, pins) ->
+            assertEquals(
+                M2HttpsDeploymentPresence.PARTIAL,
+                m2HttpsDeploymentPresence(origin, pins),
+            )
+        }
+        listOf(
+            " " to " ",
+            "not-a-url" to "not-a-pin",
+            SYNTHETIC_ORIGIN to "$FIRST_PIN,$SECOND_PIN",
+        ).forEach { (origin, pins) ->
+            assertEquals(
+                M2HttpsDeploymentPresence.PRESENT_UNVALIDATED,
+                m2HttpsDeploymentPresence(origin, pins),
+            )
+        }
+    }
+
     @Test
     fun blankAndPartialConfigurationFailsClosed() {
         val validPins = "$FIRST_PIN,$SECOND_PIN"
@@ -179,6 +208,34 @@ class M2HttpsConfigurationTest {
         assertFalse(diagnosticText.contains(SYNTHETIC_HOST))
         assertFalse(diagnosticText.contains(FIRST_PIN))
         assertFalse(diagnosticText.contains(SECOND_PIN))
+    }
+
+    @Test
+    fun sharedTransportBundleIsLazyAndCreatedOnlyOnce() {
+        val configuration = validConfiguration()
+        val client = OkHttpClient()
+        val expected = ProductionM2HttpsTransportBundle(
+            exact = ExactHttpsTransport(client, configuration),
+            auth = OneShotAuthHttpsTransport(client, configuration),
+        )
+        var creationCount = 0
+        val lazyBundle = LazyProductionM2HttpsTransportBundle {
+            creationCount += 1
+            expected
+        }
+
+        assertEquals(0, creationCount)
+        assertEquals(
+            "LazyProductionM2HttpsTransportBundle(redacted=true)",
+            lazyBundle.toString(),
+        )
+        assertSame(expected, lazyBundle.open())
+        assertSame(expected, lazyBundle.open())
+        assertEquals(1, creationCount)
+        assertEquals(
+            "ProductionM2HttpsTransportBundle(redacted=true)",
+            expected.toString(),
+        )
     }
 
     private fun validConfiguration(): M2HttpsConfiguration = M2HttpsConfiguration.parse(

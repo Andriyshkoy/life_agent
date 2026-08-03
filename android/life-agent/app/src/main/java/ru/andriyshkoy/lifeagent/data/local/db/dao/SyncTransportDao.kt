@@ -469,6 +469,15 @@ interface SyncTransportDao {
 
     @Query(
         """
+        SELECT COUNT(*)
+        FROM sync_http_request
+        WHERE state IN ('ready', 'retry_wait', 'sending', 'waiting_refresh')
+        """,
+    )
+    suspend fun countOpenRequestRows(): Long
+
+    @Query(
+        """
         SELECT COUNT(*) FROM sync_http_request
         WHERE endpoint_id = 'sync_pull'
           AND credential_epoch_id = :credentialEpochId
