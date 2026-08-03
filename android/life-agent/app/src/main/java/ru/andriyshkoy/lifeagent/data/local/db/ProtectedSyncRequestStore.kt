@@ -19,6 +19,9 @@ import ru.andriyshkoy.lifeagent.data.security.RequestBodyKeyUnavailableException
 import ru.andriyshkoy.lifeagent.data.security.RequestBodyMetadataInvalidException
 import ru.andriyshkoy.lifeagent.data.security.SensitivePayloadIntegrityException
 import ru.andriyshkoy.lifeagent.data.security.VerifiedDurableRequest
+import ru.andriyshkoy.lifeagent.data.sync.runtime.AccessTokenClaim
+import ru.andriyshkoy.lifeagent.data.sync.runtime.AccessTokenKey
+import ru.andriyshkoy.lifeagent.data.sync.runtime.AccessTokenVault
 import ru.andriyshkoy.lifeagent.data.sync.wire.BootstrapRequest
 import ru.andriyshkoy.lifeagent.data.sync.wire.M2Endpoint
 import ru.andriyshkoy.lifeagent.data.sync.wire.M2WireRequest
@@ -238,8 +241,84 @@ internal class ProtectedSyncRequestStore(
         attemptedAtEpochMs: Long,
         leaseExpiresAtEpochMs: Long,
         updatedAtUtc: String,
-    ): ProtectedRequestClaim {
-        var pendingOwnership: VerifiedDurableRequest? = null
+    ): ProtectedRequestClaim = when (
+        val result = verifyAndClaimCore(
+            endpointId = endpointId,
+            requestIdentity = requestIdentity,
+            attemptId = attemptId,
+            attemptedAtEpochMs = attemptedAtEpochMs,
+            leaseExpiresAtEpochMs = leaseExpiresAtEpochMs,
+            updatedAtUtc = updatedAtUtc,
+            accessTokenVault = null,
+        )
+    ) {
+        is ProtectedClaimCoreResult.Claimed -> try {
+            check(result.accessTokenClaim == null)
+            result.requestClaim
+        } catch (error: Throwable) {
+            result.close()
+            throw error
+        }
+
+        is ProtectedClaimCoreResult.IntegrityFailure ->
+            ProtectedRequestClaim.IntegrityFailure(result.failure)
+
+        ProtectedClaimCoreResult.NotClaimed -> ProtectedRequestClaim.NotClaimed
+    }
+
+    /**
+     * Production dispatch boundary. For bearer-authenticated endpoints, an
+     * owned copy of the exact current credential-generation token is obtained
+     * before the attempt CAS. Missing process-local authority therefore cannot
+     * consume an attempt or create network authority. Revoke is the sole
+     * durable endpoint that can produce a successful token-free claim.
+     */
+    suspend fun verifyAndClaimForDispatch(
+        endpointId: String,
+        requestIdentity: String,
+        attemptId: String,
+        attemptedAtEpochMs: Long,
+        leaseExpiresAtEpochMs: Long,
+        updatedAtUtc: String,
+        accessTokenVault: AccessTokenVault,
+    ): ProtectedDispatchRequestClaim = when (
+        val result = verifyAndClaimCore(
+            endpointId = endpointId,
+            requestIdentity = requestIdentity,
+            attemptId = attemptId,
+            attemptedAtEpochMs = attemptedAtEpochMs,
+            leaseExpiresAtEpochMs = leaseExpiresAtEpochMs,
+            updatedAtUtc = updatedAtUtc,
+            accessTokenVault = accessTokenVault,
+        )
+    ) {
+        is ProtectedClaimCoreResult.Claimed -> try {
+            ProtectedDispatchRequestClaim.Claimed(
+                requestClaim = result.requestClaim,
+                accessTokenClaim = result.accessTokenClaim,
+            )
+        } catch (error: Throwable) {
+            result.close()
+            throw error
+        }
+
+        is ProtectedClaimCoreResult.IntegrityFailure ->
+            ProtectedDispatchRequestClaim.IntegrityFailure(result.failure)
+
+        ProtectedClaimCoreResult.NotClaimed -> ProtectedDispatchRequestClaim.NotClaimed
+    }
+
+    private suspend fun verifyAndClaimCore(
+        endpointId: String,
+        requestIdentity: String,
+        attemptId: String,
+        attemptedAtEpochMs: Long,
+        leaseExpiresAtEpochMs: Long,
+        updatedAtUtc: String,
+        accessTokenVault: AccessTokenVault?,
+    ): ProtectedClaimCoreResult {
+        var pendingRequestOwnership: VerifiedDurableRequest? = null
+        var pendingTokenOwnership: AccessTokenClaim? = null
         return try {
             val result = database.withTransaction {
                 require(attemptId.isNotBlank())
@@ -262,14 +341,14 @@ internal class ProtectedSyncRequestStore(
                     )
                 ) {
                     quarantineInvalidMetadataBeforeClaim(integritySnapshot, updatedAtUtc)
-                    return@withTransaction ProtectedRequestClaim.IntegrityFailure(
+                    return@withTransaction ProtectedClaimCoreResult.IntegrityFailure(
                         RequestBodyFailure.METADATA_INVALID,
                     )
                 }
                 val request = transportDao.findRequest(endpointId, requestIdentity)
-                    ?: return@withTransaction ProtectedRequestClaim.NotClaimed
+                    ?: return@withTransaction ProtectedClaimCoreResult.NotClaimed
                 if (!request.isEligiblePreclaimSnapshot(attemptedAtEpochMs)) {
-                    return@withTransaction ProtectedRequestClaim.NotClaimed
+                    return@withTransaction ProtectedClaimCoreResult.NotClaimed
                 }
 
                 val verified = try {
@@ -277,9 +356,10 @@ internal class ProtectedSyncRequestStore(
                 } catch (error: Exception) {
                     val failure = error.toRequestBodyFailureOrNull() ?: throw error
                     quarantineBeforeClaim(request, failure, updatedAtUtc)
-                    return@withTransaction ProtectedRequestClaim.IntegrityFailure(failure)
+                    return@withTransaction ProtectedClaimCoreResult.IntegrityFailure(failure)
                 }
 
+                var ownedAccessToken: AccessTokenClaim? = null
                 try {
                     var claimedAccessGeneration: Long? = null
                     val claimed = if (
@@ -293,7 +373,7 @@ internal class ProtectedSyncRequestStore(
                             currentAuth.state != "revoke_pending"
                         ) {
                             verified.close()
-                            return@withTransaction ProtectedRequestClaim.NotClaimed
+                            return@withTransaction ProtectedClaimCoreResult.NotClaimed
                         }
                         if (request.accessGenerationUsed != currentAuth.generation) {
                             verified.close()
@@ -302,7 +382,7 @@ internal class ProtectedSyncRequestStore(
                                 RequestBodyFailure.METADATA_INVALID,
                                 updatedAtUtc,
                             )
-                            return@withTransaction ProtectedRequestClaim.IntegrityFailure(
+                            return@withTransaction ProtectedClaimCoreResult.IntegrityFailure(
                                 RequestBodyFailure.METADATA_INVALID,
                             )
                         }
@@ -326,7 +406,7 @@ internal class ProtectedSyncRequestStore(
                             // are legitimate deferrals, not evidence that the
                             // authenticated request body was corrupted.
                             verified.close()
-                            return@withTransaction ProtectedRequestClaim.NotClaimed
+                            return@withTransaction ProtectedClaimCoreResult.NotClaimed
                         }
                         val currentStream = replicaDao.findStreamState()
                         val generationDrift =
@@ -343,7 +423,7 @@ internal class ProtectedSyncRequestStore(
                                 RequestBodyFailure.METADATA_INVALID,
                                 updatedAtUtc,
                             )
-                            return@withTransaction ProtectedRequestClaim.IntegrityFailure(
+                            return@withTransaction ProtectedClaimCoreResult.IntegrityFailure(
                                 RequestBodyFailure.METADATA_INVALID,
                             )
                         }
@@ -352,7 +432,7 @@ internal class ProtectedSyncRequestStore(
                             currentAuth.familyExpiresAtEpochMs <= attemptedAtEpochMs
                         ) {
                             verified.close()
-                            return@withTransaction ProtectedRequestClaim.NotClaimed
+                            return@withTransaction ProtectedClaimCoreResult.NotClaimed
                         }
                         claimedAccessGeneration = currentAuth.generation
                         try {
@@ -364,9 +444,21 @@ internal class ProtectedSyncRequestStore(
                                 RequestBodyFailure.METADATA_INVALID,
                                 updatedAtUtc,
                             )
-                            return@withTransaction ProtectedRequestClaim.IntegrityFailure(
+                            return@withTransaction ProtectedClaimCoreResult.IntegrityFailure(
                                 RequestBodyFailure.METADATA_INVALID,
                             )
+                        }
+                        if (accessTokenVault != null) {
+                            ownedAccessToken = accessTokenVault.claim(
+                                AccessTokenKey(
+                                    credentialEpochId = currentAuth.credentialEpochId,
+                                    accessGeneration = currentAuth.generation,
+                                ),
+                            )
+                            if (ownedAccessToken == null) {
+                                verified.close()
+                                return@withTransaction ProtectedClaimCoreResult.NotClaimed
+                            }
                         }
                         transportDao.claimAttemptRow(
                             endpointId = request.endpointId,
@@ -380,26 +472,43 @@ internal class ProtectedSyncRequestStore(
                         )
                     }
                     if (claimed != 1) {
-                        verified.close()
-                        ProtectedRequestClaim.NotClaimed
+                        try {
+                            ownedAccessToken?.close()
+                        } finally {
+                            verified.close()
+                        }
+                        ProtectedClaimCoreResult.NotClaimed
                     } else {
-                        pendingOwnership = verified
-                        ProtectedRequestClaim.Claimed(
-                            request = verified,
-                            attemptId = attemptId,
-                            credentialEpochId = request.credentialEpochId,
-                            accessGenerationUsed = checkNotNull(claimedAccessGeneration),
+                        pendingRequestOwnership = verified
+                        pendingTokenOwnership = ownedAccessToken
+                        ProtectedClaimCoreResult.Claimed(
+                            requestClaim = ProtectedRequestClaim.Claimed(
+                                request = verified,
+                                attemptId = attemptId,
+                                credentialEpochId = request.credentialEpochId,
+                                accessGenerationUsed = checkNotNull(claimedAccessGeneration),
+                            ),
+                            accessTokenClaim = ownedAccessToken,
                         )
                     }
                 } catch (error: Throwable) {
-                    verified.close()
+                    try {
+                        ownedAccessToken?.close()
+                    } finally {
+                        verified.close()
+                    }
                     throw error
                 }
             }
-            pendingOwnership = null
+            pendingRequestOwnership = null
+            pendingTokenOwnership = null
             result
         } catch (error: Throwable) {
-            pendingOwnership?.close()
+            try {
+                pendingTokenOwnership?.close()
+            } finally {
+                pendingRequestOwnership?.close()
+            }
             throw error
         }
     }
@@ -854,6 +963,76 @@ internal sealed interface ProtectedRequestClaim {
         override fun toString(): String =
             "ProtectedRequestClaim.IntegrityFailure(failure=$failure,redacted=true)"
     }
+}
+
+/**
+ * Dispatch-owned request and exact-generation bearer authority. Closing a
+ * successful claim wipes both independently owned payloads and is idempotent.
+ */
+internal sealed interface ProtectedDispatchRequestClaim {
+    class Claimed(
+        val requestClaim: ProtectedRequestClaim.Claimed,
+        val accessTokenClaim: AccessTokenClaim?,
+    ) : ProtectedDispatchRequestClaim, AutoCloseable {
+        init {
+            val expectedAccessTokenKey =
+                if (requestClaim.request.endpoint == M2Endpoint.AUTH_REVOKE) {
+                    null
+                } else {
+                    AccessTokenKey(
+                        credentialEpochId = requestClaim.credentialEpochId,
+                        accessGeneration = requestClaim.accessGenerationUsed,
+                    )
+                }
+            require(
+                accessTokenClaim?.key == expectedAccessTokenKey,
+            ) {
+                "Dispatch authorization does not match the durable endpoint"
+            }
+        }
+
+        override fun close() {
+            try {
+                accessTokenClaim?.close()
+            } finally {
+                requestClaim.request.close()
+            }
+        }
+
+        override fun toString(): String =
+            "ProtectedDispatchRequestClaim.Claimed(redacted=true)"
+    }
+
+    data object NotClaimed : ProtectedDispatchRequestClaim
+
+    class IntegrityFailure(
+        val failure: RequestBodyFailure,
+    ) : ProtectedDispatchRequestClaim {
+        override fun toString(): String =
+            "ProtectedDispatchRequestClaim.IntegrityFailure(" +
+                "failure=$failure,redacted=true)"
+    }
+}
+
+private sealed interface ProtectedClaimCoreResult {
+    class Claimed(
+        val requestClaim: ProtectedRequestClaim.Claimed,
+        val accessTokenClaim: AccessTokenClaim?,
+    ) : ProtectedClaimCoreResult, AutoCloseable {
+        override fun close() {
+            try {
+                accessTokenClaim?.close()
+            } finally {
+                requestClaim.request.close()
+            }
+        }
+    }
+
+    data object NotClaimed : ProtectedClaimCoreResult
+
+    class IntegrityFailure(
+        val failure: RequestBodyFailure,
+    ) : ProtectedClaimCoreResult
 }
 
 internal class PersistedDurableRequestRef(
