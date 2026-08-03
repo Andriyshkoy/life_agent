@@ -4,8 +4,8 @@ import android.content.Context
 import androidx.sqlite.db.SupportSQLiteDatabase
 import androidx.sqlite.db.SupportSQLiteOpenHelper
 import androidx.sqlite.db.framework.FrameworkSQLiteOpenHelperFactory
-import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import androidx.test.platform.app.InstrumentationRegistry
 import kotlinx.coroutines.runBlocking
 import org.json.JSONObject
 import org.junit.After
@@ -24,12 +24,13 @@ import ru.andriyshkoy.lifeagent.data.local.db.entity.SyncReplicaCursorEntity
 
 @RunWith(AndroidJUnit4::class)
 class SyncReplicaCursorLineageMigrationApi35InstrumentedTest {
-    private lateinit var context: Context
+    private val instrumentation = InstrumentationRegistry.getInstrumentation()
+    private val context: Context = instrumentation.targetContext
+    private val testAssets = instrumentation.context.assets
     private var database: LifeAgentDatabase? = null
 
     @Before
     fun setUp() {
-        context = ApplicationProvider.getApplicationContext()
         context.deleteDatabase(DATABASE_NAME)
     }
 
@@ -286,7 +287,7 @@ class SyncReplicaCursorLineageMigrationApi35InstrumentedTest {
         db: SupportSQLiteDatabase,
         schemaAsset: String,
     ) {
-        val document = context.assets
+        val document = testAssets
             .open(schemaAsset)
             .bufferedReader()
             .use { it.readText() }

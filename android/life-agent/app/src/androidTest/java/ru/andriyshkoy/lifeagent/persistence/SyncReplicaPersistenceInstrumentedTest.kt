@@ -45,6 +45,7 @@ import ru.andriyshkoy.lifeagent.data.local.db.entity.SyncAuthTokenFingerprintEnt
 import ru.andriyshkoy.lifeagent.data.local.db.entity.SyncBootstrapSessionEntity
 import ru.andriyshkoy.lifeagent.data.local.db.entity.SyncHttpRequestEntity
 import ru.andriyshkoy.lifeagent.data.local.db.entity.SyncPageReceiptEntity
+import ru.andriyshkoy.lifeagent.data.local.db.entity.SyncReplicaCursorEntity
 import ru.andriyshkoy.lifeagent.data.local.db.entity.SyncStreamStateEntity
 import ru.andriyshkoy.lifeagent.data.local.serialization.CanonicalNoteCodec
 import ru.andriyshkoy.lifeagent.notes.data.RoomNotesRepository
@@ -961,6 +962,7 @@ class SyncReplicaPersistenceInstrumentedTest {
             val badReceipt = pullReceipt(
                 requestId = badRequestId,
                 pageId = badPageId,
+                pageIndex = 1,
                 fromCursor = "pull-cursor-two",
                 nextCursor = "pull-cursor-three",
                 hasMore = false,
@@ -1105,6 +1107,13 @@ class SyncReplicaPersistenceInstrumentedTest {
             WHERE singleton_id = 1
             """.trimIndent(),
         )
+        requireDatabase().syncReplicaDao().insertReplicaCursor(
+            SyncReplicaCursorEntity(
+                lineageId = BOOTSTRAP_ID,
+                cursorValue = "lagging-pull-cursor",
+                role = SyncReplicaCursorEntity.ROLE_INCREMENTAL,
+            ),
+        )
         val pullRequestId = uuid(254)
         val pullAttemptId = uuid(255)
         val pullResponse = terminalResponse(
@@ -1120,6 +1129,7 @@ class SyncReplicaPersistenceInstrumentedTest {
             receipt = pullReceipt(
                 requestId = pullRequestId,
                 pageId = uuid(256),
+                pageIndex = 1,
                 fromCursor = "lagging-pull-cursor",
                 nextCursor = "cursor-through-sequence-one",
                 hasMore = true,
@@ -1162,6 +1172,7 @@ class SyncReplicaPersistenceInstrumentedTest {
         val badReceipt = pullReceipt(
             requestId = badRequestId,
             pageId = badPageId,
+            pageIndex = 2,
             fromCursor = "cursor-through-sequence-one",
             nextCursor = "cursor-through-sequence-three",
             hasMore = false,
@@ -2265,6 +2276,7 @@ class SyncReplicaPersistenceInstrumentedTest {
     private fun pullReceipt(
         requestId: String,
         pageId: String,
+        pageIndex: Int = 0,
         fromCursor: String,
         nextCursor: String,
         hasMore: Boolean,
@@ -2275,7 +2287,7 @@ class SyncReplicaPersistenceInstrumentedTest {
         endpointId = "sync_pull",
         requestIdentity = requestId,
         bootstrapId = null,
-        pageIndex = 0,
+        pageIndex = pageIndex,
         snapshotId = null,
         fromCursor = fromCursor,
         nextCursor = nextCursor,
