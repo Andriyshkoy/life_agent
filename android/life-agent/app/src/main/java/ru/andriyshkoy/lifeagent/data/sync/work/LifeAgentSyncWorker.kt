@@ -18,7 +18,13 @@ internal class LifeAgentSyncWorker(
     override suspend fun doWork(): ListenableWorker.Result {
         val provider = applicationContext as? SyncWorkExecutionPortProvider
             ?: return ListenableWorker.Result.failure()
-        return executeSyncWork(provider::openSyncWorkExecutionPort)
+        return executeSyncWork(
+            enqueueFollowUp = {
+                SyncWorkScheduler(applicationContext).enqueueFollowUp() ==
+                    SyncWorkSchedulingResult.ENQUEUED
+            },
+            openPort = provider::openSyncWorkExecutionPort,
+        )
             .toWorkManagerResult()
     }
 }

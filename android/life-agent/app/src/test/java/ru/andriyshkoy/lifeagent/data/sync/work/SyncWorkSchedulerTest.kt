@@ -33,6 +33,22 @@ class SyncWorkSchedulerTest {
     }
 
     @Test
+    fun boundedFollowUpAppendsPromptContentFreeWorkToTheSameLane() {
+        val enqueued = mutableListOf<EnqueuedWork>()
+        val scheduler = scheduler(
+            presence = M2HttpsDeploymentPresence.PRESENT_UNVALIDATED,
+            enqueued = enqueued,
+        )
+
+        assertEquals(SyncWorkSchedulingResult.ENQUEUED, scheduler.enqueueFollowUp())
+
+        val captured = enqueued.single()
+        assertEquals(SyncWorkContract.UNIQUE_WORK_NAME, captured.uniqueWorkName)
+        assertEquals(ExistingWorkPolicy.APPEND_OR_REPLACE, captured.policy)
+        assertRequestPolicy(captured.request)
+    }
+
+    @Test
     fun absentAndPartialDeploymentNeverAllocateOrEnqueueWork() {
         listOf(
             M2HttpsDeploymentPresence.ABSENT to SyncWorkSchedulingResult.NOT_CONFIGURED,
@@ -43,6 +59,7 @@ class SyncWorkSchedulerTest {
 
             assertEquals(expected, scheduler.enqueueAtStartup())
             assertEquals(expected, scheduler.enqueueNow())
+            assertEquals(expected, scheduler.enqueueFollowUp())
             assertTrue(enqueued.isEmpty())
         }
     }

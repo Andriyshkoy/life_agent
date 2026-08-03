@@ -254,7 +254,9 @@ internal class M2SyncWorkExecutionPort(
             SyncCoordinatorStopReason.PULL_CYCLE_COMPLETE ->
                 SyncWorkExecutionDisposition.COMPLETE
 
-            SyncCoordinatorStopReason.TRANSITION_LIMIT,
+            SyncCoordinatorStopReason.TRANSITION_LIMIT ->
+                SyncWorkExecutionDisposition.FOLLOW_UP_REQUIRED
+
             SyncCoordinatorStopReason.RECOVERY_RETRY_LATER,
             SyncCoordinatorStopReason.ACTION_RETRY_LATER,
             SyncCoordinatorStopReason.NO_PROGRESS,

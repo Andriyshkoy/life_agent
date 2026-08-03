@@ -50,18 +50,26 @@ internal class SyncWorkScheduler internal constructor(
         enqueuer = WorkManagerUniqueSyncWorkEnqueuer(context),
     )
 
-    fun enqueueAtStartup(): SyncWorkSchedulingResult = enqueueOneBoundedRun()
+    fun enqueueAtStartup(): SyncWorkSchedulingResult = enqueueCoalesced()
 
-    fun enqueueNow(): SyncWorkSchedulingResult = enqueueOneBoundedRun()
+    fun enqueueNow(): SyncWorkSchedulingResult = enqueueCoalesced()
 
-    private fun enqueueOneBoundedRun(): SyncWorkSchedulingResult =
+    fun enqueueFollowUp(): SyncWorkSchedulingResult =
+        enqueueOneBoundedRun(ExistingWorkPolicy.APPEND_OR_REPLACE)
+
+    private fun enqueueCoalesced(): SyncWorkSchedulingResult =
+        enqueueOneBoundedRun(ExistingWorkPolicy.KEEP)
+
+    private fun enqueueOneBoundedRun(
+        policy: ExistingWorkPolicy,
+    ): SyncWorkSchedulingResult =
         when (deploymentPresence()) {
             M2HttpsDeploymentPresence.ABSENT -> SyncWorkSchedulingResult.NOT_CONFIGURED
             M2HttpsDeploymentPresence.PARTIAL -> SyncWorkSchedulingResult.MISCONFIGURED
             M2HttpsDeploymentPresence.PRESENT_UNVALIDATED -> {
                 enqueuer.enqueue(
                     uniqueWorkName = SyncWorkContract.UNIQUE_WORK_NAME,
-                    policy = ExistingWorkPolicy.KEEP,
+                    policy = policy,
                     request = SyncWorkContract.newRequest(),
                 )
                 SyncWorkSchedulingResult.ENQUEUED

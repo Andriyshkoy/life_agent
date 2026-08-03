@@ -25,10 +25,15 @@ class SyncWorkBoundaryArchitectureTest {
             Regex("""\bData\.EMPTY\b"""),
             setOf(SYNC_WORK_CONTRACT),
         )
+        assertOnlyAllowedMainMatches(
+            Regex("""\bworkDataOf\b|\bData\.Builder\b|\.setInputData\("""),
+            setOf(SYNC_WORK_CONTRACT),
+        )
 
         val scheduler = File(mainSourceRoot(), SYNC_WORK_SCHEDULER).readText()
         assertEqualsCount(scheduler, "enqueueUniqueWork(", 1)
         assertEqualsCount(scheduler, "ExistingWorkPolicy.KEEP", 1)
+        assertEqualsCount(scheduler, "ExistingWorkPolicy.APPEND_OR_REPLACE", 1)
         assertEqualsCount(scheduler, "SyncWorkContract.UNIQUE_WORK_NAME", 1)
 
         val worker = File(mainSourceRoot(), SYNC_WORKER).readText()

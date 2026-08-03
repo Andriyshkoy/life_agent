@@ -34,6 +34,42 @@ class SyncWorkExecutionTest {
     }
 
     @Test
+    fun boundedProgressEnqueuesOneFreshFollowUpWithoutWorkDataOrBackoff() = runTest {
+        var enqueueCount = 0
+        val completion = executeSyncWork(
+            enqueueFollowUp = {
+                enqueueCount += 1
+                true
+            },
+        ) {
+            SyncWorkExecutionPort {
+                SyncWorkExecutionDisposition.FOLLOW_UP_REQUIRED
+            }
+        }
+
+        assertEquals(SyncWorkerCompletion.SUCCESS, completion)
+        assertEquals(1, enqueueCount)
+        assertEquals(Data.EMPTY, completion.toWorkManagerResult().outputData)
+
+        val unavailableFollowUp = executeSyncWork(enqueueFollowUp = { false }) {
+            SyncWorkExecutionPort {
+                SyncWorkExecutionDisposition.FOLLOW_UP_REQUIRED
+            }
+        }
+        assertEquals(SyncWorkerCompletion.RETRY, unavailableFollowUp)
+        assertEquals(Data.EMPTY, unavailableFollowUp.toWorkManagerResult().outputData)
+
+        val failedFollowUp = executeSyncWork(
+            enqueueFollowUp = { throw IllegalStateException("synthetic enqueue failure") },
+        ) {
+            SyncWorkExecutionPort {
+                SyncWorkExecutionDisposition.FOLLOW_UP_REQUIRED
+            }
+        }
+        assertEquals(SyncWorkerCompletion.RETRY, failedFollowUp)
+    }
+
+    @Test
     fun unexpectedOpenOrPortFailureFailsClosed() = runTest {
         assertEquals(
             SyncWorkerCompletion.FAILURE,
@@ -58,6 +94,17 @@ class SyncWorkExecutionTest {
             executeSyncWork {
                 SyncWorkExecutionPort {
                     throw CancellationException("synthetic execution cancellation")
+                }
+            }
+        }
+        assertCancellationPropagates {
+            executeSyncWork(
+                enqueueFollowUp = {
+                    throw CancellationException("synthetic enqueue cancellation")
+                },
+            ) {
+                SyncWorkExecutionPort {
+                    SyncWorkExecutionDisposition.FOLLOW_UP_REQUIRED
                 }
             }
         }

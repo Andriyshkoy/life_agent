@@ -203,6 +203,51 @@ class M2SyncWorkCompositionTest {
     }
 
     @Test
+    fun boundedPullProgressRequestsAPromptFreshFollowUpWithoutRetryBackoff() = runTest {
+        var candidate: SyncRunnableRequestCandidate? = PULL_CANDIDATE
+        var dispatchCalls = 0
+        val auth = FakeAuthBoundary()
+        val port = port(
+            auth = auth,
+            planning = {
+                candidate?.let { retained(DurableSyncRequestKind.PULL, it) }
+                    ?: noRequest(DurableSyncNoRequestReason.AUTHORITY_MISSING)
+            },
+            dispatch = {
+                dispatchCalls += 1
+                when (dispatchCalls) {
+                    1 -> {
+                        candidate = PULL_CANDIDATE.copy(
+                            requestIdentity = OTHER_REQUEST_ID,
+                        )
+                        ProtectedSyncDispatchDisposition.PULL_CONTINUATION_READY
+                    }
+
+                    2 -> {
+                        candidate = PULL_CANDIDATE.copy(
+                            requestIdentity = THIRD_REQUEST_ID,
+                        )
+                        ProtectedSyncDispatchDisposition.PULL_CONTINUATION_READY
+                    }
+
+                    else -> {
+                        candidate = null
+                        ProtectedSyncDispatchDisposition.PULL_CYCLE_COMPLETE
+                    }
+                }
+            },
+        )
+
+        assertEquals(
+            SyncWorkExecutionDisposition.FOLLOW_UP_REQUIRED,
+            port.runOneBoundedSync(),
+        )
+        assertEquals(SyncWorkExecutionDisposition.COMPLETE, port.runOneBoundedSync())
+        assertEquals(1, auth.ensureAccessCalls)
+        assertEquals(3, dispatchCalls)
+    }
+
+    @Test
     fun repeatedAuthorityAfterClaimedProgressIsDetectedWithoutASecondSend() = runTest {
         var dispatchCalls = 0
         val port = port(
@@ -468,6 +513,7 @@ class M2SyncWorkCompositionTest {
         const val PUSH_REQUEST_ID = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
         const val PULL_REQUEST_ID = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
         const val OTHER_REQUEST_ID = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
+        const val THIRD_REQUEST_ID = "12121212-1212-4212-8212-121212121212"
         const val FIXED_ATTEMPT_ID = "ffffffff-ffff-4fff-8fff-ffffffffffff"
         val FIXED_UUID_GENERATOR = UuidGenerator { UUID.fromString(FIXED_ATTEMPT_ID) }
         val ACCESS_KEY = AccessTokenKey(CREDENTIAL_EPOCH_ID, 3L)
