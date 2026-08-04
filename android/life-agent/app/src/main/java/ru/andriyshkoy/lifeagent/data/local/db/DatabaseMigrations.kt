@@ -408,11 +408,240 @@ object DatabaseMigrations {
         }
     }
 
+    /**
+     * Requeues only the pristine first-bootstrap halt caused by applying the
+     * millisecond-only server timestamp rule to a higher-precision Android
+     * completion timestamp. No response or request bytes are rewritten; the
+     * protected retry verifies the original body and receives the server's
+     * exact replay after normal credential refresh.
+     */
+    val MIGRATION_5_6 = object : Migration(5, 6) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            db.execSQL(
+                """
+                CREATE TEMP TABLE `_m6_local_time_bootstrap_recovery` (
+                    `request_identity` TEXT NOT NULL PRIMARY KEY,
+                    `credential_epoch_id` TEXT NOT NULL,
+                    `device_id` TEXT NOT NULL,
+                    `access_generation_used` INTEGER NOT NULL
+                )
+                """.trimIndent(),
+            )
+            db.execSQL(
+                """
+                INSERT INTO `_m6_local_time_bootstrap_recovery`(
+                    request_identity, credential_epoch_id, device_id,
+                    access_generation_used
+                )
+                SELECT request.request_identity,
+                       request.credential_epoch_id,
+                       request.device_id,
+                       auth.generation
+                FROM sync_http_request AS request
+                JOIN sync_auth_state AS auth
+                  ON auth.singleton_id = 1
+                 AND auth.credential_epoch_id = request.credential_epoch_id
+                 AND auth.device_id = request.device_id
+                JOIN sync_stream_state AS stream
+                  ON stream.singleton_id = 1
+                 AND stream.credential_epoch_id = request.credential_epoch_id
+                 AND stream.device_id = request.device_id
+                JOIN local_identity_state AS identity
+                  ON identity.singleton_id = 1
+                 AND identity.installation_id = auth.installation_id
+                 AND identity.local_owner_id = auth.local_owner_id
+                JOIN local_installation AS installation
+                  ON installation.installation_id = identity.installation_id
+                 AND installation.server_device_id = auth.device_id
+                JOIN local_owner AS owner
+                  ON owner.installation_id = identity.installation_id
+                 AND owner.local_owner_id = identity.local_owner_id
+                 AND owner.server_person_id = auth.person_id
+                JOIN sync_bootstrap_session AS session
+                  ON session.credential_epoch_id = request.credential_epoch_id
+                 AND session.device_id = request.device_id
+                WHERE typeof(auth.state) = 'text'
+                  AND auth.state = 'active'
+                  AND typeof(auth.bootstrap_required) = 'integer'
+                  AND auth.bootstrap_required = 1
+                  AND typeof(auth.generation) = 'integer'
+                  AND auth.generation > 0
+                  AND auth.token_type = 'Bearer'
+                  AND auth.failure_code IS NULL
+                  AND typeof(auth.refresh_token_ciphertext) = 'blob'
+                  AND length(auth.refresh_token_ciphertext) > 0
+                  AND typeof(auth.refresh_token_nonce) = 'blob'
+                  AND length(auth.refresh_token_nonce) > 0
+                  AND typeof(auth.refresh_token_key_alias) = 'text'
+                  AND length(trim(auth.refresh_token_key_alias)) > 0
+                  AND typeof(auth.refresh_token_key_generation) = 'integer'
+                  AND auth.refresh_token_key_generation > 0
+                  AND typeof(auth.refresh_token_aad_version) = 'integer'
+                  AND auth.refresh_token_aad_version > 0
+                  AND typeof(stream.phase) = 'text'
+                  AND stream.phase = 'integrity_halted'
+                  AND typeof(stream.bootstrap_required) = 'integer'
+                  AND stream.bootstrap_required = 1
+                  AND stream.integrity_error_code =
+                      'protected_response_reduction_failed'
+                  AND stream.applied_cursor IS NULL
+                  AND typeof(stream.last_applied_server_sequence) = 'integer'
+                  AND stream.last_applied_server_sequence = 0
+                  AND stream.high_watermark_hint IS NULL
+                  AND stream.replica_lineage_id IS NULL
+                  AND typeof(stream.updated_at_utc) = 'text'
+                  AND (
+                    (
+                      length(stream.updated_at_utc) = 27
+                      AND stream.updated_at_utc GLOB
+                          '????-??-??T??:??:??.??????Z'
+                    ) OR (
+                      length(stream.updated_at_utc) = 30
+                      AND stream.updated_at_utc GLOB
+                          '????-??-??T??:??:??.?????????Z'
+                    )
+                  )
+                  AND typeof(session.state) = 'text'
+                  AND session.state = 'staging'
+                  AND typeof(session.active_slot) = 'integer'
+                  AND session.active_slot = 1
+                  AND session.snapshot_id IS NULL
+                  AND session.next_page_cursor IS NULL
+                  AND session.candidate_incremental_cursor IS NULL
+                  AND typeof(session.next_page_index) = 'integer'
+                  AND session.next_page_index = 0
+                  AND session.last_staged_server_sequence IS NULL
+                  AND typeof(session.staged_page_count) = 'integer'
+                  AND session.staged_page_count = 0
+                  AND typeof(session.staged_body_bytes) = 'integer'
+                  AND session.staged_body_bytes = 0
+                  AND typeof(request.endpoint_id) = 'text'
+                  AND request.endpoint_id = 'sync_bootstrap'
+                  AND typeof(request.request_identity) = 'text'
+                  AND length(request.request_identity) > 0
+                  AND request.protocol_version = '1.0.0'
+                  AND request.idempotency_key IS NULL
+                  AND request.body_storage_kind = 'raw'
+                  AND typeof(request.raw_request_body) = 'blob'
+                  AND length(request.raw_request_body) > 0
+                  AND typeof(request.request_body_octet_count) = 'integer'
+                  AND request.request_body_octet_count =
+                      length(request.raw_request_body)
+                  AND request.sealed_body_ciphertext IS NULL
+                  AND request.sealed_body_nonce IS NULL
+                  AND request.sealed_body_key_alias IS NULL
+                  AND request.sealed_body_key_generation IS NULL
+                  AND request.sealed_body_aad_version IS NULL
+                  AND typeof(request.raw_body_hmac) = 'blob'
+                  AND length(request.raw_body_hmac) = 32
+                  AND request.raw_body_hmac != zeroblob(32)
+                  AND typeof(request.hmac_key_generation) = 'integer'
+                  AND request.hmac_key_generation = 1
+                  AND typeof(request.state) = 'text'
+                  AND request.state = 'sending'
+                  AND typeof(request.attempt_count) = 'integer'
+                  AND request.attempt_count > 0
+                  AND typeof(request.attempt_budget) = 'integer'
+                  AND request.attempt_count < request.attempt_budget
+                  AND request.attempt_budget <= 2147483647
+                  AND typeof(request.deadline_at_epoch_ms) = 'integer'
+                  AND request.deadline_at_epoch_ms > 0
+                  AND request.next_attempt_at_epoch_ms IS NULL
+                  AND typeof(request.last_attempt_at_epoch_ms) = 'integer'
+                  AND request.last_attempt_at_epoch_ms > 0
+                  AND request.last_attempt_at_epoch_ms <
+                      request.deadline_at_epoch_ms
+                  AND typeof(request.lease_expires_at_epoch_ms) = 'integer'
+                  AND request.lease_expires_at_epoch_ms >
+                      request.last_attempt_at_epoch_ms
+                  AND typeof(request.active_attempt_id) = 'text'
+                  AND length(trim(request.active_attempt_id)) > 0
+                  AND typeof(request.access_generation_used) = 'integer'
+                  AND request.access_generation_used > 0
+                  AND request.access_generation_used <= auth.generation
+                  AND typeof(request.refresh_attempted) = 'integer'
+                  AND request.refresh_attempted = 0
+                  AND typeof(request.original_retry_count) = 'integer'
+                  AND request.original_retry_count = 0
+                  AND request.terminal_http_status IS NULL
+                  AND request.exact_response_body IS NULL
+                  AND request.response_sha256 IS NULL
+                  AND request.terminal_at_utc IS NULL
+                  AND request.terminal_error_code IS NULL
+                  AND (SELECT COUNT(*) FROM sync_auth_state) = 1
+                  AND (SELECT COUNT(*) FROM sync_stream_state) = 1
+                  AND (SELECT COUNT(*) FROM sync_bootstrap_session) = 1
+                  AND (SELECT COUNT(*) FROM sync_http_request) = 1
+                  AND NOT EXISTS(SELECT 1 FROM sync_server_change)
+                  AND NOT EXISTS(SELECT 1 FROM sync_page_receipt)
+                  AND NOT EXISTS(SELECT 1 FROM sync_staged_change)
+                  AND NOT EXISTS(SELECT 1 FROM sync_replica_cursor)
+                """.trimIndent(),
+            )
+            db.execSQL(
+                """
+                UPDATE sync_http_request
+                SET state = 'waiting_refresh',
+                    access_generation_used = (
+                        SELECT recovery.access_generation_used
+                        FROM `_m6_local_time_bootstrap_recovery` AS recovery
+                        WHERE recovery.request_identity =
+                                  sync_http_request.request_identity
+                          AND recovery.credential_epoch_id =
+                                  sync_http_request.credential_epoch_id
+                          AND recovery.device_id = sync_http_request.device_id
+                    ),
+                    refresh_attempted = 1,
+                    original_retry_count = 0,
+                    next_attempt_at_epoch_ms = NULL,
+                    lease_expires_at_epoch_ms = NULL,
+                    active_attempt_id = NULL,
+                    terminal_http_status = NULL,
+                    exact_response_body = NULL,
+                    response_sha256 = NULL,
+                    terminal_at_utc = NULL,
+                    terminal_error_code = 'credential_recovery_pending'
+                WHERE EXISTS(
+                    SELECT 1
+                    FROM `_m6_local_time_bootstrap_recovery` AS recovery
+                    WHERE recovery.request_identity =
+                              sync_http_request.request_identity
+                      AND recovery.credential_epoch_id =
+                              sync_http_request.credential_epoch_id
+                      AND recovery.device_id = sync_http_request.device_id
+                )
+                """.trimIndent(),
+            )
+            db.execSQL(
+                """
+                UPDATE sync_stream_state
+                SET phase = 'bootstrap_required',
+                    integrity_error_code = NULL
+                WHERE EXISTS(
+                    SELECT 1
+                    FROM `_m6_local_time_bootstrap_recovery` AS recovery
+                    WHERE recovery.credential_epoch_id =
+                              sync_stream_state.credential_epoch_id
+                      AND recovery.device_id = sync_stream_state.device_id
+                )
+                """.trimIndent(),
+            )
+            db.execSQL("DROP TABLE `_m6_local_time_bootstrap_recovery`")
+
+            requireNoRows(
+                db = db,
+                sql = "PRAGMA foreign_key_check",
+                message = "Room v6 recovery migration produced a foreign-key violation",
+            )
+        }
+    }
+
     val ALL: Array<Migration> = arrayOf(
         MIGRATION_1_2,
         MIGRATION_2_3,
         MIGRATION_3_4,
         MIGRATION_4_5,
+        MIGRATION_5_6,
     )
 
     /**

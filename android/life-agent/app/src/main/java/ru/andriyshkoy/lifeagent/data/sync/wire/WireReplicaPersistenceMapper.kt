@@ -30,7 +30,7 @@ internal object WireReplicaPersistenceMapper {
         terminalAtUtc: String,
     ): WireReplicaPagePersistence {
         require(pageIndex >= 0) { "pageIndex must be non-negative" }
-        val localTerminalAtUtc = requireCanonicalServerInstant(terminalAtUtc)
+        val localTerminalAtUtc = requireCanonicalLocalInstant(terminalAtUtc)
         return when (response) {
             is FreshBootstrapPage -> mapBootstrap(
                 page = response.page,

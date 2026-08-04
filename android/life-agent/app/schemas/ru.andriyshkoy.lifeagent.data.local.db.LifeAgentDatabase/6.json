@@ -1,0 +1,3214 @@
+{
+  "formatVersion": 1,
+  "database": {
+    "version": 6,
+    "identityHash": "678a3b4456631f64203450a6b898d534",
+    "entities": [
+      {
+        "tableName": "local_installation",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`installation_id` TEXT NOT NULL, `created_at_utc` TEXT NOT NULL, `server_device_id` TEXT, PRIMARY KEY(`installation_id`))",
+        "fields": [
+          {
+            "fieldPath": "installationId",
+            "columnName": "installation_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "createdAtUtc",
+            "columnName": "created_at_utc",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "serverDeviceId",
+            "columnName": "server_device_id",
+            "affinity": "TEXT"
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "installation_id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_local_installation_server_device_id",
+            "unique": true,
+            "columnNames": [
+              "server_device_id"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_local_installation_server_device_id` ON `${TABLE_NAME}` (`server_device_id`)"
+          }
+        ]
+      },
+      {
+        "tableName": "local_owner",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`local_owner_id` TEXT NOT NULL, `installation_id` TEXT NOT NULL, `created_at_utc` TEXT NOT NULL, `server_person_id` TEXT, PRIMARY KEY(`local_owner_id`), FOREIGN KEY(`installation_id`) REFERENCES `local_installation`(`installation_id`) ON UPDATE NO ACTION ON DELETE RESTRICT )",
+        "fields": [
+          {
+            "fieldPath": "localOwnerId",
+            "columnName": "local_owner_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "installationId",
+            "columnName": "installation_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "createdAtUtc",
+            "columnName": "created_at_utc",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "serverPersonId",
+            "columnName": "server_person_id",
+            "affinity": "TEXT"
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "local_owner_id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_local_owner_installation_id",
+            "unique": true,
+            "columnNames": [
+              "installation_id"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_local_owner_installation_id` ON `${TABLE_NAME}` (`installation_id`)"
+          },
+          {
+            "name": "index_local_owner_local_owner_id_installation_id",
+            "unique": true,
+            "columnNames": [
+              "local_owner_id",
+              "installation_id"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_local_owner_local_owner_id_installation_id` ON `${TABLE_NAME}` (`local_owner_id`, `installation_id`)"
+          },
+          {
+            "name": "index_local_owner_server_person_id",
+            "unique": false,
+            "columnNames": [
+              "server_person_id"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_local_owner_server_person_id` ON `${TABLE_NAME}` (`server_person_id`)"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "table": "local_installation",
+            "onDelete": "RESTRICT",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "installation_id"
+            ],
+            "referencedColumns": [
+              "installation_id"
+            ]
+          }
+        ]
+      },
+      {
+        "tableName": "local_identity_state",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`singleton_id` INTEGER NOT NULL, `installation_id` TEXT NOT NULL, `local_owner_id` TEXT NOT NULL, `selected_at_utc` TEXT NOT NULL, PRIMARY KEY(`singleton_id`), FOREIGN KEY(`local_owner_id`, `installation_id`) REFERENCES `local_owner`(`local_owner_id`, `installation_id`) ON UPDATE NO ACTION ON DELETE RESTRICT )",
+        "fields": [
+          {
+            "fieldPath": "singletonId",
+            "columnName": "singleton_id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "installationId",
+            "columnName": "installation_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "localOwnerId",
+            "columnName": "local_owner_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "selectedAtUtc",
+            "columnName": "selected_at_utc",
+            "affinity": "TEXT",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "singleton_id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_local_identity_state_local_owner_id_installation_id",
+            "unique": false,
+            "columnNames": [
+              "local_owner_id",
+              "installation_id"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_local_identity_state_local_owner_id_installation_id` ON `${TABLE_NAME}` (`local_owner_id`, `installation_id`)"
+          },
+          {
+            "name": "index_local_identity_state_installation_id_local_owner_id",
+            "unique": true,
+            "columnNames": [
+              "installation_id",
+              "local_owner_id"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_local_identity_state_installation_id_local_owner_id` ON `${TABLE_NAME}` (`installation_id`, `local_owner_id`)"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "table": "local_owner",
+            "onDelete": "RESTRICT",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "local_owner_id",
+              "installation_id"
+            ],
+            "referencedColumns": [
+              "local_owner_id",
+              "installation_id"
+            ]
+          }
+        ]
+      },
+      {
+        "tableName": "local_catalog_item",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`catalog_item_id` TEXT NOT NULL, `local_owner_id` TEXT NOT NULL, `catalog_kind` TEXT NOT NULL, `created_at_utc` TEXT NOT NULL, PRIMARY KEY(`catalog_item_id`), FOREIGN KEY(`local_owner_id`) REFERENCES `local_owner`(`local_owner_id`) ON UPDATE NO ACTION ON DELETE RESTRICT )",
+        "fields": [
+          {
+            "fieldPath": "catalogItemId",
+            "columnName": "catalog_item_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "localOwnerId",
+            "columnName": "local_owner_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "catalogKind",
+            "columnName": "catalog_kind",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "createdAtUtc",
+            "columnName": "created_at_utc",
+            "affinity": "TEXT",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "catalog_item_id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_local_catalog_item_local_owner_id_catalog_kind",
+            "unique": false,
+            "columnNames": [
+              "local_owner_id",
+              "catalog_kind"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_local_catalog_item_local_owner_id_catalog_kind` ON `${TABLE_NAME}` (`local_owner_id`, `catalog_kind`)"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "table": "local_owner",
+            "onDelete": "RESTRICT",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "local_owner_id"
+            ],
+            "referencedColumns": [
+              "local_owner_id"
+            ]
+          }
+        ]
+      },
+      {
+        "tableName": "local_catalog_version",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`catalog_version_id` TEXT NOT NULL, `catalog_item_id` TEXT NOT NULL, `version_no` INTEGER NOT NULL, `schema_version` TEXT NOT NULL, `payload_jcs` BLOB NOT NULL, `content_sha256` TEXT NOT NULL, `created_at_utc` TEXT NOT NULL, PRIMARY KEY(`catalog_version_id`), FOREIGN KEY(`catalog_item_id`) REFERENCES `local_catalog_item`(`catalog_item_id`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "fields": [
+          {
+            "fieldPath": "catalogVersionId",
+            "columnName": "catalog_version_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "catalogItemId",
+            "columnName": "catalog_item_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "versionNo",
+            "columnName": "version_no",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "schemaVersion",
+            "columnName": "schema_version",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "payloadJcs",
+            "columnName": "payload_jcs",
+            "affinity": "BLOB",
+            "notNull": true
+          },
+          {
+            "fieldPath": "contentSha256",
+            "columnName": "content_sha256",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "createdAtUtc",
+            "columnName": "created_at_utc",
+            "affinity": "TEXT",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "catalog_version_id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_local_catalog_version_catalog_item_id_catalog_version_id",
+            "unique": true,
+            "columnNames": [
+              "catalog_item_id",
+              "catalog_version_id"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_local_catalog_version_catalog_item_id_catalog_version_id` ON `${TABLE_NAME}` (`catalog_item_id`, `catalog_version_id`)"
+          },
+          {
+            "name": "index_local_catalog_version_catalog_item_id_version_no",
+            "unique": true,
+            "columnNames": [
+              "catalog_item_id",
+              "version_no"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_local_catalog_version_catalog_item_id_version_no` ON `${TABLE_NAME}` (`catalog_item_id`, `version_no`)"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "table": "local_catalog_item",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "catalog_item_id"
+            ],
+            "referencedColumns": [
+              "catalog_item_id"
+            ]
+          }
+        ]
+      },
+      {
+        "tableName": "local_catalog_head",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`catalog_item_id` TEXT NOT NULL, `current_version_id` TEXT NOT NULL, `updated_at_utc` TEXT NOT NULL, PRIMARY KEY(`catalog_item_id`), FOREIGN KEY(`catalog_item_id`) REFERENCES `local_catalog_item`(`catalog_item_id`) ON UPDATE NO ACTION ON DELETE CASCADE , FOREIGN KEY(`catalog_item_id`, `current_version_id`) REFERENCES `local_catalog_version`(`catalog_item_id`, `catalog_version_id`) ON UPDATE NO ACTION ON DELETE RESTRICT )",
+        "fields": [
+          {
+            "fieldPath": "catalogItemId",
+            "columnName": "catalog_item_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "currentVersionId",
+            "columnName": "current_version_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "updatedAtUtc",
+            "columnName": "updated_at_utc",
+            "affinity": "TEXT",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "catalog_item_id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_local_catalog_head_catalog_item_id_current_version_id",
+            "unique": false,
+            "columnNames": [
+              "catalog_item_id",
+              "current_version_id"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_local_catalog_head_catalog_item_id_current_version_id` ON `${TABLE_NAME}` (`catalog_item_id`, `current_version_id`)"
+          },
+          {
+            "name": "index_local_catalog_head_current_version_id",
+            "unique": true,
+            "columnNames": [
+              "current_version_id"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_local_catalog_head_current_version_id` ON `${TABLE_NAME}` (`current_version_id`)"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "table": "local_catalog_item",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "catalog_item_id"
+            ],
+            "referencedColumns": [
+              "catalog_item_id"
+            ]
+          },
+          {
+            "table": "local_catalog_version",
+            "onDelete": "RESTRICT",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "catalog_item_id",
+              "current_version_id"
+            ],
+            "referencedColumns": [
+              "catalog_item_id",
+              "catalog_version_id"
+            ]
+          }
+        ]
+      },
+      {
+        "tableName": "local_capture",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`capture_id` TEXT NOT NULL, `operation_id` TEXT NOT NULL, `installation_id` TEXT NOT NULL, `local_owner_id` TEXT NOT NULL, `schema_version` TEXT NOT NULL, `persistence_state` TEXT NOT NULL, `source_channel` TEXT NOT NULL, `recorded_at_rfc3339` TEXT NOT NULL, `recorded_at_epoch_ms` INTEGER NOT NULL, `timezone_id` TEXT NOT NULL, `utc_offset_minutes` INTEGER NOT NULL, `origin_provider` TEXT, `origin_app` TEXT, `origin_device` TEXT, `origin_source_record_id` TEXT, `origin_source_record_version` TEXT, `origin_user_entered` INTEGER NOT NULL, `collector_name` TEXT NOT NULL, `collector_version` TEXT NOT NULL, `content_jcs` BLOB NOT NULL, `content_sha256` TEXT NOT NULL, `byte_size` INTEGER NOT NULL, PRIMARY KEY(`capture_id`), FOREIGN KEY(`local_owner_id`, `installation_id`) REFERENCES `local_owner`(`local_owner_id`, `installation_id`) ON UPDATE NO ACTION ON DELETE RESTRICT )",
+        "fields": [
+          {
+            "fieldPath": "captureId",
+            "columnName": "capture_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "operationId",
+            "columnName": "operation_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "installationId",
+            "columnName": "installation_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "localOwnerId",
+            "columnName": "local_owner_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "schemaVersion",
+            "columnName": "schema_version",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "persistenceState",
+            "columnName": "persistence_state",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "sourceChannel",
+            "columnName": "source_channel",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "recordedAtRfc3339",
+            "columnName": "recorded_at_rfc3339",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "recordedAtEpochMs",
+            "columnName": "recorded_at_epoch_ms",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "timezoneId",
+            "columnName": "timezone_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "utcOffsetMinutes",
+            "columnName": "utc_offset_minutes",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "originProvider",
+            "columnName": "origin_provider",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "originApp",
+            "columnName": "origin_app",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "originDevice",
+            "columnName": "origin_device",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "originSourceRecordId",
+            "columnName": "origin_source_record_id",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "originSourceRecordVersion",
+            "columnName": "origin_source_record_version",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "originUserEntered",
+            "columnName": "origin_user_entered",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "collectorName",
+            "columnName": "collector_name",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "collectorVersion",
+            "columnName": "collector_version",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "contentJcs",
+            "columnName": "content_jcs",
+            "affinity": "BLOB",
+            "notNull": true
+          },
+          {
+            "fieldPath": "contentSha256",
+            "columnName": "content_sha256",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "byteSize",
+            "columnName": "byte_size",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "capture_id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_local_capture_operation_id",
+            "unique": true,
+            "columnNames": [
+              "operation_id"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_local_capture_operation_id` ON `${TABLE_NAME}` (`operation_id`)"
+          },
+          {
+            "name": "index_local_capture_capture_id_operation_id",
+            "unique": true,
+            "columnNames": [
+              "capture_id",
+              "operation_id"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_local_capture_capture_id_operation_id` ON `${TABLE_NAME}` (`capture_id`, `operation_id`)"
+          },
+          {
+            "name": "index_local_capture_capture_id_operation_id_local_owner_id_installation_id",
+            "unique": true,
+            "columnNames": [
+              "capture_id",
+              "operation_id",
+              "local_owner_id",
+              "installation_id"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_local_capture_capture_id_operation_id_local_owner_id_installation_id` ON `${TABLE_NAME}` (`capture_id`, `operation_id`, `local_owner_id`, `installation_id`)"
+          },
+          {
+            "name": "index_local_capture_local_owner_id_installation_id",
+            "unique": false,
+            "columnNames": [
+              "local_owner_id",
+              "installation_id"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_local_capture_local_owner_id_installation_id` ON `${TABLE_NAME}` (`local_owner_id`, `installation_id`)"
+          },
+          {
+            "name": "index_local_capture_recorded_at_epoch_ms",
+            "unique": false,
+            "columnNames": [
+              "recorded_at_epoch_ms"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_local_capture_recorded_at_epoch_ms` ON `${TABLE_NAME}` (`recorded_at_epoch_ms`)"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "table": "local_owner",
+            "onDelete": "RESTRICT",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "local_owner_id",
+              "installation_id"
+            ],
+            "referencedColumns": [
+              "local_owner_id",
+              "installation_id"
+            ]
+          }
+        ]
+      },
+      {
+        "tableName": "local_life_event",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`event_id` TEXT NOT NULL, `local_owner_id` TEXT NOT NULL, `kind` TEXT NOT NULL, `created_at_utc` TEXT NOT NULL, PRIMARY KEY(`event_id`), FOREIGN KEY(`local_owner_id`) REFERENCES `local_owner`(`local_owner_id`) ON UPDATE NO ACTION ON DELETE RESTRICT )",
+        "fields": [
+          {
+            "fieldPath": "eventId",
+            "columnName": "event_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "localOwnerId",
+            "columnName": "local_owner_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "kind",
+            "columnName": "kind",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "createdAtUtc",
+            "columnName": "created_at_utc",
+            "affinity": "TEXT",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "event_id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_local_life_event_local_owner_id_kind",
+            "unique": false,
+            "columnNames": [
+              "local_owner_id",
+              "kind"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_local_life_event_local_owner_id_kind` ON `${TABLE_NAME}` (`local_owner_id`, `kind`)"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "table": "local_owner",
+            "onDelete": "RESTRICT",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "local_owner_id"
+            ],
+            "referencedColumns": [
+              "local_owner_id"
+            ]
+          }
+        ]
+      },
+      {
+        "tableName": "local_event_revision",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`revision_id` TEXT NOT NULL, `event_id` TEXT NOT NULL, `capture_id` TEXT NOT NULL, `operation_id` TEXT NOT NULL, `revision_no` INTEGER NOT NULL, `schema_version` TEXT NOT NULL, `assertion_status` TEXT NOT NULL, `lifecycle` TEXT, `record_status` TEXT NOT NULL, `verification_status` TEXT NOT NULL, `source_channel` TEXT NOT NULL, `source_record_id` TEXT, `source_record_version` TEXT, `source_modified_at` TEXT, `recorded_at_rfc3339` TEXT NOT NULL, `origin_provider` TEXT, `origin_app` TEXT, `origin_device` TEXT, `origin_user_entered` INTEGER NOT NULL, `collector_name` TEXT NOT NULL, `collector_version` TEXT NOT NULL, `effective_start_utc` TEXT NOT NULL, `effective_start_epoch_ms` INTEGER NOT NULL, `effective_end_utc` TEXT, `effective_end_epoch_ms` INTEGER, `original_local_start` TEXT NOT NULL, `original_local_end` TEXT, `timezone_id` TEXT NOT NULL, `start_offset_seconds` INTEGER NOT NULL, `end_offset_seconds` INTEGER, `temporal_precision` TEXT NOT NULL, `local_date` TEXT NOT NULL, `source_expression` TEXT, `payload_jcs` BLOB NOT NULL, `evidence_jcs` BLOB NOT NULL, `quality_flags_jcs` BLOB NOT NULL, `created_at_rfc3339` TEXT NOT NULL, `content_sha256` TEXT NOT NULL, `actor` TEXT NOT NULL, `correction_reason` TEXT, `server_received_at` TEXT, `server_sequence` INTEGER, PRIMARY KEY(`revision_id`), FOREIGN KEY(`event_id`) REFERENCES `local_life_event`(`event_id`) ON UPDATE NO ACTION ON DELETE CASCADE , FOREIGN KEY(`capture_id`, `operation_id`) REFERENCES `local_capture`(`capture_id`, `operation_id`) ON UPDATE NO ACTION ON DELETE RESTRICT )",
+        "fields": [
+          {
+            "fieldPath": "revisionId",
+            "columnName": "revision_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "eventId",
+            "columnName": "event_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "captureId",
+            "columnName": "capture_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "operationId",
+            "columnName": "operation_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "revisionNo",
+            "columnName": "revision_no",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "schemaVersion",
+            "columnName": "schema_version",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "assertionStatus",
+            "columnName": "assertion_status",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "lifecycle",
+            "columnName": "lifecycle",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "recordStatus",
+            "columnName": "record_status",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "verificationStatus",
+            "columnName": "verification_status",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "sourceChannel",
+            "columnName": "source_channel",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "sourceRecordId",
+            "columnName": "source_record_id",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "sourceRecordVersion",
+            "columnName": "source_record_version",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "sourceModifiedAt",
+            "columnName": "source_modified_at",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "recordedAtRfc3339",
+            "columnName": "recorded_at_rfc3339",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "originProvider",
+            "columnName": "origin_provider",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "originApp",
+            "columnName": "origin_app",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "originDevice",
+            "columnName": "origin_device",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "originUserEntered",
+            "columnName": "origin_user_entered",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "collectorName",
+            "columnName": "collector_name",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "collectorVersion",
+            "columnName": "collector_version",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "effectiveStartUtc",
+            "columnName": "effective_start_utc",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "effectiveStartEpochMs",
+            "columnName": "effective_start_epoch_ms",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "effectiveEndUtc",
+            "columnName": "effective_end_utc",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "effectiveEndEpochMs",
+            "columnName": "effective_end_epoch_ms",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "originalLocalStart",
+            "columnName": "original_local_start",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "originalLocalEnd",
+            "columnName": "original_local_end",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "timezoneId",
+            "columnName": "timezone_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "startOffsetSeconds",
+            "columnName": "start_offset_seconds",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "endOffsetSeconds",
+            "columnName": "end_offset_seconds",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "temporalPrecision",
+            "columnName": "temporal_precision",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "localDate",
+            "columnName": "local_date",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "sourceExpression",
+            "columnName": "source_expression",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "payloadJcs",
+            "columnName": "payload_jcs",
+            "affinity": "BLOB",
+            "notNull": true
+          },
+          {
+            "fieldPath": "evidenceJcs",
+            "columnName": "evidence_jcs",
+            "affinity": "BLOB",
+            "notNull": true
+          },
+          {
+            "fieldPath": "qualityFlagsJcs",
+            "columnName": "quality_flags_jcs",
+            "affinity": "BLOB",
+            "notNull": true
+          },
+          {
+            "fieldPath": "createdAtRfc3339",
+            "columnName": "created_at_rfc3339",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "contentSha256",
+            "columnName": "content_sha256",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "actor",
+            "columnName": "actor",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "correctionReason",
+            "columnName": "correction_reason",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "serverReceivedAt",
+            "columnName": "server_received_at",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "serverSequence",
+            "columnName": "server_sequence",
+            "affinity": "INTEGER"
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "revision_id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_local_event_revision_event_id_revision_id",
+            "unique": true,
+            "columnNames": [
+              "event_id",
+              "revision_id"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_local_event_revision_event_id_revision_id` ON `${TABLE_NAME}` (`event_id`, `revision_id`)"
+          },
+          {
+            "name": "index_local_event_revision_capture_id_operation_id",
+            "unique": false,
+            "columnNames": [
+              "capture_id",
+              "operation_id"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_local_event_revision_capture_id_operation_id` ON `${TABLE_NAME}` (`capture_id`, `operation_id`)"
+          },
+          {
+            "name": "index_local_event_revision_operation_id",
+            "unique": true,
+            "columnNames": [
+              "operation_id"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_local_event_revision_operation_id` ON `${TABLE_NAME}` (`operation_id`)"
+          },
+          {
+            "name": "index_local_event_revision_event_id_revision_no",
+            "unique": false,
+            "columnNames": [
+              "event_id",
+              "revision_no"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_local_event_revision_event_id_revision_no` ON `${TABLE_NAME}` (`event_id`, `revision_no`)"
+          },
+          {
+            "name": "index_local_event_revision_local_date_effective_start_epoch_ms",
+            "unique": false,
+            "columnNames": [
+              "local_date",
+              "effective_start_epoch_ms"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_local_event_revision_local_date_effective_start_epoch_ms` ON `${TABLE_NAME}` (`local_date`, `effective_start_epoch_ms`)"
+          },
+          {
+            "name": "index_local_event_revision_event_id_revision_id_capture_id_operation_id",
+            "unique": true,
+            "columnNames": [
+              "event_id",
+              "revision_id",
+              "capture_id",
+              "operation_id"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_local_event_revision_event_id_revision_id_capture_id_operation_id` ON `${TABLE_NAME}` (`event_id`, `revision_id`, `capture_id`, `operation_id`)"
+          },
+          {
+            "name": "index_local_event_revision_server_sequence",
+            "unique": true,
+            "columnNames": [
+              "server_sequence"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_local_event_revision_server_sequence` ON `${TABLE_NAME}` (`server_sequence`)"
+          },
+          {
+            "name": "index_local_event_revision_event_id_revision_id_capture_id_operation_id_server_sequence",
+            "unique": true,
+            "columnNames": [
+              "event_id",
+              "revision_id",
+              "capture_id",
+              "operation_id",
+              "server_sequence"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_local_event_revision_event_id_revision_id_capture_id_operation_id_server_sequence` ON `${TABLE_NAME}` (`event_id`, `revision_id`, `capture_id`, `operation_id`, `server_sequence`)"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "table": "local_life_event",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "event_id"
+            ],
+            "referencedColumns": [
+              "event_id"
+            ]
+          },
+          {
+            "table": "local_capture",
+            "onDelete": "RESTRICT",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "capture_id",
+              "operation_id"
+            ],
+            "referencedColumns": [
+              "capture_id",
+              "operation_id"
+            ]
+          }
+        ]
+      },
+      {
+        "tableName": "local_revision_parent",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`event_id` TEXT NOT NULL, `child_revision_id` TEXT NOT NULL, `parent_revision_id` TEXT NOT NULL, `relation` TEXT NOT NULL, PRIMARY KEY(`child_revision_id`, `parent_revision_id`), FOREIGN KEY(`event_id`, `child_revision_id`) REFERENCES `local_event_revision`(`event_id`, `revision_id`) ON UPDATE NO ACTION ON DELETE CASCADE , FOREIGN KEY(`event_id`, `parent_revision_id`) REFERENCES `local_event_revision`(`event_id`, `revision_id`) ON UPDATE NO ACTION ON DELETE RESTRICT )",
+        "fields": [
+          {
+            "fieldPath": "eventId",
+            "columnName": "event_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "childRevisionId",
+            "columnName": "child_revision_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "parentRevisionId",
+            "columnName": "parent_revision_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "relation",
+            "columnName": "relation",
+            "affinity": "TEXT",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "child_revision_id",
+            "parent_revision_id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_local_revision_parent_event_id_child_revision_id",
+            "unique": false,
+            "columnNames": [
+              "event_id",
+              "child_revision_id"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_local_revision_parent_event_id_child_revision_id` ON `${TABLE_NAME}` (`event_id`, `child_revision_id`)"
+          },
+          {
+            "name": "index_local_revision_parent_event_id_parent_revision_id",
+            "unique": false,
+            "columnNames": [
+              "event_id",
+              "parent_revision_id"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_local_revision_parent_event_id_parent_revision_id` ON `${TABLE_NAME}` (`event_id`, `parent_revision_id`)"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "table": "local_event_revision",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "event_id",
+              "child_revision_id"
+            ],
+            "referencedColumns": [
+              "event_id",
+              "revision_id"
+            ]
+          },
+          {
+            "table": "local_event_revision",
+            "onDelete": "RESTRICT",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "event_id",
+              "parent_revision_id"
+            ],
+            "referencedColumns": [
+              "event_id",
+              "revision_id"
+            ]
+          }
+        ]
+      },
+      {
+        "tableName": "local_event_head",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`event_id` TEXT NOT NULL, `current_revision_id` TEXT NOT NULL, `server_current_revision_id` TEXT, `server_observed_sequence` INTEGER, `updated_at_utc` TEXT NOT NULL, PRIMARY KEY(`event_id`), FOREIGN KEY(`event_id`) REFERENCES `local_life_event`(`event_id`) ON UPDATE NO ACTION ON DELETE CASCADE , FOREIGN KEY(`event_id`, `current_revision_id`) REFERENCES `local_event_revision`(`event_id`, `revision_id`) ON UPDATE NO ACTION ON DELETE RESTRICT )",
+        "fields": [
+          {
+            "fieldPath": "eventId",
+            "columnName": "event_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "currentRevisionId",
+            "columnName": "current_revision_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "serverCurrentRevisionId",
+            "columnName": "server_current_revision_id",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "serverObservedSequence",
+            "columnName": "server_observed_sequence",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "updatedAtUtc",
+            "columnName": "updated_at_utc",
+            "affinity": "TEXT",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "event_id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_local_event_head_event_id_current_revision_id",
+            "unique": false,
+            "columnNames": [
+              "event_id",
+              "current_revision_id"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_local_event_head_event_id_current_revision_id` ON `${TABLE_NAME}` (`event_id`, `current_revision_id`)"
+          },
+          {
+            "name": "index_local_event_head_event_id_server_current_revision_id",
+            "unique": false,
+            "columnNames": [
+              "event_id",
+              "server_current_revision_id"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_local_event_head_event_id_server_current_revision_id` ON `${TABLE_NAME}` (`event_id`, `server_current_revision_id`)"
+          },
+          {
+            "name": "index_local_event_head_current_revision_id",
+            "unique": true,
+            "columnNames": [
+              "current_revision_id"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_local_event_head_current_revision_id` ON `${TABLE_NAME}` (`current_revision_id`)"
+          },
+          {
+            "name": "index_local_event_head_server_current_revision_id",
+            "unique": true,
+            "columnNames": [
+              "server_current_revision_id"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_local_event_head_server_current_revision_id` ON `${TABLE_NAME}` (`server_current_revision_id`)"
+          },
+          {
+            "name": "index_local_event_head_server_observed_sequence",
+            "unique": false,
+            "columnNames": [
+              "server_observed_sequence"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_local_event_head_server_observed_sequence` ON `${TABLE_NAME}` (`server_observed_sequence`)"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "table": "local_life_event",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "event_id"
+            ],
+            "referencedColumns": [
+              "event_id"
+            ]
+          },
+          {
+            "table": "local_event_revision",
+            "onDelete": "RESTRICT",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "event_id",
+              "current_revision_id"
+            ],
+            "referencedColumns": [
+              "event_id",
+              "revision_id"
+            ]
+          }
+        ]
+      },
+      {
+        "tableName": "sync_outbox",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`local_sequence` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `operation_id` TEXT NOT NULL, `capture_id` TEXT NOT NULL, `installation_id` TEXT NOT NULL, `local_owner_id` TEXT NOT NULL, `operation_kind` TEXT NOT NULL, `event_id` TEXT NOT NULL, `revision_id` TEXT NOT NULL, `base_revision_id` TEXT, `schema_version` TEXT NOT NULL, `operation_jcs` BLOB NOT NULL, `operation_content_sha256` TEXT NOT NULL, `command_fingerprint_sha256` TEXT NOT NULL DEFAULT '', `wire_state` TEXT NOT NULL DEFAULT 'needs_materialization', `wire_protocol_version` TEXT, `wire_operation_material_jcs` BLOB, `wire_operation_content_sha256` TEXT, `wire_materialized_at_utc` TEXT, `active_batch_id` TEXT, `last_result_batch_id` TEXT, `last_result_code` TEXT, `last_result_retryable` INTEGER, `last_result_current_revision_id` TEXT, `last_result_details_jcs` BLOB, `created_at_utc` TEXT NOT NULL, `created_at_epoch_ms` INTEGER NOT NULL, `state` TEXT NOT NULL, `attempt_count` INTEGER NOT NULL, `next_attempt_at_epoch_ms` INTEGER, `last_attempt_at_epoch_ms` INTEGER, `server_sequence` INTEGER, `acked_at_utc` TEXT, `last_error_code` TEXT, FOREIGN KEY(`capture_id`, `operation_id`, `local_owner_id`, `installation_id`) REFERENCES `local_capture`(`capture_id`, `operation_id`, `local_owner_id`, `installation_id`) ON UPDATE NO ACTION ON DELETE RESTRICT , FOREIGN KEY(`event_id`, `revision_id`, `capture_id`, `operation_id`) REFERENCES `local_event_revision`(`event_id`, `revision_id`, `capture_id`, `operation_id`) ON UPDATE NO ACTION ON DELETE RESTRICT , FOREIGN KEY(`event_id`, `base_revision_id`) REFERENCES `local_event_revision`(`event_id`, `revision_id`) ON UPDATE NO ACTION ON DELETE RESTRICT )",
+        "fields": [
+          {
+            "fieldPath": "localSequence",
+            "columnName": "local_sequence",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "operationId",
+            "columnName": "operation_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "captureId",
+            "columnName": "capture_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "installationId",
+            "columnName": "installation_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "localOwnerId",
+            "columnName": "local_owner_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "operationKind",
+            "columnName": "operation_kind",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "eventId",
+            "columnName": "event_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "revisionId",
+            "columnName": "revision_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "baseRevisionId",
+            "columnName": "base_revision_id",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "schemaVersion",
+            "columnName": "schema_version",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "legacyOperationJcs",
+            "columnName": "operation_jcs",
+            "affinity": "BLOB",
+            "notNull": true
+          },
+          {
+            "fieldPath": "legacyOperationContentSha256",
+            "columnName": "operation_content_sha256",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "commandFingerprintSha256",
+            "columnName": "command_fingerprint_sha256",
+            "affinity": "TEXT",
+            "notNull": true,
+            "defaultValue": "''"
+          },
+          {
+            "fieldPath": "wireState",
+            "columnName": "wire_state",
+            "affinity": "TEXT",
+            "notNull": true,
+            "defaultValue": "'needs_materialization'"
+          },
+          {
+            "fieldPath": "wireProtocolVersion",
+            "columnName": "wire_protocol_version",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "wireOperationMaterialJcs",
+            "columnName": "wire_operation_material_jcs",
+            "affinity": "BLOB"
+          },
+          {
+            "fieldPath": "wireOperationContentSha256",
+            "columnName": "wire_operation_content_sha256",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "wireMaterializedAtUtc",
+            "columnName": "wire_materialized_at_utc",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "activeBatchId",
+            "columnName": "active_batch_id",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "lastResultBatchId",
+            "columnName": "last_result_batch_id",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "lastResultCode",
+            "columnName": "last_result_code",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "lastResultRetryable",
+            "columnName": "last_result_retryable",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "lastResultCurrentRevisionId",
+            "columnName": "last_result_current_revision_id",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "lastResultDetailsJcs",
+            "columnName": "last_result_details_jcs",
+            "affinity": "BLOB"
+          },
+          {
+            "fieldPath": "createdAtUtc",
+            "columnName": "created_at_utc",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "createdAtEpochMs",
+            "columnName": "created_at_epoch_ms",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "state",
+            "columnName": "state",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "attemptCount",
+            "columnName": "attempt_count",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "nextAttemptAtEpochMs",
+            "columnName": "next_attempt_at_epoch_ms",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "lastAttemptAtEpochMs",
+            "columnName": "last_attempt_at_epoch_ms",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "serverSequence",
+            "columnName": "server_sequence",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "ackedAtUtc",
+            "columnName": "acked_at_utc",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "lastErrorCode",
+            "columnName": "last_error_code",
+            "affinity": "TEXT"
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": true,
+          "columnNames": [
+            "local_sequence"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_sync_outbox_operation_id",
+            "unique": true,
+            "columnNames": [
+              "operation_id"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_sync_outbox_operation_id` ON `${TABLE_NAME}` (`operation_id`)"
+          },
+          {
+            "name": "index_sync_outbox_capture_id",
+            "unique": false,
+            "columnNames": [
+              "capture_id"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_sync_outbox_capture_id` ON `${TABLE_NAME}` (`capture_id`)"
+          },
+          {
+            "name": "index_sync_outbox_local_owner_id_installation_id",
+            "unique": false,
+            "columnNames": [
+              "local_owner_id",
+              "installation_id"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_sync_outbox_local_owner_id_installation_id` ON `${TABLE_NAME}` (`local_owner_id`, `installation_id`)"
+          },
+          {
+            "name": "index_sync_outbox_event_id_revision_id",
+            "unique": false,
+            "columnNames": [
+              "event_id",
+              "revision_id"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_sync_outbox_event_id_revision_id` ON `${TABLE_NAME}` (`event_id`, `revision_id`)"
+          },
+          {
+            "name": "index_sync_outbox_event_id_base_revision_id",
+            "unique": false,
+            "columnNames": [
+              "event_id",
+              "base_revision_id"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_sync_outbox_event_id_base_revision_id` ON `${TABLE_NAME}` (`event_id`, `base_revision_id`)"
+          },
+          {
+            "name": "index_sync_outbox_revision_id",
+            "unique": true,
+            "columnNames": [
+              "revision_id"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_sync_outbox_revision_id` ON `${TABLE_NAME}` (`revision_id`)"
+          },
+          {
+            "name": "index_sync_outbox_state_next_attempt_at_epoch_ms",
+            "unique": false,
+            "columnNames": [
+              "state",
+              "next_attempt_at_epoch_ms"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_sync_outbox_state_next_attempt_at_epoch_ms` ON `${TABLE_NAME}` (`state`, `next_attempt_at_epoch_ms`)"
+          },
+          {
+            "name": "index_sync_outbox_local_sequence_operation_id",
+            "unique": true,
+            "columnNames": [
+              "local_sequence",
+              "operation_id"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_sync_outbox_local_sequence_operation_id` ON `${TABLE_NAME}` (`local_sequence`, `operation_id`)"
+          },
+          {
+            "name": "index_sync_outbox_wire_state_local_sequence",
+            "unique": false,
+            "columnNames": [
+              "wire_state",
+              "local_sequence"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_sync_outbox_wire_state_local_sequence` ON `${TABLE_NAME}` (`wire_state`, `local_sequence`)"
+          },
+          {
+            "name": "index_sync_outbox_active_batch_id",
+            "unique": false,
+            "columnNames": [
+              "active_batch_id"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_sync_outbox_active_batch_id` ON `${TABLE_NAME}` (`active_batch_id`)"
+          },
+          {
+            "name": "index_sync_outbox_capture_id_operation_id_local_owner_id_installation_id",
+            "unique": false,
+            "columnNames": [
+              "capture_id",
+              "operation_id",
+              "local_owner_id",
+              "installation_id"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_sync_outbox_capture_id_operation_id_local_owner_id_installation_id` ON `${TABLE_NAME}` (`capture_id`, `operation_id`, `local_owner_id`, `installation_id`)"
+          },
+          {
+            "name": "index_sync_outbox_event_id_revision_id_capture_id_operation_id",
+            "unique": false,
+            "columnNames": [
+              "event_id",
+              "revision_id",
+              "capture_id",
+              "operation_id"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_sync_outbox_event_id_revision_id_capture_id_operation_id` ON `${TABLE_NAME}` (`event_id`, `revision_id`, `capture_id`, `operation_id`)"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "table": "local_capture",
+            "onDelete": "RESTRICT",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "capture_id",
+              "operation_id",
+              "local_owner_id",
+              "installation_id"
+            ],
+            "referencedColumns": [
+              "capture_id",
+              "operation_id",
+              "local_owner_id",
+              "installation_id"
+            ]
+          },
+          {
+            "table": "local_event_revision",
+            "onDelete": "RESTRICT",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "event_id",
+              "revision_id",
+              "capture_id",
+              "operation_id"
+            ],
+            "referencedColumns": [
+              "event_id",
+              "revision_id",
+              "capture_id",
+              "operation_id"
+            ]
+          },
+          {
+            "table": "local_event_revision",
+            "onDelete": "RESTRICT",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "event_id",
+              "base_revision_id"
+            ],
+            "referencedColumns": [
+              "event_id",
+              "revision_id"
+            ]
+          }
+        ]
+      },
+      {
+        "tableName": "sync_auth_state",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`singleton_id` INTEGER NOT NULL, `credential_epoch_id` TEXT NOT NULL, `installation_id` TEXT NOT NULL, `local_owner_id` TEXT NOT NULL, `device_id` TEXT NOT NULL, `person_id` TEXT NOT NULL, `token_type` TEXT NOT NULL, `refresh_token_ciphertext` BLOB, `refresh_token_nonce` BLOB, `refresh_token_key_alias` TEXT, `refresh_token_key_generation` INTEGER, `refresh_token_aad_version` INTEGER, `access_expires_at_utc` TEXT NOT NULL, `access_expires_at_epoch_ms` INTEGER NOT NULL, `refresh_expires_at_utc` TEXT NOT NULL, `refresh_expires_at_epoch_ms` INTEGER NOT NULL, `family_expires_at_utc` TEXT NOT NULL, `family_expires_at_epoch_ms` INTEGER NOT NULL, `generation` INTEGER NOT NULL, `state` TEXT NOT NULL, `bootstrap_required` INTEGER NOT NULL, `installed_at_utc` TEXT NOT NULL, `updated_at_utc` TEXT NOT NULL, `failure_code` TEXT, PRIMARY KEY(`singleton_id`), FOREIGN KEY(`local_owner_id`, `installation_id`) REFERENCES `local_owner`(`local_owner_id`, `installation_id`) ON UPDATE NO ACTION ON DELETE RESTRICT )",
+        "fields": [
+          {
+            "fieldPath": "singletonId",
+            "columnName": "singleton_id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "credentialEpochId",
+            "columnName": "credential_epoch_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "installationId",
+            "columnName": "installation_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "localOwnerId",
+            "columnName": "local_owner_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "deviceId",
+            "columnName": "device_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "personId",
+            "columnName": "person_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "tokenType",
+            "columnName": "token_type",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "refreshTokenCiphertext",
+            "columnName": "refresh_token_ciphertext",
+            "affinity": "BLOB"
+          },
+          {
+            "fieldPath": "refreshTokenNonce",
+            "columnName": "refresh_token_nonce",
+            "affinity": "BLOB"
+          },
+          {
+            "fieldPath": "refreshTokenKeyAlias",
+            "columnName": "refresh_token_key_alias",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "refreshTokenKeyGeneration",
+            "columnName": "refresh_token_key_generation",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "refreshTokenAadVersion",
+            "columnName": "refresh_token_aad_version",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "accessExpiresAtUtc",
+            "columnName": "access_expires_at_utc",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "accessExpiresAtEpochMs",
+            "columnName": "access_expires_at_epoch_ms",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "refreshExpiresAtUtc",
+            "columnName": "refresh_expires_at_utc",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "refreshExpiresAtEpochMs",
+            "columnName": "refresh_expires_at_epoch_ms",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "familyExpiresAtUtc",
+            "columnName": "family_expires_at_utc",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "familyExpiresAtEpochMs",
+            "columnName": "family_expires_at_epoch_ms",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "generation",
+            "columnName": "generation",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "state",
+            "columnName": "state",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "bootstrapRequired",
+            "columnName": "bootstrap_required",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "installedAtUtc",
+            "columnName": "installed_at_utc",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "updatedAtUtc",
+            "columnName": "updated_at_utc",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "failureCode",
+            "columnName": "failure_code",
+            "affinity": "TEXT"
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "singleton_id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_sync_auth_state_credential_epoch_id",
+            "unique": true,
+            "columnNames": [
+              "credential_epoch_id"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_sync_auth_state_credential_epoch_id` ON `${TABLE_NAME}` (`credential_epoch_id`)"
+          },
+          {
+            "name": "index_sync_auth_state_local_owner_id_installation_id",
+            "unique": false,
+            "columnNames": [
+              "local_owner_id",
+              "installation_id"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_sync_auth_state_local_owner_id_installation_id` ON `${TABLE_NAME}` (`local_owner_id`, `installation_id`)"
+          },
+          {
+            "name": "index_sync_auth_state_device_id",
+            "unique": true,
+            "columnNames": [
+              "device_id"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_sync_auth_state_device_id` ON `${TABLE_NAME}` (`device_id`)"
+          },
+          {
+            "name": "index_sync_auth_state_state",
+            "unique": false,
+            "columnNames": [
+              "state"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_sync_auth_state_state` ON `${TABLE_NAME}` (`state`)"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "table": "local_owner",
+            "onDelete": "RESTRICT",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "local_owner_id",
+              "installation_id"
+            ],
+            "referencedColumns": [
+              "local_owner_id",
+              "installation_id"
+            ]
+          }
+        ]
+      },
+      {
+        "tableName": "sync_auth_attempt",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`request_id` TEXT NOT NULL, `endpoint_id` TEXT NOT NULL, `installation_id` TEXT NOT NULL, `local_owner_id` TEXT NOT NULL, `credential_epoch_id` TEXT, `expected_device_id` TEXT, `expected_generation` INTEGER, `state` TEXT NOT NULL, `created_at_utc` TEXT NOT NULL, `updated_at_utc` TEXT NOT NULL, `last_error_code` TEXT, PRIMARY KEY(`request_id`), FOREIGN KEY(`local_owner_id`, `installation_id`) REFERENCES `local_owner`(`local_owner_id`, `installation_id`) ON UPDATE NO ACTION ON DELETE RESTRICT )",
+        "fields": [
+          {
+            "fieldPath": "requestId",
+            "columnName": "request_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "endpointId",
+            "columnName": "endpoint_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "installationId",
+            "columnName": "installation_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "localOwnerId",
+            "columnName": "local_owner_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "credentialEpochId",
+            "columnName": "credential_epoch_id",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "expectedDeviceId",
+            "columnName": "expected_device_id",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "expectedGeneration",
+            "columnName": "expected_generation",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "state",
+            "columnName": "state",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "createdAtUtc",
+            "columnName": "created_at_utc",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "updatedAtUtc",
+            "columnName": "updated_at_utc",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "lastErrorCode",
+            "columnName": "last_error_code",
+            "affinity": "TEXT"
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "request_id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_sync_auth_attempt_local_owner_id_installation_id",
+            "unique": false,
+            "columnNames": [
+              "local_owner_id",
+              "installation_id"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_sync_auth_attempt_local_owner_id_installation_id` ON `${TABLE_NAME}` (`local_owner_id`, `installation_id`)"
+          },
+          {
+            "name": "index_sync_auth_attempt_endpoint_id_state",
+            "unique": false,
+            "columnNames": [
+              "endpoint_id",
+              "state"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_sync_auth_attempt_endpoint_id_state` ON `${TABLE_NAME}` (`endpoint_id`, `state`)"
+          },
+          {
+            "name": "index_sync_auth_attempt_credential_epoch_id_state",
+            "unique": false,
+            "columnNames": [
+              "credential_epoch_id",
+              "state"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_sync_auth_attempt_credential_epoch_id_state` ON `${TABLE_NAME}` (`credential_epoch_id`, `state`)"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "table": "local_owner",
+            "onDelete": "RESTRICT",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "local_owner_id",
+              "installation_id"
+            ],
+            "referencedColumns": [
+              "local_owner_id",
+              "installation_id"
+            ]
+          }
+        ]
+      },
+      {
+        "tableName": "sync_auth_token_fingerprint",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`credential_epoch_id` TEXT NOT NULL, `generation` INTEGER NOT NULL, `token_kind` TEXT NOT NULL, `token_hmac` BLOB NOT NULL, `hmac_key_generation` INTEGER NOT NULL, `created_at_utc` TEXT NOT NULL, PRIMARY KEY(`credential_epoch_id`, `generation`, `token_kind`))",
+        "fields": [
+          {
+            "fieldPath": "credentialEpochId",
+            "columnName": "credential_epoch_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "generation",
+            "columnName": "generation",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "tokenKind",
+            "columnName": "token_kind",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "tokenHmac",
+            "columnName": "token_hmac",
+            "affinity": "BLOB",
+            "notNull": true
+          },
+          {
+            "fieldPath": "hmacKeyGeneration",
+            "columnName": "hmac_key_generation",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "createdAtUtc",
+            "columnName": "created_at_utc",
+            "affinity": "TEXT",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "credential_epoch_id",
+            "generation",
+            "token_kind"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_sync_auth_token_fingerprint_credential_epoch_id_token_hmac",
+            "unique": true,
+            "columnNames": [
+              "credential_epoch_id",
+              "token_hmac"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_sync_auth_token_fingerprint_credential_epoch_id_token_hmac` ON `${TABLE_NAME}` (`credential_epoch_id`, `token_hmac`)"
+          }
+        ]
+      },
+      {
+        "tableName": "sync_http_request",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`endpoint_id` TEXT NOT NULL, `request_identity` TEXT NOT NULL, `protocol_version` TEXT NOT NULL, `credential_epoch_id` TEXT NOT NULL, `device_id` TEXT NOT NULL, `idempotency_key` TEXT, `body_storage_kind` TEXT NOT NULL, `raw_request_body` BLOB, `sealed_body_ciphertext` BLOB, `sealed_body_nonce` BLOB, `sealed_body_key_alias` TEXT, `sealed_body_key_generation` INTEGER, `sealed_body_aad_version` INTEGER, `request_body_octet_count` INTEGER NOT NULL, `raw_body_hmac` BLOB NOT NULL, `hmac_key_generation` INTEGER NOT NULL, `state` TEXT NOT NULL, `attempt_count` INTEGER NOT NULL DEFAULT 0, `attempt_budget` INTEGER NOT NULL, `deadline_at_epoch_ms` INTEGER NOT NULL, `next_attempt_at_epoch_ms` INTEGER, `last_attempt_at_epoch_ms` INTEGER, `lease_expires_at_epoch_ms` INTEGER, `active_attempt_id` TEXT, `access_generation_used` INTEGER, `refresh_attempted` INTEGER NOT NULL DEFAULT 0, `original_retry_count` INTEGER NOT NULL DEFAULT 0, `terminal_http_status` INTEGER, `exact_response_body` BLOB, `response_sha256` TEXT, `terminal_at_utc` TEXT, `terminal_error_code` TEXT, `created_at_utc` TEXT NOT NULL, `updated_at_utc` TEXT NOT NULL, PRIMARY KEY(`endpoint_id`, `request_identity`))",
+        "fields": [
+          {
+            "fieldPath": "endpointId",
+            "columnName": "endpoint_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "requestIdentity",
+            "columnName": "request_identity",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "protocolVersion",
+            "columnName": "protocol_version",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "credentialEpochId",
+            "columnName": "credential_epoch_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "deviceId",
+            "columnName": "device_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "idempotencyKey",
+            "columnName": "idempotency_key",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "bodyStorageKind",
+            "columnName": "body_storage_kind",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "rawRequestBody",
+            "columnName": "raw_request_body",
+            "affinity": "BLOB"
+          },
+          {
+            "fieldPath": "sealedBodyCiphertext",
+            "columnName": "sealed_body_ciphertext",
+            "affinity": "BLOB"
+          },
+          {
+            "fieldPath": "sealedBodyNonce",
+            "columnName": "sealed_body_nonce",
+            "affinity": "BLOB"
+          },
+          {
+            "fieldPath": "sealedBodyKeyAlias",
+            "columnName": "sealed_body_key_alias",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "sealedBodyKeyGeneration",
+            "columnName": "sealed_body_key_generation",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "sealedBodyAadVersion",
+            "columnName": "sealed_body_aad_version",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "requestBodyOctetCount",
+            "columnName": "request_body_octet_count",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "rawBodyHmac",
+            "columnName": "raw_body_hmac",
+            "affinity": "BLOB",
+            "notNull": true
+          },
+          {
+            "fieldPath": "hmacKeyGeneration",
+            "columnName": "hmac_key_generation",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "state",
+            "columnName": "state",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "attemptCount",
+            "columnName": "attempt_count",
+            "affinity": "INTEGER",
+            "notNull": true,
+            "defaultValue": "0"
+          },
+          {
+            "fieldPath": "attemptBudget",
+            "columnName": "attempt_budget",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "deadlineAtEpochMs",
+            "columnName": "deadline_at_epoch_ms",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "nextAttemptAtEpochMs",
+            "columnName": "next_attempt_at_epoch_ms",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "lastAttemptAtEpochMs",
+            "columnName": "last_attempt_at_epoch_ms",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "leaseExpiresAtEpochMs",
+            "columnName": "lease_expires_at_epoch_ms",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "activeAttemptId",
+            "columnName": "active_attempt_id",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "accessGenerationUsed",
+            "columnName": "access_generation_used",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "refreshAttempted",
+            "columnName": "refresh_attempted",
+            "affinity": "INTEGER",
+            "notNull": true,
+            "defaultValue": "0"
+          },
+          {
+            "fieldPath": "originalRetryCount",
+            "columnName": "original_retry_count",
+            "affinity": "INTEGER",
+            "notNull": true,
+            "defaultValue": "0"
+          },
+          {
+            "fieldPath": "terminalHttpStatus",
+            "columnName": "terminal_http_status",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "exactResponseBody",
+            "columnName": "exact_response_body",
+            "affinity": "BLOB"
+          },
+          {
+            "fieldPath": "responseSha256",
+            "columnName": "response_sha256",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "terminalAtUtc",
+            "columnName": "terminal_at_utc",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "terminalErrorCode",
+            "columnName": "terminal_error_code",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "createdAtUtc",
+            "columnName": "created_at_utc",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "updatedAtUtc",
+            "columnName": "updated_at_utc",
+            "affinity": "TEXT",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "endpoint_id",
+            "request_identity"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_sync_http_request_idempotency_key",
+            "unique": true,
+            "columnNames": [
+              "idempotency_key"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_sync_http_request_idempotency_key` ON `${TABLE_NAME}` (`idempotency_key`)"
+          },
+          {
+            "name": "index_sync_http_request_state_next_attempt_at_epoch_ms",
+            "unique": false,
+            "columnNames": [
+              "state",
+              "next_attempt_at_epoch_ms"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_sync_http_request_state_next_attempt_at_epoch_ms` ON `${TABLE_NAME}` (`state`, `next_attempt_at_epoch_ms`)"
+          },
+          {
+            "name": "index_sync_http_request_credential_epoch_id_state",
+            "unique": false,
+            "columnNames": [
+              "credential_epoch_id",
+              "state"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_sync_http_request_credential_epoch_id_state` ON `${TABLE_NAME}` (`credential_epoch_id`, `state`)"
+          },
+          {
+            "name": "index_sync_http_request_active_attempt_id",
+            "unique": true,
+            "columnNames": [
+              "active_attempt_id"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_sync_http_request_active_attempt_id` ON `${TABLE_NAME}` (`active_attempt_id`)"
+          }
+        ]
+      },
+      {
+        "tableName": "sync_push_batch",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`batch_id` TEXT NOT NULL, `endpoint_id` TEXT NOT NULL, `request_identity` TEXT NOT NULL, `batch_content_sha256` TEXT NOT NULL, `operation_count` INTEGER NOT NULL, `created_at_utc` TEXT NOT NULL, PRIMARY KEY(`batch_id`), FOREIGN KEY(`endpoint_id`, `request_identity`) REFERENCES `sync_http_request`(`endpoint_id`, `request_identity`) ON UPDATE NO ACTION ON DELETE RESTRICT )",
+        "fields": [
+          {
+            "fieldPath": "batchId",
+            "columnName": "batch_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "endpointId",
+            "columnName": "endpoint_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "requestIdentity",
+            "columnName": "request_identity",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "batchContentSha256",
+            "columnName": "batch_content_sha256",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "operationCount",
+            "columnName": "operation_count",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "createdAtUtc",
+            "columnName": "created_at_utc",
+            "affinity": "TEXT",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "batch_id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_sync_push_batch_endpoint_id_request_identity",
+            "unique": true,
+            "columnNames": [
+              "endpoint_id",
+              "request_identity"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_sync_push_batch_endpoint_id_request_identity` ON `${TABLE_NAME}` (`endpoint_id`, `request_identity`)"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "table": "sync_http_request",
+            "onDelete": "RESTRICT",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "endpoint_id",
+              "request_identity"
+            ],
+            "referencedColumns": [
+              "endpoint_id",
+              "request_identity"
+            ]
+          }
+        ]
+      },
+      {
+        "tableName": "sync_push_batch_item",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`batch_id` TEXT NOT NULL, `ordinal` INTEGER NOT NULL, `local_sequence` INTEGER NOT NULL, `operation_id` TEXT NOT NULL, `wire_operation_content_sha256` TEXT NOT NULL, PRIMARY KEY(`batch_id`, `ordinal`), FOREIGN KEY(`batch_id`) REFERENCES `sync_push_batch`(`batch_id`) ON UPDATE NO ACTION ON DELETE CASCADE , FOREIGN KEY(`local_sequence`, `operation_id`) REFERENCES `sync_outbox`(`local_sequence`, `operation_id`) ON UPDATE NO ACTION ON DELETE RESTRICT )",
+        "fields": [
+          {
+            "fieldPath": "batchId",
+            "columnName": "batch_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "ordinal",
+            "columnName": "ordinal",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "localSequence",
+            "columnName": "local_sequence",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "operationId",
+            "columnName": "operation_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "wireOperationContentSha256",
+            "columnName": "wire_operation_content_sha256",
+            "affinity": "TEXT",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "batch_id",
+            "ordinal"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_sync_push_batch_item_batch_id_local_sequence",
+            "unique": true,
+            "columnNames": [
+              "batch_id",
+              "local_sequence"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_sync_push_batch_item_batch_id_local_sequence` ON `${TABLE_NAME}` (`batch_id`, `local_sequence`)"
+          },
+          {
+            "name": "index_sync_push_batch_item_batch_id_operation_id",
+            "unique": true,
+            "columnNames": [
+              "batch_id",
+              "operation_id"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_sync_push_batch_item_batch_id_operation_id` ON `${TABLE_NAME}` (`batch_id`, `operation_id`)"
+          },
+          {
+            "name": "index_sync_push_batch_item_local_sequence_operation_id",
+            "unique": false,
+            "columnNames": [
+              "local_sequence",
+              "operation_id"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_sync_push_batch_item_local_sequence_operation_id` ON `${TABLE_NAME}` (`local_sequence`, `operation_id`)"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "table": "sync_push_batch",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "batch_id"
+            ],
+            "referencedColumns": [
+              "batch_id"
+            ]
+          },
+          {
+            "table": "sync_outbox",
+            "onDelete": "RESTRICT",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "local_sequence",
+              "operation_id"
+            ],
+            "referencedColumns": [
+              "local_sequence",
+              "operation_id"
+            ]
+          }
+        ]
+      },
+      {
+        "tableName": "sync_server_change",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`server_sequence` INTEGER NOT NULL, `operation_id` TEXT NOT NULL, `operation_content_sha256` TEXT NOT NULL, `result_code` TEXT NOT NULL, `capture_id` TEXT NOT NULL, `event_id` TEXT NOT NULL, `revision_id` TEXT NOT NULL, `current_revision_id` TEXT NOT NULL, `committed_at_utc` TEXT NOT NULL, `first_endpoint_id` TEXT NOT NULL, `first_request_identity` TEXT NOT NULL, `verified_at_utc` TEXT NOT NULL, PRIMARY KEY(`server_sequence`), FOREIGN KEY(`event_id`, `revision_id`, `capture_id`, `operation_id`, `server_sequence`) REFERENCES `local_event_revision`(`event_id`, `revision_id`, `capture_id`, `operation_id`, `server_sequence`) ON UPDATE NO ACTION ON DELETE RESTRICT , FOREIGN KEY(`first_endpoint_id`, `first_request_identity`) REFERENCES `sync_http_request`(`endpoint_id`, `request_identity`) ON UPDATE NO ACTION ON DELETE RESTRICT )",
+        "fields": [
+          {
+            "fieldPath": "serverSequence",
+            "columnName": "server_sequence",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "operationId",
+            "columnName": "operation_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "operationContentSha256",
+            "columnName": "operation_content_sha256",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "resultCode",
+            "columnName": "result_code",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "captureId",
+            "columnName": "capture_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "eventId",
+            "columnName": "event_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "revisionId",
+            "columnName": "revision_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "currentRevisionId",
+            "columnName": "current_revision_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "committedAtUtc",
+            "columnName": "committed_at_utc",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "firstEndpointId",
+            "columnName": "first_endpoint_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "firstRequestIdentity",
+            "columnName": "first_request_identity",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "verifiedAtUtc",
+            "columnName": "verified_at_utc",
+            "affinity": "TEXT",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "server_sequence"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_sync_server_change_operation_id",
+            "unique": true,
+            "columnNames": [
+              "operation_id"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_sync_server_change_operation_id` ON `${TABLE_NAME}` (`operation_id`)"
+          },
+          {
+            "name": "index_sync_server_change_capture_id",
+            "unique": true,
+            "columnNames": [
+              "capture_id"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_sync_server_change_capture_id` ON `${TABLE_NAME}` (`capture_id`)"
+          },
+          {
+            "name": "index_sync_server_change_revision_id",
+            "unique": true,
+            "columnNames": [
+              "revision_id"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_sync_server_change_revision_id` ON `${TABLE_NAME}` (`revision_id`)"
+          },
+          {
+            "name": "index_sync_server_change_event_id_revision_id_capture_id_operation_id_server_sequence",
+            "unique": false,
+            "columnNames": [
+              "event_id",
+              "revision_id",
+              "capture_id",
+              "operation_id",
+              "server_sequence"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_sync_server_change_event_id_revision_id_capture_id_operation_id_server_sequence` ON `${TABLE_NAME}` (`event_id`, `revision_id`, `capture_id`, `operation_id`, `server_sequence`)"
+          },
+          {
+            "name": "index_sync_server_change_first_endpoint_id_first_request_identity",
+            "unique": false,
+            "columnNames": [
+              "first_endpoint_id",
+              "first_request_identity"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_sync_server_change_first_endpoint_id_first_request_identity` ON `${TABLE_NAME}` (`first_endpoint_id`, `first_request_identity`)"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "table": "local_event_revision",
+            "onDelete": "RESTRICT",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "event_id",
+              "revision_id",
+              "capture_id",
+              "operation_id",
+              "server_sequence"
+            ],
+            "referencedColumns": [
+              "event_id",
+              "revision_id",
+              "capture_id",
+              "operation_id",
+              "server_sequence"
+            ]
+          },
+          {
+            "table": "sync_http_request",
+            "onDelete": "RESTRICT",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "first_endpoint_id",
+              "first_request_identity"
+            ],
+            "referencedColumns": [
+              "endpoint_id",
+              "request_identity"
+            ]
+          }
+        ]
+      },
+      {
+        "tableName": "sync_stream_state",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`singleton_id` INTEGER NOT NULL, `credential_epoch_id` TEXT NOT NULL, `device_id` TEXT NOT NULL, `phase` TEXT NOT NULL, `bootstrap_required` INTEGER NOT NULL, `applied_cursor` TEXT, `last_applied_server_sequence` INTEGER NOT NULL DEFAULT 0, `high_watermark_hint` TEXT, `integrity_error_code` TEXT, `updated_at_utc` TEXT NOT NULL, `replica_lineage_id` TEXT, PRIMARY KEY(`singleton_id`))",
+        "fields": [
+          {
+            "fieldPath": "singletonId",
+            "columnName": "singleton_id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "credentialEpochId",
+            "columnName": "credential_epoch_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "deviceId",
+            "columnName": "device_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "phase",
+            "columnName": "phase",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "bootstrapRequired",
+            "columnName": "bootstrap_required",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "appliedCursor",
+            "columnName": "applied_cursor",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "lastAppliedServerSequence",
+            "columnName": "last_applied_server_sequence",
+            "affinity": "INTEGER",
+            "notNull": true,
+            "defaultValue": "0"
+          },
+          {
+            "fieldPath": "highWatermarkHint",
+            "columnName": "high_watermark_hint",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "integrityErrorCode",
+            "columnName": "integrity_error_code",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "updatedAtUtc",
+            "columnName": "updated_at_utc",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "replicaLineageId",
+            "columnName": "replica_lineage_id",
+            "affinity": "TEXT"
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "singleton_id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_sync_stream_state_credential_epoch_id_device_id",
+            "unique": true,
+            "columnNames": [
+              "credential_epoch_id",
+              "device_id"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_sync_stream_state_credential_epoch_id_device_id` ON `${TABLE_NAME}` (`credential_epoch_id`, `device_id`)"
+          },
+          {
+            "name": "index_sync_stream_state_phase",
+            "unique": false,
+            "columnNames": [
+              "phase"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_sync_stream_state_phase` ON `${TABLE_NAME}` (`phase`)"
+          }
+        ]
+      },
+      {
+        "tableName": "sync_bootstrap_session",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`bootstrap_id` TEXT NOT NULL, `credential_epoch_id` TEXT NOT NULL, `device_id` TEXT NOT NULL, `state` TEXT NOT NULL, `active_slot` INTEGER, `snapshot_id` TEXT, `next_page_cursor` TEXT, `candidate_incremental_cursor` TEXT, `next_page_index` INTEGER NOT NULL, `last_staged_server_sequence` INTEGER, `staged_page_count` INTEGER NOT NULL DEFAULT 0, `staged_body_bytes` INTEGER NOT NULL DEFAULT 0, `created_at_utc` TEXT NOT NULL, `updated_at_utc` TEXT NOT NULL, PRIMARY KEY(`bootstrap_id`))",
+        "fields": [
+          {
+            "fieldPath": "bootstrapId",
+            "columnName": "bootstrap_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "credentialEpochId",
+            "columnName": "credential_epoch_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "deviceId",
+            "columnName": "device_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "state",
+            "columnName": "state",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "activeSlot",
+            "columnName": "active_slot",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "snapshotId",
+            "columnName": "snapshot_id",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "nextPageCursor",
+            "columnName": "next_page_cursor",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "candidateIncrementalCursor",
+            "columnName": "candidate_incremental_cursor",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "nextPageIndex",
+            "columnName": "next_page_index",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "lastStagedServerSequence",
+            "columnName": "last_staged_server_sequence",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "stagedPageCount",
+            "columnName": "staged_page_count",
+            "affinity": "INTEGER",
+            "notNull": true,
+            "defaultValue": "0"
+          },
+          {
+            "fieldPath": "stagedBodyBytes",
+            "columnName": "staged_body_bytes",
+            "affinity": "INTEGER",
+            "notNull": true,
+            "defaultValue": "0"
+          },
+          {
+            "fieldPath": "createdAtUtc",
+            "columnName": "created_at_utc",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "updatedAtUtc",
+            "columnName": "updated_at_utc",
+            "affinity": "TEXT",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "bootstrap_id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_sync_bootstrap_session_state",
+            "unique": false,
+            "columnNames": [
+              "state"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_sync_bootstrap_session_state` ON `${TABLE_NAME}` (`state`)"
+          },
+          {
+            "name": "index_sync_bootstrap_session_credential_epoch_id_device_id_state",
+            "unique": false,
+            "columnNames": [
+              "credential_epoch_id",
+              "device_id",
+              "state"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_sync_bootstrap_session_credential_epoch_id_device_id_state` ON `${TABLE_NAME}` (`credential_epoch_id`, `device_id`, `state`)"
+          },
+          {
+            "name": "index_sync_bootstrap_session_snapshot_id",
+            "unique": false,
+            "columnNames": [
+              "snapshot_id"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_sync_bootstrap_session_snapshot_id` ON `${TABLE_NAME}` (`snapshot_id`)"
+          },
+          {
+            "name": "index_sync_bootstrap_session_active_slot",
+            "unique": true,
+            "columnNames": [
+              "active_slot"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_sync_bootstrap_session_active_slot` ON `${TABLE_NAME}` (`active_slot`)"
+          }
+        ]
+      },
+      {
+        "tableName": "sync_replica_cursor",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`lineage_id` TEXT NOT NULL, `cursor_value` TEXT NOT NULL, `role` TEXT NOT NULL, PRIMARY KEY(`lineage_id`, `cursor_value`), FOREIGN KEY(`lineage_id`) REFERENCES `sync_bootstrap_session`(`bootstrap_id`) ON UPDATE NO ACTION ON DELETE RESTRICT )",
+        "fields": [
+          {
+            "fieldPath": "lineageId",
+            "columnName": "lineage_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "cursorValue",
+            "columnName": "cursor_value",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "role",
+            "columnName": "role",
+            "affinity": "TEXT",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "lineage_id",
+            "cursor_value"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_sync_replica_cursor_lineage_id_role",
+            "unique": false,
+            "columnNames": [
+              "lineage_id",
+              "role"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_sync_replica_cursor_lineage_id_role` ON `${TABLE_NAME}` (`lineage_id`, `role`)"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "table": "sync_bootstrap_session",
+            "onDelete": "RESTRICT",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "lineage_id"
+            ],
+            "referencedColumns": [
+              "bootstrap_id"
+            ]
+          }
+        ]
+      },
+      {
+        "tableName": "sync_page_receipt",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`page_id` TEXT NOT NULL, `endpoint_id` TEXT NOT NULL, `request_identity` TEXT NOT NULL, `bootstrap_id` TEXT, `page_index` INTEGER NOT NULL, `snapshot_id` TEXT, `from_cursor` TEXT, `next_cursor` TEXT, `incremental_cursor` TEXT, `page_sha256` TEXT NOT NULL, `change_count` INTEGER NOT NULL, `complete_or_has_more` INTEGER NOT NULL, `state` TEXT NOT NULL, `first_server_sequence` INTEGER, `last_server_sequence` INTEGER, `received_at_utc` TEXT NOT NULL, `applied_at_utc` TEXT, PRIMARY KEY(`page_id`), FOREIGN KEY(`endpoint_id`, `request_identity`) REFERENCES `sync_http_request`(`endpoint_id`, `request_identity`) ON UPDATE NO ACTION ON DELETE RESTRICT , FOREIGN KEY(`bootstrap_id`) REFERENCES `sync_bootstrap_session`(`bootstrap_id`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "fields": [
+          {
+            "fieldPath": "pageId",
+            "columnName": "page_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "endpointId",
+            "columnName": "endpoint_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "requestIdentity",
+            "columnName": "request_identity",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "bootstrapId",
+            "columnName": "bootstrap_id",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "pageIndex",
+            "columnName": "page_index",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "snapshotId",
+            "columnName": "snapshot_id",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "fromCursor",
+            "columnName": "from_cursor",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "nextCursor",
+            "columnName": "next_cursor",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "incrementalCursor",
+            "columnName": "incremental_cursor",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "pageSha256",
+            "columnName": "page_sha256",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "changeCount",
+            "columnName": "change_count",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "completeOrHasMore",
+            "columnName": "complete_or_has_more",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "state",
+            "columnName": "state",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "firstServerSequence",
+            "columnName": "first_server_sequence",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "lastServerSequence",
+            "columnName": "last_server_sequence",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "receivedAtUtc",
+            "columnName": "received_at_utc",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "appliedAtUtc",
+            "columnName": "applied_at_utc",
+            "affinity": "TEXT"
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "page_id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_sync_page_receipt_endpoint_id_request_identity",
+            "unique": true,
+            "columnNames": [
+              "endpoint_id",
+              "request_identity"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_sync_page_receipt_endpoint_id_request_identity` ON `${TABLE_NAME}` (`endpoint_id`, `request_identity`)"
+          },
+          {
+            "name": "index_sync_page_receipt_bootstrap_id_page_index",
+            "unique": true,
+            "columnNames": [
+              "bootstrap_id",
+              "page_index"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_sync_page_receipt_bootstrap_id_page_index` ON `${TABLE_NAME}` (`bootstrap_id`, `page_index`)"
+          },
+          {
+            "name": "index_sync_page_receipt_page_id_bootstrap_id",
+            "unique": true,
+            "columnNames": [
+              "page_id",
+              "bootstrap_id"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_sync_page_receipt_page_id_bootstrap_id` ON `${TABLE_NAME}` (`page_id`, `bootstrap_id`)"
+          },
+          {
+            "name": "index_sync_page_receipt_state",
+            "unique": false,
+            "columnNames": [
+              "state"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_sync_page_receipt_state` ON `${TABLE_NAME}` (`state`)"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "table": "sync_http_request",
+            "onDelete": "RESTRICT",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "endpoint_id",
+              "request_identity"
+            ],
+            "referencedColumns": [
+              "endpoint_id",
+              "request_identity"
+            ]
+          },
+          {
+            "table": "sync_bootstrap_session",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "bootstrap_id"
+            ],
+            "referencedColumns": [
+              "bootstrap_id"
+            ]
+          }
+        ]
+      },
+      {
+        "tableName": "sync_staged_change",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`bootstrap_id` TEXT NOT NULL, `server_sequence` INTEGER NOT NULL, `page_id` TEXT NOT NULL, `operation_id` TEXT NOT NULL, `operation_content_sha256` TEXT NOT NULL, `capture_id` TEXT NOT NULL, `event_id` TEXT NOT NULL, `revision_id` TEXT NOT NULL, `current_revision_id` TEXT NOT NULL, `result_code` TEXT NOT NULL, `committed_at_utc` TEXT NOT NULL, `change_jcs` BLOB NOT NULL, PRIMARY KEY(`bootstrap_id`, `server_sequence`), FOREIGN KEY(`bootstrap_id`) REFERENCES `sync_bootstrap_session`(`bootstrap_id`) ON UPDATE NO ACTION ON DELETE CASCADE , FOREIGN KEY(`page_id`, `bootstrap_id`) REFERENCES `sync_page_receipt`(`page_id`, `bootstrap_id`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "fields": [
+          {
+            "fieldPath": "bootstrapId",
+            "columnName": "bootstrap_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "serverSequence",
+            "columnName": "server_sequence",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "pageId",
+            "columnName": "page_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "operationId",
+            "columnName": "operation_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "operationContentSha256",
+            "columnName": "operation_content_sha256",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "captureId",
+            "columnName": "capture_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "eventId",
+            "columnName": "event_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "revisionId",
+            "columnName": "revision_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "currentRevisionId",
+            "columnName": "current_revision_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "resultCode",
+            "columnName": "result_code",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "committedAtUtc",
+            "columnName": "committed_at_utc",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "changeJcs",
+            "columnName": "change_jcs",
+            "affinity": "BLOB",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "bootstrap_id",
+            "server_sequence"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_sync_staged_change_page_id_bootstrap_id",
+            "unique": false,
+            "columnNames": [
+              "page_id",
+              "bootstrap_id"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_sync_staged_change_page_id_bootstrap_id` ON `${TABLE_NAME}` (`page_id`, `bootstrap_id`)"
+          },
+          {
+            "name": "index_sync_staged_change_bootstrap_id_operation_id",
+            "unique": true,
+            "columnNames": [
+              "bootstrap_id",
+              "operation_id"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_sync_staged_change_bootstrap_id_operation_id` ON `${TABLE_NAME}` (`bootstrap_id`, `operation_id`)"
+          },
+          {
+            "name": "index_sync_staged_change_bootstrap_id_capture_id",
+            "unique": true,
+            "columnNames": [
+              "bootstrap_id",
+              "capture_id"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_sync_staged_change_bootstrap_id_capture_id` ON `${TABLE_NAME}` (`bootstrap_id`, `capture_id`)"
+          },
+          {
+            "name": "index_sync_staged_change_bootstrap_id_revision_id",
+            "unique": true,
+            "columnNames": [
+              "bootstrap_id",
+              "revision_id"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_sync_staged_change_bootstrap_id_revision_id` ON `${TABLE_NAME}` (`bootstrap_id`, `revision_id`)"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "table": "sync_bootstrap_session",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "bootstrap_id"
+            ],
+            "referencedColumns": [
+              "bootstrap_id"
+            ]
+          },
+          {
+            "table": "sync_page_receipt",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "page_id",
+              "bootstrap_id"
+            ],
+            "referencedColumns": [
+              "page_id",
+              "bootstrap_id"
+            ]
+          }
+        ]
+      }
+    ],
+    "setupQueries": [
+      "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '678a3b4456631f64203450a6b898d534')"
+    ]
+  }
+}

@@ -52,6 +52,7 @@ import ru.andriyshkoy.lifeagent.data.sync.wire.WipeableSecret
 import ru.andriyshkoy.lifeagent.data.sync.wire.WireJsonArray
 import ru.andriyshkoy.lifeagent.data.sync.wire.WireJsonBoolean
 import ru.andriyshkoy.lifeagent.data.sync.wire.WireJsonInteger
+import ru.andriyshkoy.lifeagent.data.sync.wire.WireJsonNull
 import ru.andriyshkoy.lifeagent.data.sync.wire.WireJsonObject
 import ru.andriyshkoy.lifeagent.data.sync.wire.WireJsonString
 import ru.andriyshkoy.lifeagent.notes.data.RoomNotesRepository
@@ -84,6 +85,129 @@ class M2ProductionRuntimeApi35InstrumentedTest {
             load(null)
             if (containsAlias(keyAlias)) deleteEntry(keyAlias)
         }
+    }
+
+    @Test
+    fun emptyFirstBootstrapPageCommitsThroughProductionProtectedBoundary() = runBlocking {
+        fixture.seedIdentity(
+            deviceId = SyncM2PersistenceFixture.DEVICE_ID,
+            personId = SyncM2PersistenceFixture.PERSON_ID,
+        )
+        fixture.installActiveAuth(bootstrapRequired = true)
+        fixture.database.syncReplicaDao().insertStreamState(
+            fixture.streamState(bootstrapRequired = true),
+        )
+
+        val keyring = keyring()
+        val planner = planner(keyring)
+        val planned = planner.planAndConstruct(PLAN_AT.toString())
+        assertTrue(planned is ProtectedSyncRequestPlanningOutcome.Created)
+        planned as ProtectedSyncRequestPlanningOutcome.Created
+        assertEquals(DurableSyncRequestKind.BOOTSTRAP, planned.kind)
+        val session = requireNotNull(
+            fixture.database.syncReplicaDao().findBootstrapSessionWithActiveSlot(),
+        )
+        val tokenKey = AccessTokenKey(
+            credentialEpochId = SyncM2PersistenceFixture.EPOCH_ID,
+            accessGeneration = 1,
+        )
+        vault.replace(tokenKey, WipeableSecret.ascii(VALID_ACCESS_TOKEN))
+        val candidate = fixture.database.syncTransportDao()
+            .findRunnableRequestCandidates(ATTEMPTED_AT.toEpochMilli(), 10)
+            .single { it.requestIdentity == planned.request.requestIdentity }
+        val requests = ProtectedSyncRequestStore(
+            context = context,
+            database = fixture.database,
+            keyring = keyring,
+        )
+        val responses = ProtectedSyncResponseStore(
+            context = context,
+            database = fixture.database,
+            bootstrapIntents = planner.protectedBootstrapIntents,
+            keyring = keyring,
+        )
+        val responseBody = emptyBootstrapBody(
+            requestId = planned.request.requestIdentity,
+            bootstrapId = session.bootstrapId,
+            deviceId = SyncM2PersistenceFixture.DEVICE_ID,
+        )
+        val dispatch = ProductionProtectedDurableDispatchPort(
+            exchangeProvider = {
+                ProtectedDurableExactExchange { claim, bearer ->
+                    assertNotNull(bearer)
+                    ExactHttpsRawResponse(
+                        claim = claim,
+                        httpStatus = 200,
+                        retryAfterSeconds = null,
+                        body = responseBody.copyOf(),
+                    )
+                }
+            },
+            claims = ProtectedDurableDispatchClaimBoundary {
+                    bodyFreeCandidate,
+                    attemptId,
+                    claimedAtEpochMs,
+                    leaseExpiresAtEpochMs,
+                    claimedAtUtc,
+                ->
+                requests.verifyAndClaimForDispatch(
+                    endpointId = bodyFreeCandidate.endpointId,
+                    requestIdentity = bodyFreeCandidate.requestIdentity,
+                    attemptId = attemptId,
+                    attemptedAtEpochMs = claimedAtEpochMs,
+                    leaseExpiresAtEpochMs = leaseExpiresAtEpochMs,
+                    updatedAtUtc = claimedAtUtc,
+                    accessTokenVault = vault,
+                )
+            },
+            responses = object : ProtectedDurableDispatchResponseBoundary {
+                override suspend fun reduce(
+                    outcome: ExactHttpsNetworkFailure,
+                    terminalAtUtc: String,
+                ): ProtectedResponseDisposition = error("Bootstrap became a network failure")
+
+                override suspend fun reduce(
+                    outcome: ExactHttpsProtocolFailure,
+                    terminalAtUtc: String,
+                ): ProtectedResponseDisposition = error("Bootstrap became a protocol failure")
+
+                override suspend fun reduce(
+                    outcome: ExactHttpsRawResponse,
+                    terminalAtUtc: String,
+                ): ProtectedResponseDisposition =
+                    responses.reduceRawResponse(outcome, terminalAtUtc)
+            },
+            accessTokenVault = vault,
+            completionClock = Clock.fixed(HIGH_PRECISION_COMPLETED_AT, ZoneOffset.UTC),
+        )
+
+        try {
+            assertEquals(
+                ProtectedDurableDispatchResult.PROGRESSED,
+                dispatch.dispatch(
+                    candidate = candidate,
+                    attemptId = ATTEMPT_ID,
+                    attemptedAtUtc = ATTEMPTED_AT.toString(),
+                    leaseExpiresAtEpochMs = LEASE_EXPIRES_AT.toEpochMilli(),
+                ),
+            )
+        } finally {
+            responseBody.fill(0)
+        }
+
+        assertEquals("terminal", requestBootstrap(planned.request.requestIdentity).state)
+        assertEquals(
+            "complete",
+            fixture.database.syncReplicaDao()
+                .findBootstrapSession(session.bootstrapId)
+                ?.state,
+        )
+        assertEquals(false, fixture.database.syncAuthDao().findState()?.bootstrapRequired)
+        val stream = requireNotNull(fixture.database.syncReplicaDao().findStreamState())
+        assertEquals("incremental", stream.phase)
+        assertEquals(false, stream.bootstrapRequired)
+        assertNotNull(stream.appliedCursor)
+        assertNull(stream.integrityErrorCode)
     }
 
     @Test
@@ -374,6 +498,10 @@ class M2ProductionRuntimeApi35InstrumentedTest {
         fixture.database.syncTransportDao().findRequest("sync_push", batchId),
     )
 
+    private suspend fun requestBootstrap(requestId: String) = requireNotNull(
+        fixture.database.syncTransportDao().findRequest("sync_bootstrap", requestId),
+    )
+
     private fun refreshSuccess(
         requestId: String,
         committedAt: Instant,
@@ -434,6 +562,36 @@ class M2ProductionRuntimeApi35InstrumentedTest {
         ),
     )
 
+    private fun emptyBootstrapBody(
+        requestId: String,
+        bootstrapId: String,
+        deviceId: String,
+    ): ByteArray {
+        val unhashed = WireJsonObject(
+            mapOf(
+                "bootstrap_id" to WireJsonString(bootstrapId),
+                "changes" to WireJsonArray(emptyList()),
+                "complete" to WireJsonBoolean(true),
+                "device_id" to WireJsonString(deviceId),
+                "from_page_cursor" to WireJsonNull,
+                "incremental_cursor" to WireJsonString(EMPTY_INCREMENTAL_CURSOR),
+                "message_type" to WireJsonString("bootstrap_response"),
+                "next_page_cursor" to WireJsonNull,
+                "page_id" to WireJsonString(uuid("empty-bootstrap-page").toString()),
+                "protocol_version" to WireJsonString("1.0.0"),
+                "request_id" to WireJsonString(requestId),
+                "server_time" to WireJsonString(COMPLETED_AT.toString()),
+                "snapshot_id" to WireJsonString(uuid("empty-bootstrap-snapshot").toString()),
+            ),
+        )
+        val pageHash = StrictJson.canonicalSha256(unhashed)
+        return StrictJson.canonicalBytes(
+            WireJsonObject(
+                unhashed.properties + ("page_sha256" to WireJsonString(pageHash)),
+            ),
+        )
+    }
+
     private fun noteIds(): MutationIds = MutationIds(
         operationId = uuid("operation"),
         captureId = uuid("capture"),
@@ -458,12 +616,16 @@ class M2ProductionRuntimeApi35InstrumentedTest {
         const val RETRY_ATTEMPT_ID = "m2-runtime-api35-retry-attempt"
         const val VALID_ACCESS_TOKEN =
             "laa_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+        const val EMPTY_INCREMENTAL_CURSOR =
+            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
         val RECORDED_AT: OffsetDateTime =
             OffsetDateTime.parse("2030-01-01T07:00:00+07:00")
         val PLAN_AT: Instant = Instant.parse("2030-01-01T00:01:00Z")
         val ATTEMPTED_AT: Instant = Instant.parse("2030-01-01T00:01:01Z")
         val LEASE_EXPIRES_AT: Instant = Instant.parse("2030-01-01T00:02:01Z")
         val COMPLETED_AT: Instant = Instant.parse("2030-01-01T00:01:02Z")
+        val HIGH_PRECISION_COMPLETED_AT: Instant =
+            Instant.parse("2030-01-01T00:01:02.123456Z")
         val REFRESH_CLAIMED_AT: Instant = Instant.parse("2030-01-01T00:01:03Z")
         val REFRESH_COMMITTED_AT: Instant = Instant.parse("2030-01-01T00:01:04Z")
         val RETRY_FAILED_AT: Instant = Instant.parse("2030-01-01T00:01:05Z")
