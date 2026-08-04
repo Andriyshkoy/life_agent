@@ -91,6 +91,27 @@ internal fun requireCanonicalServerInstant(value: String): String {
     return value
 }
 
+/**
+ * Accepts the canonical precision emitted by [Instant.toString] for local
+ * clocks. Server timestamps deliberately remain restricted to milliseconds,
+ * while Android clocks may expose microsecond or nanosecond precision.
+ */
+internal fun requireCanonicalLocalInstant(value: String): String {
+    val parsed = try {
+        Instant.parse(value)
+    } catch (_: DateTimeException) {
+        schemaFailure()
+    }
+    if (parsed.toString() != value) schemaFailure()
+    val utcYear = try {
+        parsed.atOffset(ZoneOffset.UTC).year
+    } catch (_: DateTimeException) {
+        schemaFailure()
+    }
+    if (utcYear !in 1..9999) schemaFailure()
+    return value
+}
+
 internal fun requireCanonicalOffsetInstant(value: String): String {
     if (!OFFSET_INSTANT_PATTERN.matches(value)) {
         schemaFailure()

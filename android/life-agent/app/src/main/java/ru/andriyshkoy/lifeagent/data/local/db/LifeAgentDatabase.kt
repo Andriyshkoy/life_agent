@@ -62,7 +62,7 @@ import ru.andriyshkoy.lifeagent.data.local.db.entity.SyncStreamStateEntity
         SyncPageReceiptEntity::class,
         SyncStagedChangeEntity::class,
     ],
-    version = 5,
+    version = 6,
     exportSchema = true,
 )
 abstract class LifeAgentDatabase : RoomDatabase() {
@@ -84,6 +84,6 @@ abstract class LifeAgentDatabase : RoomDatabase() {
 
     companion object {
         const val NAME = "life-agent.db"
-        const val VERSION = 5
+        const val VERSION = 6
     }
 }

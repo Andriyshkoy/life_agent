@@ -101,7 +101,7 @@ class WireReplicaPersistenceMapperTest {
         val mapped = WireReplicaPersistenceMapper.map(
             response = decoded,
             pageIndex = 9,
-            terminalAtUtc = LOCAL_TERMINAL_AT,
+            terminalAtUtc = HIGH_PRECISION_LOCAL_TERMINAL_AT,
         )
 
         assertEquals(M2Endpoint.SYNC_PULL.endpointId, mapped.receipt.endpointId)
@@ -114,8 +114,8 @@ class WireReplicaPersistenceMapperTest {
         assertNull(mapped.receipt.incrementalCursor)
         assertEquals(true, mapped.receipt.completeOrHasMore)
         assertEquals("applied", mapped.receipt.state)
-        assertEquals(LOCAL_TERMINAL_AT, mapped.receipt.receivedAtUtc)
-        assertEquals(LOCAL_TERMINAL_AT, mapped.receipt.appliedAtUtc)
+        assertEquals(HIGH_PRECISION_LOCAL_TERMINAL_AT, mapped.receipt.receivedAtUtc)
+        assertEquals(HIGH_PRECISION_LOCAL_TERMINAL_AT, mapped.receipt.appliedAtUtc)
         assertEquals(EVENT_RECEIVED_AT, mapped.changes.single().committedAtUtc)
     }
 
@@ -212,6 +212,7 @@ class WireReplicaPersistenceMapperTest {
         const val SERVER_SEQUENCE = 42L
         const val EVENT_RECEIVED_AT = "2026-07-01T02:03:04.005Z"
         const val LOCAL_TERMINAL_AT = "2026-08-02T03:04:05.006Z"
+        const val HIGH_PRECISION_LOCAL_TERMINAL_AT = "2026-08-02T03:04:05.006123Z"
         const val RESPONSE_SERVER_TIME = "2026-12-31T23:59:59.999Z"
         const val OPERATION_SHA256 =
             "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
