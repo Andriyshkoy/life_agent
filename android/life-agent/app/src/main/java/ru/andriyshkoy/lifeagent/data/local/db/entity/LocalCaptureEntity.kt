@@ -44,8 +44,6 @@ data class LocalCaptureEntity(
     val localOwnerId: String,
     @ColumnInfo(name = "schema_version")
     val schemaVersion: String,
-    @ColumnInfo(name = "persistence_state")
-    val persistenceState: String,
     @ColumnInfo(name = "source_channel")
     val sourceChannel: String,
     @ColumnInfo(name = "recorded_at_rfc3339")

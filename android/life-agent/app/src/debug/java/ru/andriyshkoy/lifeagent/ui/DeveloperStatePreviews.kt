@@ -83,7 +83,7 @@ internal object DeveloperUiFixtures {
 
 @Preview(
     name = "Loading",
-    group = "M1 states",
+    group = "Local states",
     widthDp = 412,
     heightDp = 915,
     showBackground = true,
@@ -95,7 +95,7 @@ private fun LoadingStatePreview() {
 
 @Preview(
     name = "Empty",
-    group = "M1 states",
+    group = "Local states",
     widthDp = 412,
     heightDp = 915,
     showBackground = true,
@@ -107,7 +107,7 @@ private fun EmptyStatePreview() {
 
 @Preview(
     name = "Failed",
-    group = "M1 states",
+    group = "Local states",
     widthDp = 412,
     heightDp = 915,
     showBackground = true,
@@ -119,7 +119,7 @@ private fun FailedStatePreview() {
 
 @Preview(
     name = "Validation error",
-    group = "M1 states",
+    group = "Local states",
     widthDp = 412,
     heightDp = 915,
     showBackground = true,
@@ -131,7 +131,7 @@ private fun ValidationStatePreview() {
 
 @Preview(
     name = "Exact retry",
-    group = "M1 states",
+    group = "Local states",
     widthDp = 412,
     heightDp = 915,
     showBackground = true,
@@ -143,7 +143,7 @@ private fun RetryStatePreview() {
 
 @Preview(
     name = "Destructive dialog",
-    group = "M1 states",
+    group = "Local states",
     widthDp = 412,
     heightDp = 915,
     showBackground = true,
@@ -155,7 +155,7 @@ private fun DestructiveDialogStatePreview() {
 
 @Preview(
     name = "Storage unavailable",
-    group = "M1 states",
+    group = "Local states",
     widthDp = 412,
     heightDp = 915,
     showBackground = true,
@@ -167,7 +167,7 @@ private fun StorageUnavailableStatePreview() {
 
 @Preview(
     name = "First run",
-    group = "M1 states",
+    group = "Local states",
     widthDp = 412,
     heightDp = 915,
     showBackground = true,

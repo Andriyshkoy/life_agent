@@ -285,7 +285,6 @@ class NotesViewModelTest {
             val snapshot = repository.sampleSnapshot(text = "Уже записано")
             val receipt = NoteMutationReceipt(
                 note = snapshot,
-                localSequence = 1,
                 disposition = NoteMutationDisposition.COMMITTED,
             )
             repository.receiptsByOperation[snapshot.operationId] = receipt
@@ -465,7 +464,6 @@ class NotesViewModelTest {
             currentByEvent[snapshot.eventId] = snapshot
             val receipt = NoteMutationReceipt(
                 note = snapshot,
-                localSequence = 1,
                 disposition = NoteMutationDisposition.COMMITTED,
             )
             receiptsByOperation[snapshot.operationId] = receipt
@@ -486,5 +484,4 @@ private fun NoteSnapshot.toSummary(): NoteSummary = NoteSummary(
     text = text,
     status = status,
     effectiveTime = effectiveTime,
-    localSequence = 1,
 )

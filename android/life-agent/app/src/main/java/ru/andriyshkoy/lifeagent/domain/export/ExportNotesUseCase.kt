@@ -7,7 +7,7 @@ import ru.andriyshkoy.lifeagent.data.export.NotesExportSnapshot
 import ru.andriyshkoy.lifeagent.notes.domain.NotesRepository
 
 /**
- * Narrow persistence boundary for M1.
+ * Narrow persistence boundary for local note exports.
  *
  * A Room adapter can implement this once its notes snapshot query is
  * available, without coupling the canonical export codec to entities or DAOs.

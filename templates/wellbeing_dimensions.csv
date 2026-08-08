@@ -1,5 +1,0 @@
-dimension_id,name,aliases,sort_order,is_active,notes
-example_wellbeing_mood,"Настроение","настроение;эмоции",10,true,"Удалите или замените эту example_* строку"
-example_wellbeing_energy,"Энергия","энергия;силы",20,true,"Удалите или замените эту example_* строку"
-example_wellbeing_stress,"Стресс","стресс;напряжение",30,true,"Удалите или замените эту example_* строку"
-example_wellbeing_overall,"Общее состояние","самочувствие;состояние",40,true,"Удалите или замените эту example_* строку"

@@ -42,12 +42,10 @@ data class NoteSummary(
     val text: String,
     val status: NoteRecordStatus,
     val effectiveTime: ResolvedPointTime,
-    val localSequence: Long,
 )
 
 data class NoteMutationReceipt(
     val note: NoteSnapshot,
-    val localSequence: Long,
     val disposition: NoteMutationDisposition,
 ) {
     val replayed: Boolean
@@ -67,7 +65,6 @@ sealed interface NoteMutationOutcome {
 data class NoteEventPointer(
     val eventId: UUID,
     val currentRevisionId: UUID,
-    val serverCurrentRevisionId: UUID?,
 )
 
 data class CanonicalNoteRevisionSnapshot(

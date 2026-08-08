@@ -32,6 +32,7 @@ class NotesExportValidator {
         val revisionsById = linkedMapOf<String, NoteRevisionInspection>()
         val revisionsByEvent = linkedMapOf<String, MutableList<NoteRevisionInspection>>()
         val operationIds = mutableSetOf<String>()
+        val captureIds = mutableSetOf<String>()
         var ownerNamespace: Pair<String, String>? = null
 
         revisions.forEach { revision ->
@@ -41,6 +42,9 @@ class NotesExportValidator {
             revisionsByEvent.getOrPut(revision.eventId, ::mutableListOf) += revision
             if (!operationIds.add(revision.operationId)) {
                 violations += "duplicate operation_id: ${revision.operationId}"
+            }
+            if (!captureIds.add(revision.captureId)) {
+                violations += "duplicate capture_id: ${revision.captureId}"
             }
 
             val namespace = revision.installationId to revision.localOwnerId
@@ -66,13 +70,6 @@ class NotesExportValidator {
                 current.eventId != eventId -> {
                     violations +=
                         "current_revision_id belongs to another event: " +
-                        currentRevisionId
-                }
-                revisionsByEvent[eventId]
-                    .orEmpty()
-                    .any { currentRevisionId in it.parentRevisionIds } -> {
-                    violations +=
-                        "current_revision_id is not a leaf revision: " +
                         currentRevisionId
                 }
             }
@@ -116,10 +113,39 @@ class NotesExportValidator {
         }
 
         revisionsByEvent.forEach { (eventId, eventRevisions) ->
-            val roots = eventRevisions.count { it.parentRevisionIds.isEmpty() }
-            if (roots != 1) {
+            val ordered = eventRevisions.sortedWith(
+                compareBy<NoteRevisionInspection>(
+                    NoteRevisionInspection::revisionNo,
+                    NoteRevisionInspection::revisionId,
+                ),
+            )
+            val contiguous = ordered.withIndex().all { (index, revision) ->
+                revision.revisionNo == java.math.BigInteger.valueOf(index.toLong() + 1L)
+            }
+            if (!contiguous) {
                 violations +=
-                    "event $eventId must contain exactly one root revision; found $roots"
+                    "event $eventId revision_no sequence is not contiguous"
+            }
+            ordered.forEachIndexed { index, revision ->
+                val expectedParents = if (index == 0) {
+                    emptyList()
+                } else {
+                    listOf(ordered[index - 1].revisionId)
+                }
+                if (revision.parentRevisionIds != expectedParents) {
+                    violations +=
+                        "${revision.revisionId}: revision does not supersede " +
+                        "its immediate predecessor"
+                }
+            }
+            val currentRevisionId = pointers[eventId]
+            if (
+                currentRevisionId != null &&
+                ordered.isNotEmpty() &&
+                currentRevisionId != ordered.last().revisionId
+            ) {
+                violations +=
+                    "current_revision_id does not select the latest revision for $eventId"
             }
         }
 
@@ -195,6 +221,7 @@ internal data class NoteRevisionInspection(
     val eventId: String,
     val revisionId: String,
     val revisionNo: java.math.BigInteger,
+    val captureId: String,
     val operationId: String,
     val installationId: String,
     val localOwnerId: String,

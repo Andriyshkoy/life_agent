@@ -1,0 +1,66 @@
+{
+  "schema_version": "5.0.0",
+  "identity": {
+    "installation_id": "10000000-0000-4000-8000-000000000001",
+    "local_owner_id": "10000000-0000-4000-8000-000000000002"
+  },
+  "event_id": "20000000-0000-4000-8000-000000000001",
+  "revision_id": "30000000-0000-4000-8000-000000000001",
+  "revision_no": 1,
+  "kind": "note",
+  "assertion_status": "observed",
+  "record_status": "active",
+  "verification_status": "user_confirmed",
+  "source": {
+    "capture_id": "40000000-0000-4000-8000-000000000001",
+    "operation_id": "50000000-0000-4000-8000-000000000001",
+    "channel": "android_manual",
+    "source_record_id": null,
+    "source_record_version": null,
+    "source_modified_at": null,
+    "recorded_at": "2026-01-10T10:00:00Z",
+    "origin": {
+      "provider": null,
+      "app": "Life Agent Android",
+      "device": "Synthetic Android device",
+      "user_entered": true
+    },
+    "collector": {
+      "name": "life-agent-android",
+      "version": "0.1.0"
+    }
+  },
+  "time": {
+    "effective_start_utc": "2026-01-10T10:00:00Z",
+    "effective_end_utc": null,
+    "original_local_start": "2026-01-10T10:00:00",
+    "original_local_end": null,
+    "timezone_id": "Etc/UTC",
+    "start_offset_seconds": 0,
+    "end_offset_seconds": null,
+    "temporal_precision": "minute",
+    "local_date": "2026-01-10",
+    "source_expression": null
+  },
+  "payload": {
+    "text": "Синтетическая заметка."
+  },
+  "evidence": [
+    {
+      "capture_ref": "#/source/capture_id",
+      "field_path": "/payload/text",
+      "artifact_id": null,
+      "locator": "android_form:/note/text",
+      "excerpt": null,
+      "human_confirmed": true
+    }
+  ],
+  "quality_flags": [],
+  "revision": {
+    "created_at": "2026-01-10T10:00:00Z",
+    "content_sha256": "053c1d9600ed69a88a7cf1688011ca5c320d552e895874dc6903d04e1bfba436",
+    "actor": "user",
+    "correction_reason": null,
+    "parents": []
+  }
+}

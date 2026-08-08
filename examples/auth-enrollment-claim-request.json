@@ -1,9 +1,0 @@
-{
-  "protocol_version": "1.0.0",
-  "message_type": "enrollment_claim_request",
-  "request_id": "81000000-0000-4000-8000-000000000001",
-  "enrollment_code": "ABCD-EFGH-JKLM-NPQR-STUV-WXYZ-2345",
-  "installation_id": "91000000-0000-4000-8000-000000000001",
-  "local_owner_id": "91000000-0000-4000-8000-000000000002",
-  "replace_active_device": false
-}

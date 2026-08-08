@@ -42,7 +42,6 @@ import ru.andriyshkoy.lifeagent.ui.AppSnackbarMessage
 import ru.andriyshkoy.lifeagent.ui.LifeAgentApp
 import ru.andriyshkoy.lifeagent.ui.notes.LastNoteUiState
 import ru.andriyshkoy.lifeagent.ui.notes.NotesViewModel
-import ru.andriyshkoy.lifeagent.ui.sync.DefaultSyncSetupController
 import ru.andriyshkoy.lifeagent.ui.theme.LifeAgentTheme
 
 class MainActivity : ComponentActivity() {
@@ -115,16 +114,6 @@ private fun ReadyLifeAgentApp(
         }
     }
     val notesViewModel: NotesViewModel = viewModel(factory = notesFactory)
-    val syncSetupFactory = remember(container) {
-        viewModelFactory {
-            initializer {
-                container.createSyncSetupController()
-            }
-        }
-    }
-    val syncSetupController: DefaultSyncSetupController = viewModel(
-        factory = syncSetupFactory,
-    )
     val scope = rememberCoroutineScope()
 
     val preferences = remember(activity) {
@@ -173,7 +162,6 @@ private fun ReadyLifeAgentApp(
 
     LifeAgentApp(
         notesController = notesViewModel,
-        syncSetupController = syncSetupController,
         showFirstRun = showFirstRun,
         onContinueLocally = {
             preferences.edit().putBoolean(FIRST_RUN_COMPLETE, true).apply()

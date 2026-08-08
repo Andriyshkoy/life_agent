@@ -30,9 +30,9 @@ internal data class CanonicalJsonBoolean(
 internal data object CanonicalJsonNull : CanonicalJsonValue
 
 /**
- * Deterministic JSON codec for the M1 notes contract.
+ * Deterministic JSON codec for local note exports.
  *
- * Canonical MVP note revisions contain strings, integers, booleans, nulls,
+ * Canonical local note revisions contain strings, integers, booleans, nulls,
  * arrays and objects only. Object names use UTF-16 lexical order, matching the
  * RFC 8785/JCS ordering rule, and integers are emitted in their shortest
  * base-ten form. Floating-point values are rejected instead of implementing a
@@ -263,7 +263,7 @@ internal object CanonicalJson {
                 index < source.length &&
                 (source[index] == '.' || source[index] == 'e' || source[index] == 'E')
             ) {
-                fail("M1 notes export does not allow non-integer JSON numbers")
+                fail("Notes export does not allow non-integer JSON numbers")
             }
             return try {
                 CanonicalJsonInteger(source.substring(start, index).toBigInteger())

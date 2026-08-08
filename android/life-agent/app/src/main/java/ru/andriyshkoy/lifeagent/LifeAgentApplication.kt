@@ -2,13 +2,10 @@ package ru.andriyshkoy.lifeagent
 
 import android.app.Application
 import java.io.Closeable
-import ru.andriyshkoy.lifeagent.data.sync.work.SyncWorkExecutionPort
-import ru.andriyshkoy.lifeagent.data.sync.work.SyncWorkExecutionPortProvider
 
-internal class LifeAgentApplication : Application(), SyncWorkExecutionPortProvider {
+internal class LifeAgentApplication : Application() {
     private val storage = ProcessScopedAppStorage(
         open = { AppContainer(this) },
-        afterOpened = AppContainer::enqueueSyncAtStartup,
     )
 
     /**
@@ -16,9 +13,6 @@ internal class LifeAgentApplication : Application(), SyncWorkExecutionPortProvid
      * Keystore, loads SQLCipher, and verifies the encrypted database.
      */
     fun openStorage(): Result<AppContainer> = storage.open()
-
-    override suspend fun openSyncWorkExecutionPort(): SyncWorkExecutionPort =
-        openStorage().getOrThrow().syncWorkExecutionPort
 
     override fun onTerminate() {
         storage.closeIfOpened()
@@ -28,23 +22,14 @@ internal class LifeAgentApplication : Application(), SyncWorkExecutionPortProvid
     override fun toString(): String = "LifeAgentApplication(redacted=true)"
 }
 
-/** Thread-safe process owner that runs non-authoritative startup work once. */
+/** Thread-safe process owner for the local application graph. */
 internal class ProcessScopedAppStorage<T : Closeable>(
     open: () -> T,
-    private val afterOpened: (T) -> Unit,
 ) {
     private val closeLock = Any()
     private var closedSuccessfully = false
     private val storage: Lazy<Result<T>> = lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
-        val result = runCatching(open)
-        result.getOrNull()?.let { opened ->
-            try {
-                afterOpened(opened)
-            } catch (_: Exception) {
-                // A secondary startup action cannot invalidate opened local storage.
-            }
-        }
-        result
+        runCatching(open)
     }
 
     fun open(): Result<T> = storage.value

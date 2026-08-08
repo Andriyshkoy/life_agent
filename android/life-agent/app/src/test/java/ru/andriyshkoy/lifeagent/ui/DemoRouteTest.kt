@@ -46,7 +46,6 @@ class DemoRouteTest {
     @Test
     fun settingsDetailsReturnToSettings() {
         val routes = listOf(
-            DemoRoute.SyncSetup,
             DemoRoute.HealthConnect,
             DemoRoute.TimeZone,
             DemoRoute.Diagnostics,

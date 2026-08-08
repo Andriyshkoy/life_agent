@@ -6,7 +6,6 @@ plugins {
     id("com.google.devtools.ksp")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
-    id("org.jetbrains.kotlin.plugin.serialization")
     id("com.android.compose.screenshot")
 }
 
@@ -26,32 +25,6 @@ val internalVersionNameSuffix = suppliedVersionName
     }
     ?.removePrefix(baseVersionName)
     .orEmpty()
-val suppliedKeystorePath = providers
-    .environmentVariable("LIFE_AGENT_KEYSTORE_PATH")
-    .orNull
-val suppliedKeystorePassword = providers
-    .environmentVariable("LIFE_AGENT_KEYSTORE_PASSWORD")
-    .orNull
-val suppliedKeyAlias = providers
-    .environmentVariable("LIFE_AGENT_KEY_ALIAS")
-    .orNull
-val suppliedKeyPassword = providers
-    .environmentVariable("LIFE_AGENT_KEY_PASSWORD")
-    .orNull
-val suppliedApiOrigin = providers
-    .environmentVariable("LIFE_AGENT_API_ORIGIN")
-    .orElse("")
-val suppliedApiSpkiPins = providers
-    .environmentVariable("LIFE_AGENT_API_SPKI_PINS")
-    .orElse("")
-
-fun String.asBuildConfigStringLiteral(variableName: String): String {
-    require(all { it.code in 0x20..0x7e }) {
-        "$variableName must contain printable ASCII only"
-    }
-    return "\"${replace("\\", "\\\\").replace("\"", "\\\"")}\""
-}
-
 android {
     namespace = "ru.andriyshkoy.lifeagent"
     compileSdk = 36
@@ -64,32 +37,6 @@ android {
         versionCode = suppliedVersionCode ?: 1
         versionName = baseVersionName
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-        buildConfigField(
-            "String",
-            "LIFE_AGENT_API_ORIGIN",
-            suppliedApiOrigin.get().asBuildConfigStringLiteral("LIFE_AGENT_API_ORIGIN"),
-        )
-        buildConfigField(
-            "String",
-            "LIFE_AGENT_API_SPKI_PINS",
-            suppliedApiSpkiPins.get().asBuildConfigStringLiteral("LIFE_AGENT_API_SPKI_PINS"),
-        )
-    }
-
-    val distributionSigningConfig = if (
-        suppliedKeystorePath != null &&
-        suppliedKeystorePassword != null &&
-        suppliedKeyAlias != null &&
-        suppliedKeyPassword != null
-    ) {
-        signingConfigs.create("distribution") {
-            storeFile = file(suppliedKeystorePath)
-            storePassword = suppliedKeystorePassword
-            keyAlias = suppliedKeyAlias
-            keyPassword = suppliedKeyPassword
-        }
-    } else {
-        null
     }
 
     buildTypes {
@@ -110,7 +57,6 @@ android {
             applicationIdSuffix = ".dev"
             versionNameSuffix = "$internalVersionNameSuffix-dev"
             matchingFallbacks += listOf("release")
-            signingConfig = distributionSigningConfig
             resValue("string", "app_name", "Life Agent Dev")
         }
     }
@@ -131,14 +77,6 @@ android {
         disable += "GradleDependency"
     }
 
-    sourceSets {
-        getByName("androidTest").assets.srcDir("$projectDir/schemas")
-        getByName("test").resources.srcDirs(
-            "$rootDir/../../schemas",
-            "$rootDir/../../examples",
-        )
-    }
-
     testOptions {
         unitTests.isIncludeAndroidResources = true
         // Robolectric needs a writable lock and Maven cache under arbitrary container UIDs.
@@ -150,7 +88,7 @@ android {
         }
         managedDevices {
             localDevices {
-                create("m1Api35") {
+                create("localApi35") {
                     device = "Pixel 6"
                     apiLevel = 35
                     systemImageSource = "aosp-atd"
@@ -173,9 +111,7 @@ room {
 
 dependencies {
     val composeBom = platform("androidx.compose:compose-bom:2026.06.00")
-    val okhttpVersion = "5.3.0"
     val roomVersion = "2.8.4"
-    val workManagerVersion = "2.11.2"
 
     implementation(composeBom)
     androidTestImplementation(composeBom)
@@ -192,28 +128,20 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.10.0")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.10.0")
     implementation("androidx.room:room-runtime:$roomVersion")
-    implementation("androidx.work:work-runtime-ktx:$workManagerVersion")
     implementation("androidx.sqlite:sqlite:2.6.2")
     implementation("net.zetetic:sqlcipher-android:4.17.0@aar")
-    implementation("com.squareup.okhttp3:okhttp:$okhttpVersion")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.11.0")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.11.0")
     debugImplementation("androidx.compose.ui:ui-tooling")
     ksp("androidx.room:room-compiler:$roomVersion")
 
-    testImplementation("androidx.room:room-testing:$roomVersion")
     testImplementation("androidx.test:core-ktx:1.7.0")
     testImplementation("junit:junit:4.13.2")
-    testImplementation("com.squareup.okhttp3:mockwebserver3:$okhttpVersion")
-    testImplementation("com.squareup.okhttp3:okhttp-tls:$okhttpVersion")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.11.0")
     testImplementation("org.robolectric:robolectric:4.16.1")
 
     androidTestImplementation("androidx.test.ext:junit:1.3.0")
     androidTestImplementation("androidx.test.espresso:espresso-core:3.7.0")
-    androidTestImplementation("androidx.room:room-testing:$roomVersion")
-    androidTestImplementation("com.squareup.okhttp3:mockwebserver3:$okhttpVersion")
-    androidTestImplementation("com.squareup.okhttp3:okhttp-tls:$okhttpVersion")
     androidTestImplementation("androidx.compose.ui:ui-test-junit4")
     debugImplementation("androidx.compose.ui:ui-test-manifest")
 

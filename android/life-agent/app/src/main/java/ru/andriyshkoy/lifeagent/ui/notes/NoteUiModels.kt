@@ -118,7 +118,6 @@ data class NoteSummaryUi(
     val timezoneId: String,
     val offsetSeconds: Int,
     val status: NoteRecordStatusUi,
-    val pendingSync: Boolean = true,
 ) {
     fun timestampLabel(locale: Locale = Locale.getDefault()): String =
         originalLocalDateTime.format(

@@ -30,6 +30,20 @@ class NotesExportValidatorTest {
     }
 
     @Test
+    fun currentRevisionMustSelectLatestRevisionNumber() {
+        val valid = fixture()
+        val invalid = valid.copy(
+            events = valid.events.toMutableList().also { events ->
+                events[0] = events[0].copy(
+                    currentRevisionId = valid.revisions[0].revisionId(),
+                )
+            },
+        )
+
+        assertViolation(invalid, "does not select the latest revision")
+    }
+
+    @Test
     fun orphanRevisionIsRejected() {
         val valid = fixture()
         val orphan = valid.revisions.first().withEventId(
@@ -53,6 +67,67 @@ class NotesExportValidatorTest {
         )
 
         assertInvalid(invalid)
+    }
+
+    @Test
+    fun duplicateCaptureIdIsRejected() {
+        val valid = fixture()
+        val firstCaptureId = valid.revisions.first().captureId()
+        val duplicate = valid.revisions[1]
+            .withCaptureId(firstCaptureId)
+            .withRecomputedContentHash()
+        val invalid = valid.copy(
+            revisions = listOf(valid.revisions.first(), duplicate) +
+                valid.revisions.drop(2),
+        )
+
+        assertViolation(invalid, "duplicate capture_id")
+    }
+
+    @Test
+    fun revisionNumberGapIsRejected() {
+        val valid = fixture()
+        val gapped = valid.revisions[1]
+            .withRevisionNo(3)
+            .withRecomputedContentHash()
+        val invalid = valid.copy(
+            revisions = listOf(valid.revisions.first(), gapped) +
+                valid.revisions.drop(2),
+        )
+
+        assertViolation(invalid, "revision_no sequence is not contiguous")
+    }
+
+    @Test
+    fun branchThatSkipsImmediatePredecessorIsRejected() {
+        val valid = fixture()
+        val eventId = valid.revisions[0].eventId()
+        val firstRevisionId = valid.revisions[0].revisionId()
+        val thirdRevisionId = valid.revisions[2].revisionId()
+        val fourthRevisionId = valid.revisions[3].revisionId()
+        val branch = valid.revisions[2]
+            .withEventId(eventId)
+            .withRevisionNo(3)
+            .withParents(firstRevisionId)
+            .withRecomputedContentHash()
+        val branchChild = valid.revisions[3]
+            .withEventId(eventId)
+            .withRevisionNo(4)
+            .withParents(thirdRevisionId)
+            .withRecomputedContentHash()
+        val invalid = valid.copy(
+            events = listOf(
+                valid.events.first().copy(currentRevisionId = fourthRevisionId),
+            ),
+            revisions = listOf(
+                valid.revisions[0],
+                valid.revisions[1],
+                branch,
+                branchChild,
+            ),
+        )
+
+        assertViolation(invalid, "does not supersede its immediate predecessor")
     }
 
     @Test
@@ -147,24 +222,18 @@ class NotesExportValidatorTest {
     }
 
     @Test
-    fun localPendingServerMetadataIsRejected() {
+    fun unexpectedRootMetadataIsRejected() {
         val valid = fixture()
-        val server = valid.revisions.first().objectField("server")
         val changed = valid.revisions.first().replaceRootField(
-            "server",
-            server.copy(
-                properties = server.properties +
-                    (
-                        "received_at" to
-                            CanonicalJsonString("2026-01-10T10:02:00Z")
-                        ) +
-                    ("server_sequence" to CanonicalJsonInteger(java.math.BigInteger.ONE)),
+            "unexpected",
+            CanonicalJsonObject(
+                mapOf("value" to CanonicalJsonString("not allowed")),
             ),
         )
 
         assertViolation(
             valid.copy(revisions = listOf(changed) + valid.revisions.drop(1)),
-            "server must be empty for local_pending",
+            "unknown fields: [unexpected]",
         )
     }
 
@@ -263,6 +332,14 @@ class NotesExportValidatorTest {
     private fun CanonicalNoteRevisionJson.revisionId(): String =
         (document.properties.getValue("revision_id") as CanonicalJsonString).value
 
+    private fun CanonicalNoteRevisionJson.eventId(): String =
+        (document.properties.getValue("event_id") as CanonicalJsonString).value
+
+    private fun CanonicalNoteRevisionJson.captureId(): String {
+        val source = document.properties.getValue("source") as CanonicalJsonObject
+        return (source.properties.getValue("capture_id") as CanonicalJsonString).value
+    }
+
     private fun CanonicalNoteRevisionJson.operationId(): String {
         val source = document.properties.getValue("source") as CanonicalJsonObject
         return (source.properties.getValue("operation_id") as CanonicalJsonString).value
@@ -283,6 +360,25 @@ class NotesExportValidatorTest {
         )
         return replaceRootField("source", changedSource)
     }
+
+    private fun CanonicalNoteRevisionJson.withCaptureId(
+        captureId: String,
+    ): CanonicalNoteRevisionJson {
+        val source = document.properties.getValue("source") as CanonicalJsonObject
+        val changedSource = source.copy(
+            properties = source.properties +
+                ("capture_id" to CanonicalJsonString(captureId)),
+        )
+        return replaceRootField("source", changedSource)
+    }
+
+    private fun CanonicalNoteRevisionJson.withRevisionNo(
+        revisionNo: Long,
+    ): CanonicalNoteRevisionJson =
+        replaceRootField(
+            "revision_no",
+            CanonicalJsonInteger(java.math.BigInteger.valueOf(revisionNo)),
+        )
 
     private fun CanonicalNoteRevisionJson.withParents(
         vararg revisionIds: String,

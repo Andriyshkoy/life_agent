@@ -50,6 +50,33 @@ internal object NotesExportTestFixtures {
             ),
         )
 
+    fun twoRevisionSnapshot(
+        firstRevisionId: String,
+        secondRevisionId: String,
+    ): NotesExportSnapshot = NotesExportSnapshot(
+        events = listOf(
+            NoteEventPointerSnapshot(EVENT_ONE, secondRevisionId),
+        ),
+        revisions = listOf(
+            revision(
+                eventId = EVENT_ONE,
+                revisionId = firstRevisionId,
+                revisionNo = 1,
+                captureSuffix = "5",
+                status = "active",
+                parentRevisionId = null,
+            ),
+            revision(
+                eventId = EVENT_ONE,
+                revisionId = secondRevisionId,
+                revisionNo = 2,
+                captureSuffix = "6",
+                status = "active",
+                parentRevisionId = firstRevisionId,
+            ),
+        ),
+    )
+
     private fun revision(
         eventId: String,
         revisionId: String,
@@ -78,19 +105,16 @@ internal object NotesExportTestFixtures {
         val document =
             """
             {
-              "schema_version": "4.0.0",
-              "persistence_state": "local_pending",
+              "schema_version": "5.0.0",
               "identity": {
                 "installation_id": "10000000-0000-4000-8000-000000000001",
-                "local_owner_id": "10000000-0000-4000-8000-000000000002",
-                "device_id": null
+                "local_owner_id": "10000000-0000-4000-8000-000000000002"
               },
               "event_id": "$eventId",
               "revision_id": "$revisionId",
               "revision_no": $revisionNo,
               "kind": "note",
               "assertion_status": "observed",
-              "lifecycle": null,
               "record_status": "$status",
               "verification_status": "user_confirmed",
               "source": {
@@ -144,10 +168,6 @@ internal object NotesExportTestFixtures {
                 "actor": "user",
                 "correction_reason": $correctionReason,
                 "parents": $parents
-              },
-              "server": {
-                "received_at": null,
-                "server_sequence": null
               }
             }
             """.trimIndent()

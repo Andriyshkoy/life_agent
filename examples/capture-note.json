@@ -1,0 +1,38 @@
+{
+  "schema_version": "5.0.0",
+  "capture_id": "40000000-0000-4000-8000-000000000001",
+  "operation_id": "50000000-0000-4000-8000-000000000001",
+  "identity": {
+    "installation_id": "10000000-0000-4000-8000-000000000001",
+    "local_owner_id": "10000000-0000-4000-8000-000000000002"
+  },
+  "source": {
+    "channel": "android_manual",
+    "recorded_at": "2026-01-10T10:00:00Z",
+    "timezone_id": "Etc/UTC",
+    "utc_offset_minutes": 0,
+    "origin": {
+      "provider": null,
+      "app": "Life Agent Android",
+      "device": "Synthetic Android device",
+      "source_record_id": null,
+      "source_record_version": null,
+      "user_entered": true
+    },
+    "collector": {
+      "name": "life-agent-android",
+      "version": "0.1.0"
+    }
+  },
+  "content": {
+    "kind": "structured",
+    "record_type": "note",
+    "payload": {
+      "text": "Синтетическая заметка."
+    }
+  },
+  "integrity": {
+    "sha256": "4f41b0cf10bfc330be9f7f87459e9275a1f538c1b1413db399dabb89f231d62b",
+    "byte_size": 106
+  }
+}

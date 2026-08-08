@@ -23,6 +23,7 @@ import androidx.room.Index
         ),
     ],
     indices = [
+        Index(value = ["child_revision_id"], unique = true),
         Index(value = ["event_id", "child_revision_id"]),
         Index(value = ["event_id", "parent_revision_id"]),
     ],

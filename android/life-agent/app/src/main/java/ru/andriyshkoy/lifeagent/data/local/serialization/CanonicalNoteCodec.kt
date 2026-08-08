@@ -14,7 +14,6 @@ import kotlinx.serialization.json.putJsonObject
 import ru.andriyshkoy.lifeagent.core.id.MutationIds
 import ru.andriyshkoy.lifeagent.core.time.ResolvedPointTime
 import ru.andriyshkoy.lifeagent.data.local.db.dao.RevisionContextRow
-import ru.andriyshkoy.lifeagent.data.local.db.entity.LocalCaptureEntity
 import ru.andriyshkoy.lifeagent.data.local.db.entity.LocalRevisionParentEntity
 import ru.andriyshkoy.lifeagent.notes.domain.CorrectNoteCommand
 import ru.andriyshkoy.lifeagent.notes.domain.CreateNoteCommand
@@ -61,76 +60,6 @@ class CanonicalNoteCodec {
             }
         },
     )
-
-    fun encodeCanonicalPendingCapture(capture: LocalCaptureEntity): CanonicalBytes {
-        require(capture.persistenceState == "local_pending") {
-            "Pending capture has an invalid persistence state"
-        }
-        val content = requireCanonical(capture.contentJcs)
-        return try {
-            require(
-                content.sha256 == capture.contentSha256 &&
-                    content.bytes.size.toLong() == capture.byteSize,
-            ) {
-                "Pending capture integrity metadata is invalid"
-            }
-            canonical(
-                buildJsonObject {
-                    put("schema_version", capture.schemaVersion)
-                    put("persistence_state", capture.persistenceState)
-                    put("capture_id", capture.captureId)
-                    put("operation_id", capture.operationId)
-                    putJsonObject("identity") {
-                        put("installation_id", capture.installationId)
-                        put("local_owner_id", capture.localOwnerId)
-                        put("device_id", JsonNull)
-                    }
-                    putJsonObject("source") {
-                        put("channel", capture.sourceChannel)
-                        put("recorded_at", capture.recordedAtRfc3339)
-                        put("timezone_id", capture.timezoneId)
-                        put("utc_offset_minutes", capture.utcOffsetMinutes)
-                        putJsonObject("origin") {
-                            put("provider", capture.originProvider.asElement())
-                            put("app", capture.originApp.asElement())
-                            put("device", capture.originDevice.asElement())
-                            put("source_record_id", capture.originSourceRecordId.asElement())
-                            put(
-                                "source_record_version",
-                                capture.originSourceRecordVersion.asElement(),
-                            )
-                            put("user_entered", capture.originUserEntered)
-                        }
-                        putJsonObject("collector") {
-                            put("name", capture.collectorName)
-                            put("version", capture.collectorVersion)
-                        }
-                    }
-                    put("content", parse(content))
-                    putJsonObject("integrity") {
-                        put("sha256", capture.contentSha256)
-                        put("byte_size", capture.byteSize)
-                    }
-                },
-            )
-        } finally {
-            content.bytes.fill(0)
-        }
-    }
-
-    fun encodeCanonicalPendingEvent(
-        row: RevisionContextRow,
-        parents: List<LocalRevisionParentEntity>,
-    ): CanonicalBytes {
-        val revision = row.revision
-        require(revision.serverReceivedAt == null && revision.serverSequence == null) {
-            "Pending event already has server metadata"
-        }
-        requireCanonicalAndWipe(revision.payloadJcs)
-        requireCanonicalAndWipe(revision.evidenceJcs)
-        requireCanonicalAndWipe(revision.qualityFlagsJcs)
-        return encodeCanonicalEvent(row, parents)
-    }
 
     fun encodeRevision(
         ids: MutationIds,
@@ -192,25 +121,6 @@ class CanonicalNoteCodec {
         )
     }
 
-    fun encodePendingOperation(
-        ids: MutationIds,
-        baseRevisionId: String?,
-        status: NoteRecordStatus,
-        revisionContentSha256: String,
-    ): CanonicalBytes = canonical(
-        buildJsonObject {
-            put("schema_version", "pending-append-revision/1")
-            put("operation_id", ids.operationId.toString())
-            put("operation_kind", "append_event_revision")
-            put("capture_id", ids.captureId.toString())
-            put("event_id", ids.eventId.toString())
-            put("revision_id", ids.revisionId.toString())
-            put("base_revision_id", baseRevisionId.asElement())
-            put("record_status", status.storageValue)
-            put("revision_content_sha256", revisionContentSha256)
-        },
-    )
-
     fun commandFingerprint(command: CreateNoteCommand): String = canonical(
         buildJsonObject {
             put("command", "create_note")
@@ -257,33 +167,21 @@ class CanonicalNoteCodec {
         parents: List<LocalRevisionParentEntity>,
     ): CanonicalBytes {
         val revision = row.revision
-        val serverCommitted =
-            revision.serverReceivedAt != null && revision.serverSequence != null
+        requireCanonicalAndWipe(revision.payloadJcs)
+        requireCanonicalAndWipe(revision.evidenceJcs)
+        requireCanonicalAndWipe(revision.qualityFlagsJcs)
         return canonical(
             buildJsonObject {
                 put("schema_version", revision.schemaVersion)
-                put(
-                    "persistence_state",
-                    if (serverCommitted) "server_committed" else "local_pending",
-                )
                 putJsonObject("identity") {
                     put("installation_id", row.installationId)
                     put("local_owner_id", row.localOwnerId)
-                    put(
-                        "device_id",
-                        if (serverCommitted) {
-                            row.serverDeviceId.asElement()
-                        } else {
-                            JsonNull
-                        },
-                    )
                 }
                 put("event_id", revision.eventId)
                 put("revision_id", revision.revisionId)
                 put("revision_no", revision.revisionNo)
                 put("kind", "note")
                 put("assertion_status", revision.assertionStatus)
-                put("lifecycle", revision.lifecycle.asElement())
                 put("record_status", revision.recordStatus)
                 put("verification_status", revision.verificationStatus)
                 putJsonObject("source") {
@@ -338,13 +236,6 @@ class CanonicalNoteCodec {
                             )
                         }
                     }
-                }
-                putJsonObject("server") {
-                    put("received_at", revision.serverReceivedAt.asElement())
-                    put(
-                        "server_sequence",
-                        revision.serverSequence?.let(::JsonPrimitive) ?: JsonNull,
-                    )
                 }
             },
         )
@@ -412,8 +303,8 @@ class CanonicalNoteCodec {
             .joinToString(separator = "") { byte -> "%02x".format(byte) }
 
     companion object {
-        const val EVENT_SCHEMA_VERSION = "4.0.0"
-        const val CAPTURE_SCHEMA_VERSION = "4.0.0"
+        const val EVENT_SCHEMA_VERSION = "5.0.0"
+        const val CAPTURE_SCHEMA_VERSION = "5.0.0"
         const val COLLECTOR_NAME = "life-agent-android"
 
         private val OFFSET_DATE_TIME_FORMAT =

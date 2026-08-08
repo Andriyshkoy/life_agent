@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate Android backup and transport-security declarations.
+"""Validate Android backup and local-only permission declarations.
 
 The runtime instrumentation suite checks the packaged resources on Android.
 This dependency-free validator provides an earlier, deterministic failure for
@@ -20,7 +20,6 @@ APP_ROOT = ROOT / "android" / "life-agent" / "app" / "src" / "main"
 SOURCE_MANIFEST = APP_ROOT / "AndroidManifest.xml"
 LEGACY_RULES = APP_ROOT / "res" / "xml" / "backup_rules_legacy.xml"
 EXTRACTION_RULES = APP_ROOT / "res" / "xml" / "data_extraction_rules.xml"
-NETWORK_SECURITY_CONFIG = APP_ROOT / "res" / "xml" / "network_security_config.xml"
 
 ANDROID_NAMESPACE = "http://schemas.android.com/apk/res/android"
 ANDROID_ATTRIBUTE = f"{{{ANDROID_NAMESPACE}}}"
@@ -43,23 +42,18 @@ REQUIRED_APPLICATION_ATTRIBUTES = {
     "allowBackup": "false",
     "dataExtractionRules": "@xml/data_extraction_rules",
     "fullBackupContent": "@xml/backup_rules_legacy",
-    "networkSecurityConfig": "@xml/network_security_config",
     "usesCleartextTraffic": "false",
 }
-SOURCE_PERMISSIONS = frozenset(
+FORBIDDEN_PERMISSIONS = frozenset(
     {
         "android.permission.INTERNET",
         "android.permission.ACCESS_NETWORK_STATE",
-    }
-)
-WORK_MANAGER_MERGED_PERMISSIONS = frozenset(
-    {
         "android.permission.WAKE_LOCK",
         "android.permission.RECEIVE_BOOT_COMPLETED",
         "android.permission.FOREGROUND_SERVICE",
+        "android.permission.CHANGE_NETWORK_STATE",
     }
 )
-FORBIDDEN_PERMISSIONS = frozenset({"android.permission.CHANGE_NETWORK_STATE"})
 DYNAMIC_RECEIVER_PERMISSION_SUFFIX = ".DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION"
 
 
@@ -149,17 +143,17 @@ def validate_manifest(path: Path, *, merged: bool = False) -> None:
     if duplicate_permissions:
         fail(f"{path}: duplicate permissions: {duplicate_permissions}")
     permission_set = set(permissions)
-    required_permissions = set(SOURCE_PERMISSIONS)
-    allowed_permissions = set(SOURCE_PERMISSIONS)
+    required_permissions: set[str] = set()
+    allowed_permissions: set[str] = set()
     if merged:
         package_name = root.attrib.get("package")
         if not package_name:
             fail(f"{path}: merged manifest package is missing")
-        required_permissions.update(WORK_MANAGER_MERGED_PERMISSIONS)
-        allowed_permissions.update(WORK_MANAGER_MERGED_PERMISSIONS)
-        allowed_permissions.add(
+        dynamic_receiver_permission = (
             f"{package_name}{DYNAMIC_RECEIVER_PERMISSION_SUFFIX}"
         )
+        required_permissions.add(dynamic_receiver_permission)
+        allowed_permissions.add(dynamic_receiver_permission)
 
     missing_permissions = sorted(required_permissions - permission_set)
     if missing_permissions:
@@ -170,31 +164,6 @@ def validate_manifest(path: Path, *, merged: bool = False) -> None:
     unexpected_permissions = sorted(permission_set - allowed_permissions)
     if unexpected_permissions:
         fail(f"{path}: unexpected permissions present: {', '.join(unexpected_permissions)}")
-
-
-def validate_network_security_config(path: Path) -> None:
-    root = parse_xml(path)
-    if local_name(root) != "network-security-config":
-        fail(f"{path}: expected <network-security-config>")
-
-    children = list(root)
-    if len(children) != 1 or local_name(children[0]) != "base-config":
-        fail(f"{path}: expected exactly one <base-config>")
-    base_config = children[0]
-    if base_config.attrib.get("cleartextTrafficPermitted") != "false":
-        fail(f"{path}: base cleartextTrafficPermitted must be 'false'")
-
-    base_children = list(base_config)
-    if len(base_children) != 1 or local_name(base_children[0]) != "trust-anchors":
-        fail(f"{path}: expected exactly one <trust-anchors>")
-    trust_anchors = base_children[0]
-    certificates = list(trust_anchors)
-    if (
-        len(certificates) != 1
-        or local_name(certificates[0]) != "certificates"
-        or certificates[0].attrib != {"src": "system"}
-    ):
-        fail(f"{path}: trust anchors must contain only system certificates")
 
 
 def validate_legacy_rules(path: Path) -> None:
@@ -239,7 +208,6 @@ def validate_all(merged_manifests: Iterable[Path] = ()) -> None:
     validate_manifest(SOURCE_MANIFEST)
     validate_legacy_rules(LEGACY_RULES)
     validate_extraction_rules(EXTRACTION_RULES)
-    validate_network_security_config(NETWORK_SECURITY_CONFIG)
     for manifest in merged_manifests:
         validate_manifest(manifest, merged=True)
 
@@ -259,7 +227,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(sys.argv[1:] if argv is None else argv)
     validate_all(args.merged_manifest)
-    checked = 4 + len(args.merged_manifest)
+    checked = 3 + len(args.merged_manifest)
     print(
         "PASS: "
         f"{checked} Android security declarations; "

@@ -41,7 +41,6 @@ import androidx.compose.material.icons.rounded.Schedule
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Security
 import androidx.compose.material.icons.rounded.SentimentSatisfied
-import androidx.compose.material.icons.rounded.Sync
 import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -97,8 +96,6 @@ import ru.andriyshkoy.lifeagent.ui.notes.LastNoteUiState
 import ru.andriyshkoy.lifeagent.ui.notes.NoteRecordStatusUi
 import ru.andriyshkoy.lifeagent.ui.notes.NoteSummaryUi
 import ru.andriyshkoy.lifeagent.ui.notes.formatUtcOffset
-import ru.andriyshkoy.lifeagent.ui.sync.SyncSetupSummary
-import ru.andriyshkoy.lifeagent.ui.sync.SyncSetupUiState
 import ru.andriyshkoy.lifeagent.ui.theme.LifeAgentThemeValues
 import ru.andriyshkoy.lifeagent.ui.theme.ThemeMode
 
@@ -300,7 +297,7 @@ private fun LocalStateCard(persistenceAvailable: Boolean) {
             "Зашифрованное хранилище недоступно"
         },
         subtitle = if (persistenceAvailable) {
-            "Синхронизация пока не настроена"
+            "Зашифрованная база доступна только этому приложению"
         } else {
             "Чтение и запись заметок отключены"
         },
@@ -374,7 +371,7 @@ private fun RecentActivityCard(
                     Spacer(Modifier.height(6.dp))
                     Text(
                         if (note.status == NoteRecordStatusUi.Active) {
-                            "Сохранено на устройстве · синхронизация не настроена"
+                            "Сохранено в зашифрованной базе на устройстве"
                         } else {
                             "Отмена сохранена на устройстве"
                         },
@@ -521,7 +518,6 @@ fun SettingsScreen(
     modifier: Modifier = Modifier,
     onExportNotes: () -> Unit = {},
     notesPersistenceAvailable: Boolean = false,
-    syncSetupState: SyncSetupUiState = SyncSetupUiState.LocalOnly(SyncSetupSummary.Empty),
     zoneId: ZoneId = ZoneId.systemDefault(),
     appVersion: String = BuildConfig.VERSION_NAME,
 ) {
@@ -536,7 +532,7 @@ fun SettingsScreen(
         item {
             ScreenTitle(
                 title = "Настройки",
-                subtitle = "Внешний вид, данные и подключения.",
+                subtitle = "Внешний вид, локальные данные и источники.",
             )
         }
         item {
@@ -559,19 +555,9 @@ fun SettingsScreen(
         item {
             SettingsCard(title = "Подключения", contentPadding = PaddingValues(0.dp)) {
                 SettingsRow(
-                    icon = Icons.Rounded.Sync,
-                    title = "Синхронизация",
-                    subtitle = syncSettingsSubtitle(syncSetupState),
-                    onClick = { onNavigate(DemoRoute.SyncSetup) },
-                )
-                HorizontalDivider(
-                    color = MaterialTheme.colorScheme.outlineVariant,
-                    modifier = Modifier.padding(start = 62.dp),
-                )
-                SettingsRow(
                     icon = Icons.Rounded.MonitorHeart,
                     title = "Health Connect",
-                    subtitle = "Интеграция запланирована на M4",
+                    subtitle = "Предпросмотр · данные пока не читаются",
                     onClick = { onNavigate(DemoRoute.HealthConnect) },
                 )
             }
@@ -760,7 +746,7 @@ fun TimeZoneScreen(
                     icon = Icons.Rounded.Tune,
                     title = "Изменение часового пояса",
                     text = "Life Agent читает часовой пояс устройства. Изменить его можно " +
-                        "в системных настройках Android — отдельного переключателя в M1 нет.",
+                        "в системных настройках Android — отдельного переключателя в приложении нет.",
                 )
             }
         }
@@ -816,7 +802,11 @@ fun DiagnosticsScreen(
                     } else {
                         "Зашифрованное хранилище недоступно"
                     },
-                    subtitle = "Подключение и очередь доступны в настройках синхронизации",
+                    subtitle = if (encryptedStorageAvailable) {
+                        "Локальная база открыта и готова к записи"
+                    } else {
+                        "Чтение и запись локальных данных отключены"
+                    },
                     icon = Icons.Rounded.Security,
                 )
             }
@@ -836,14 +826,6 @@ fun DiagnosticsScreen(
                     } else {
                         "Зашифрованная база заметок не открыта: чтение и сохранение недоступны."
                     },
-                )
-            }
-            item {
-                InformationCard(
-                    icon = Icons.Rounded.Sync,
-                    title = "Синхронизация",
-                    text = "Состояние подключения, начальной загрузки и очереди " +
-                        "показывается в разделе «Синхронизация».",
                 )
             }
             item {
@@ -879,8 +861,8 @@ fun PrivacyScreen(
         ) {
             item {
                 StatusCard(
-                    title = "Локальное хранение защищено",
-                    subtitle = "Передача включается только после явного подключения сервера",
+                    title = "Данные остаются на устройстве",
+                    subtitle = "Life Agent не передаёт записи автоматически",
                     icon = Icons.Rounded.Security,
                 )
             }
@@ -888,7 +870,7 @@ fun PrivacyScreen(
                 InformationCard(
                     icon = Icons.Rounded.Security,
                     title = "Шифрование на устройстве",
-                    text = "Локальная база и outbox защищены SQLCipher. " +
+                    text = "Локальная база защищена SQLCipher. " +
                         "Ключ шифрования базы обёрнут ключом Android Keystore.",
                 )
             }
@@ -896,16 +878,8 @@ fun PrivacyScreen(
                 InformationCard(
                     icon = Icons.Rounded.CloudOff,
                     title = "Резервные копии",
-                    text = "База, outbox и ключи исключены из Android Auto Backup " +
+                    text = "База и ключи исключены из Android Auto Backup " +
                         "и переноса данных на другое устройство.",
-                )
-            }
-            item {
-                InformationCard(
-                    icon = Icons.Rounded.Sync,
-                    title = "Синхронизация",
-                    text = "До явного подключения данные остаются на устройстве. " +
-                        "После подключения локальные изменения передаются через защищённую очередь.",
                 )
             }
             item {
@@ -920,7 +894,7 @@ fun PrivacyScreen(
                 InformationCard(
                     icon = Icons.Rounded.DeleteOutline,
                     title = "Удаление данных",
-                    text = "Отдельной кнопки удаления внутри Life Agent в M1 нет. " +
+                    text = "Отдельной кнопки удаления внутри Life Agent пока нет. " +
                         "Очистка данных приложения в Android или удаление приложения удаляет " +
                         "локальную базу из закрытого хранилища приложения. Экспортированные " +
                         "JSON-файлы без шифрования нужно удалить отдельно в выбранном месте.",
@@ -1190,7 +1164,7 @@ fun HealthConnectScreen(
             item {
                 StatusCard(
                     title = "Предпросмотр Health Connect",
-                    subtitle = "Подключение появится на M4; сейчас данные не читаются",
+                    subtitle = "Интеграция ещё не реализована; сейчас данные не читаются",
                     icon = Icons.Rounded.HealthAndSafety,
                 )
             }
@@ -1206,8 +1180,8 @@ fun HealthConnectScreen(
                         PermissionRow(
                             icon = Icons.Rounded.MonitorHeart,
                             title = "Сон",
-                            subtitle = "Сессии сна без догадок о фазах",
-                            checked = true,
+                            subtitle = "Планируем читать сессии сна",
+                            checked = false,
                             onCheckedChange = null,
                         )
                         HorizontalDivider(
@@ -1217,8 +1191,8 @@ fun HealthConnectScreen(
                         PermissionRow(
                             icon = Icons.Rounded.MonitorHeart,
                             title = "Пульс",
-                            subtitle = "Обычные измерения пульса",
-                            checked = true,
+                            subtitle = "Планируем читать измерения пульса",
+                            checked = false,
                             onCheckedChange = null,
                         )
                     }
@@ -1233,7 +1207,7 @@ fun HealthConnectScreen(
                 )
                 Spacer(Modifier.height(8.dp))
                 Text(
-                    "Подключение Health Connect появится на M4; сейчас данные не читаются.",
+                    "Интеграция Health Connect ещё не реализована; сейчас данные не читаются.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

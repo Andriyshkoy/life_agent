@@ -73,15 +73,15 @@ class SqlCipherAtRestInstrumentedTest {
             try {
                 database.execSQL(
                     "CREATE TABLE note_probe(" +
-                        "note_text TEXT NOT NULL, outbox_payload TEXT NOT NULL)",
+                        "note_text TEXT NOT NULL, structured_payload TEXT NOT NULL)",
                 )
                 database.execSQL(
-                    "INSERT INTO note_probe(note_text, outbox_payload) VALUES(?, ?)",
+                    "INSERT INTO note_probe(note_text, structured_payload) VALUES(?, ?)",
                     arrayOf(SENTINEL, """{"note":"$SENTINEL"}"""),
                 )
 
                 database.rawQuery(
-                    "SELECT note_text, outbox_payload FROM note_probe",
+                    "SELECT note_text, structured_payload FROM note_probe",
                     null,
                 ).use { cursor ->
                     assertTrue(cursor.moveToFirst())

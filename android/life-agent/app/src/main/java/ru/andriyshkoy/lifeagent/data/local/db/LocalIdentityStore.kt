@@ -15,7 +15,7 @@ import java.time.Instant
  *
  * [ensureIdentityInCurrentTransaction] deliberately does not open a transaction. Its caller
  * must already own a Room transaction that also covers the operation needing the identity.
- * This keeps first-use identity creation atomic with enrollment or the first local mutation.
+ * This keeps first-use identity creation atomic with the first local mutation.
  */
 internal class LocalIdentityStore(
     private val database: LifeAgentDatabase,
@@ -28,7 +28,7 @@ internal class LocalIdentityStore(
      * Returns the selected identity or creates it inside the caller's current Room transaction.
      *
      * The optional timestamp exists so a local mutation can retain its recorded-time semantics;
-     * callers such as enrollment may use the injected UTC clock.
+     * callers that do not already have a recorded time may use the injected UTC clock.
      */
     suspend fun ensureIdentityInCurrentTransaction(
         createdAt: Instant = clock.instant(),
@@ -69,8 +69,6 @@ internal class LocalIdentityStore(
         return LocalIdentityRow(
             installationId = installationId,
             localOwnerId = ownerId,
-            serverDeviceId = null,
-            serverPersonId = null,
         )
     }
 

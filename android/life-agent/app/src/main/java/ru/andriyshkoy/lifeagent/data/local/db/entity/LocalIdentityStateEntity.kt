@@ -7,10 +7,7 @@ import androidx.room.Index
 import androidx.room.PrimaryKey
 
 /**
- * Selects the one identity used for new local writes.
- *
- * Historical installations and owners may coexist after bootstrap or device
- * replacement. They never implicitly become current merely because they exist.
+ * Stores the one local namespace used for application writes.
  */
 @Entity(
     tableName = "local_identity_state",

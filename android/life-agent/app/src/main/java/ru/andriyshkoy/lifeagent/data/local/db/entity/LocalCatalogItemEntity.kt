@@ -9,8 +9,8 @@ import androidx.room.PrimaryKey
 /**
  * Stable identity for an offline catalog entry.
  *
- * M1 intentionally exposes no CRUD DAO. Later catalog edits append immutable
- * [LocalCatalogVersionEntity] rows and advance [LocalCatalogHeadEntity].
+ * Catalog edits append immutable [LocalCatalogVersionEntity] rows and advance
+ * [LocalCatalogHeadEntity].
  */
 @Entity(
     tableName = "local_catalog_item",

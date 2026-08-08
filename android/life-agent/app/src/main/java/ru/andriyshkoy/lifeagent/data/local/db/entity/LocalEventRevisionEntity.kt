@@ -37,17 +37,6 @@ import androidx.room.PrimaryKey
             ],
             unique = true,
         ),
-        Index(value = ["server_sequence"], unique = true),
-        Index(
-            value = [
-                "event_id",
-                "revision_id",
-                "capture_id",
-                "operation_id",
-                "server_sequence",
-            ],
-            unique = true,
-        ),
     ],
 )
 data class LocalEventRevisionEntity(
@@ -66,8 +55,6 @@ data class LocalEventRevisionEntity(
     val schemaVersion: String,
     @ColumnInfo(name = "assertion_status")
     val assertionStatus: String,
-    @ColumnInfo(name = "lifecycle")
-    val lifecycle: String?,
     @ColumnInfo(name = "record_status")
     val recordStatus: String,
     @ColumnInfo(name = "verification_status")
@@ -128,12 +115,10 @@ data class LocalEventRevisionEntity(
     val createdAtRfc3339: String,
     @ColumnInfo(name = "content_sha256")
     val contentSha256: String,
+    @ColumnInfo(name = "command_fingerprint_sha256")
+    val commandFingerprintSha256: String,
     @ColumnInfo(name = "actor")
     val actor: String,
     @ColumnInfo(name = "correction_reason")
     val correctionReason: String?,
-    @ColumnInfo(name = "server_received_at")
-    val serverReceivedAt: String?,
-    @ColumnInfo(name = "server_sequence")
-    val serverSequence: Long?,
 )
