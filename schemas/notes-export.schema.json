@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://life-agent.local/schemas/notes-export.schema.json",
-  "title": "Life Agent M1 canonical notes export",
-  "description": "A minimal local notes snapshot containing logical-event current pointers and the complete canonical revision documents needed for a clean round-trip.",
+  "title": "Life Agent canonical local notes export",
+  "description": "A local notes snapshot containing logical-event current pointers and the complete canonical revision documents needed for a clean round-trip.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -16,7 +16,7 @@
       "const": "life-agent-notes"
     },
     "format_version": {
-      "const": "1.0.0"
+      "const": "2.0.0"
     },
     "events": {
       "type": "array",

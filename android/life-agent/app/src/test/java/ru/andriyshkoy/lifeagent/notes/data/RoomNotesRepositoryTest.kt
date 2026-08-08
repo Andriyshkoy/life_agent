@@ -51,7 +51,7 @@ class RoomNotesRepositoryTest {
     }
 
     @Test
-    fun `create and replay commit one event revision and outbox operation`() = runTest {
+    fun `create and replay commit one local event revision`() = runTest {
         val command = createCommand(ids(1, 2, 3, 4), "первая заметка")
 
         val committed = repository.create(command).persistedReceipt()
@@ -60,12 +60,12 @@ class RoomNotesRepositoryTest {
 
         assertEquals(NoteMutationDisposition.COMMITTED, committed.disposition)
         assertEquals(NoteMutationDisposition.REPLAYED, replayed.disposition)
-        assertEquals(committed.localSequence, replayed.localSequence)
+        assertEquals(committed.note, replayed.note)
         assertEquals(1, counts.captures)
         assertEquals(1, counts.events)
         assertEquals(1, counts.revisions)
+        assertEquals(0, counts.parents)
         assertEquals(1, counts.heads)
-        assertEquals(1, counts.outboxOperations)
         assertEquals("первая заметка", repository.observeLastCommitted().first()?.text)
     }
 
@@ -79,8 +79,8 @@ class RoomNotesRepositoryTest {
             }.awaitAll()
         }
 
-        assertEquals(1, outcomes.map { it.localSequence }.distinct().size)
-        assertEquals(1, database.noteMutationDao().tableCounts().outboxOperations)
+        assertEquals(1, outcomes.map { it.note }.distinct().size)
+        assertEquals(1, database.noteMutationDao().tableCounts().revisions)
         assertEquals(1, outcomes.count { !it.replayed })
     }
 
@@ -115,16 +115,33 @@ class RoomNotesRepositoryTest {
         assertEquals("после исправления", current?.text)
         assertEquals(3, counts.revisions)
         assertEquals(2, counts.parents)
-        assertEquals(3, counts.outboxOperations)
         assertEquals(1, exported.events.size)
         assertEquals(3, exported.revisions.size)
         assertEquals(retracted.note.revisionId, exported.events.single().currentRevisionId)
         exported.revisions.forEach { revision ->
             val document = Json.parseToJsonElement(revision.canonicalJson).jsonObject
-            assertEquals(18, document.keys.size)
+            assertEquals(
+                setOf(
+                    "schema_version",
+                    "identity",
+                    "event_id",
+                    "revision_id",
+                    "revision_no",
+                    "kind",
+                    "assertion_status",
+                    "record_status",
+                    "verification_status",
+                    "source",
+                    "time",
+                    "payload",
+                    "evidence",
+                    "quality_flags",
+                    "revision",
+                ),
+                document.keys,
+            )
             assertNotNull(document["payload"])
             assertNotNull(document["revision"])
-            assertNotNull(document["server"])
         }
     }
 
@@ -188,7 +205,7 @@ class RoomNotesRepositoryTest {
     }
 
     @Test
-    fun `legacy blank fingerprints accept exact replays and reject changed commands`() = runTest {
+    fun `revision fingerprints replay exact commands and fail closed when corrupted`() = runTest {
         val create = createCommand(ids(51, 52, 53, 54), "исходная")
         repository.create(create)
         val correct = CorrectNoteCommand(
@@ -207,10 +224,6 @@ class RoomNotesRepositoryTest {
         )
         repository.retract(retract)
 
-        database.openHelper.writableDatabase.execSQL(
-            "UPDATE sync_outbox SET command_fingerprint_sha256 = ''",
-        )
-
         assertEquals(
             NoteMutationDisposition.REPLAYED,
             repository.create(create).persistedReceipt().disposition,
@@ -223,35 +236,51 @@ class RoomNotesRepositoryTest {
             NoteMutationDisposition.REPLAYED,
             repository.retract(retract).persistedReceipt().disposition,
         )
-        listOf(create.ids, correct.ids, retract.ids).forEach { mutationIds ->
-            assertTrue(
-                database.noteMutationDao()
-                    .findOutbox(mutationIds.operationId.toString())
-                    ?.commandFingerprintSha256
-                    ?.isNotBlank() == true,
-            )
+        val fingerprints = database.openHelper.readableDatabase.query(
+            """
+            SELECT command_fingerprint_sha256
+            FROM local_event_revision
+            ORDER BY revision_no
+            """.trimIndent(),
+        ).use { cursor ->
+            buildList {
+                while (cursor.moveToNext()) {
+                    add(cursor.getString(0))
+                }
+            }
         }
+        assertEquals(3, fingerprints.size)
+        assertEquals(3, fingerprints.distinct().size)
+        assertTrue(fingerprints.all { it.length == 64 })
 
         database.openHelper.writableDatabase.execSQL(
             """
-            UPDATE sync_outbox
-            SET command_fingerprint_sha256 = ''
+            UPDATE local_event_revision
+            SET command_fingerprint_sha256 = ?
             WHERE operation_id = ?
             """.trimIndent(),
-            arrayOf(create.ids.operationId.toString()),
+            arrayOf("f".repeat(64), create.ids.operationId.toString()),
         )
-        val changedReplay = runCatching {
-            repository.create(create.copy(text = "изменённая"))
+        val corruptedReplay = runCatching {
+            repository.create(create)
         }.exceptionOrNull()
 
-        assertTrue(changedReplay is IdempotencyConflictException)
+        assertTrue(corruptedReplay is IdempotencyConflictException)
         assertEquals(
-            "",
-            database.noteMutationDao()
-                .findOutbox(create.ids.operationId.toString())
-                ?.commandFingerprintSha256,
+            "f".repeat(64),
+            database.openHelper.readableDatabase.query(
+                """
+                SELECT command_fingerprint_sha256
+                FROM local_event_revision
+                WHERE operation_id = ?
+                """.trimIndent(),
+                arrayOf(create.ids.operationId.toString()),
+            ).use { cursor ->
+                check(cursor.moveToFirst())
+                cursor.getString(0)
+            },
         )
-        assertEquals(3, database.noteMutationDao().tableCounts().outboxOperations)
+        assertEquals(3, database.noteMutationDao().tableCounts().revisions)
     }
 
     private fun createCommand(ids: MutationIds, text: String) = CreateNoteCommand(

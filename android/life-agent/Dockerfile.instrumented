@@ -40,4 +40,4 @@ ENV PATH="${ANDROID_HOME}/emulator:${PATH}"
 USER gradle
 WORKDIR /workspace
 
-CMD ["./gradlew", "--no-daemon", "--stacktrace", ":app:m1Api35DebugAndroidTest"]
+CMD ["./gradlew", "--no-daemon", "--stacktrace", ":app:localApi35DebugAndroidTest"]

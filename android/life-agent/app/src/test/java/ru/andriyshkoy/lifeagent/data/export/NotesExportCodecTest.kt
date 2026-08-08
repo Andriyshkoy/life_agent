@@ -2,6 +2,7 @@ package ru.andriyshkoy.lifeagent.data.export
 
 import java.io.File
 import java.security.MessageDigest
+import java.util.UUID
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -38,10 +39,10 @@ class NotesExportCodecTest {
             "public notes export fixture is unavailable; run the Android tests " +
                 "from a full Life Agent repository checkout"
         }
-        val fixture = File(root, "examples/m1-notes-export.json").readBytes()
+        val fixture = File(root, "examples/notes-export.json").readBytes()
         val expectedDigest = File(
             root,
-            "examples/m1-notes-export.canonical.sha256",
+            "examples/notes-export.canonical.sha256",
         ).readText(Charsets.US_ASCII).trim().substringBefore(' ')
 
         val decoded = codec.decode(fixture)
@@ -68,6 +69,30 @@ class NotesExportCodecTest {
     }
 
     @Test
+    fun randomRevisionIdsCannotOverrideRevisionNumberOrdering() {
+        val randomIds = buildSet {
+            while (size < 2) {
+                add(UUID.randomUUID().toString())
+            }
+        }.sorted()
+        val snapshot = NotesExportTestFixtures.twoRevisionSnapshot(
+            firstRevisionId = randomIds.last(),
+            secondRevisionId = randomIds.first(),
+        )
+
+        val decoded = codec.decode(codec.encode(snapshot))
+
+        assertEquals(
+            listOf(1, 2),
+            decoded.revisions.map { revision ->
+                (revision.document.properties.getValue("revision_no") as CanonicalJsonInteger)
+                    .value
+                    .toInt()
+            },
+        )
+    }
+
+    @Test
     fun emptyExportIsValidAndDeterministic() {
         val encoded = codec.encode(
             NotesExportSnapshot(
@@ -77,7 +102,7 @@ class NotesExportCodecTest {
         )
 
         assertEquals(
-            """{"events":[],"format":"life-agent-notes","format_version":"1.0.0","revisions":[]}""",
+            """{"events":[],"format":"life-agent-notes","format_version":"2.0.0","revisions":[]}""",
             encoded.toString(Charsets.UTF_8),
         )
         assertArrayEquals(encoded, codec.canonicalize(encoded))
@@ -89,7 +114,7 @@ class NotesExportCodecTest {
             """
             {
               "format":"life-agent-notes",
-              "format_version":"1.0.0",
+              "format_version":"2.0.0",
               "events":[],
               "revisions":[],
               "unexpected":true
@@ -108,7 +133,7 @@ class NotesExportCodecTest {
             {
               "format":"life-agent-notes",
               "format":"life-agent-notes",
-              "format_version":"1.0.0",
+              "format_version":"2.0.0",
               "events":[],
               "revisions":[]
             }
@@ -125,7 +150,7 @@ class NotesExportCodecTest {
             """
             {
               "format":"life-agent-notes",
-              "format_version":"1.0.0",
+              "format_version":"2.0.0",
               "events":[],
               "revisions":[],
               "value":1.5

@@ -24,10 +24,7 @@ import androidx.room.PrimaryKey
     ],
     indices = [
         Index(value = ["event_id", "current_revision_id"]),
-        Index(value = ["event_id", "server_current_revision_id"]),
         Index(value = ["current_revision_id"], unique = true),
-        Index(value = ["server_current_revision_id"], unique = true),
-        Index(value = ["server_observed_sequence"]),
     ],
 )
 data class LocalEventHeadEntity(
@@ -36,10 +33,6 @@ data class LocalEventHeadEntity(
     val eventId: String,
     @ColumnInfo(name = "current_revision_id")
     val currentRevisionId: String,
-    @ColumnInfo(name = "server_current_revision_id")
-    val serverCurrentRevisionId: String?,
-    @ColumnInfo(name = "server_observed_sequence")
-    val serverObservedSequence: Long? = null,
     @ColumnInfo(name = "updated_at_utc")
     val updatedAtUtc: String,
 )

@@ -19,7 +19,6 @@ import androidx.room.PrimaryKey
     indices = [
         Index(value = ["installation_id"], unique = true),
         Index(value = ["local_owner_id", "installation_id"], unique = true),
-        Index(value = ["server_person_id"]),
     ],
 )
 data class LocalOwnerEntity(
@@ -30,6 +29,4 @@ data class LocalOwnerEntity(
     val installationId: String,
     @ColumnInfo(name = "created_at_utc")
     val createdAtUtc: String,
-    @ColumnInfo(name = "server_person_id")
-    val serverPersonId: String? = null,
 )

@@ -2,12 +2,11 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://life-agent.local/schemas/capture-envelope.schema.json",
   "title": "Life Agent local-first capture envelope",
-  "description": "Immutable capture provenance created before or after enrollment. installation_id and local_owner_id are opaque local namespaces, never server principals. person_id and subject_id are forbidden by the closed shape.",
+  "description": "Immutable on-device capture provenance. installation_id and local_owner_id form an opaque local namespace; person_id, subject_id and remote identity fields are forbidden by the closed shape.",
   "type": "object",
   "additionalProperties": false,
   "required": [
     "schema_version",
-    "persistence_state",
     "capture_id",
     "operation_id",
     "identity",
@@ -17,45 +16,31 @@
   ],
   "properties": {
     "schema_version": {
-      "const": "4.0.0"
-    },
-    "persistence_state": {
-      "type": "string",
-      "enum": [
-        "local_pending",
-        "authenticated_ingress"
-      ]
+      "const": "5.0.0"
     },
     "capture_id": {
-      "$ref": "#/$defs/canonicalUuid"
+      "$ref": "#/$defs/canonicalUuid",
+      "description": "Stable identifier for the immutable local source capture."
     },
     "operation_id": {
-      "$ref": "#/$defs/canonicalUuid"
+      "$ref": "#/$defs/canonicalUuid",
+      "description": "Stable local mutation identifier used for idempotent replay after process restoration."
     },
     "identity": {
       "type": "object",
       "additionalProperties": false,
       "required": [
         "installation_id",
-        "local_owner_id",
-        "device_id"
+        "local_owner_id"
       ],
       "properties": {
         "installation_id": {
-          "$ref": "#/$defs/canonicalUuid"
+          "$ref": "#/$defs/canonicalUuid",
+          "description": "Opaque identifier for this app installation."
         },
         "local_owner_id": {
-          "$ref": "#/$defs/canonicalUuid"
-        },
-        "device_id": {
-          "oneOf": [
-            {
-              "$ref": "#/$defs/canonicalUuid"
-            },
-            {
-              "type": "null"
-            }
-          ]
+          "$ref": "#/$defs/canonicalUuid",
+          "description": "Opaque single-owner namespace within this installation."
         }
       }
     },
@@ -63,23 +48,7 @@
       "$ref": "#/$defs/source"
     },
     "content": {
-      "oneOf": [
-        {
-          "$ref": "#/$defs/textContent"
-        },
-        {
-          "$ref": "#/$defs/voiceContent"
-        },
-        {
-          "$ref": "#/$defs/photoContent"
-        },
-        {
-          "$ref": "#/$defs/documentContent"
-        },
-        {
-          "$ref": "#/$defs/structuredContent"
-        }
-      ]
+      "$ref": "#/$defs/structuredContent"
     },
     "integrity": {
       "type": "object",
@@ -96,75 +65,12 @@
           "type": "integer",
           "minimum": 1,
           "maximum": 536870912,
-          "description": "Absolute schema safety bound. Endpoint-specific limits may be smaller."
+          "description": "Absolute local contract safety bound. A concrete importer may enforce a smaller limit."
         }
       }
     }
   },
   "allOf": [
-    {
-      "if": {
-        "properties": {
-          "persistence_state": {
-            "const": "authenticated_ingress"
-          }
-        },
-        "required": [
-          "persistence_state"
-        ]
-      },
-      "then": {
-        "properties": {
-          "identity": {
-            "properties": {
-              "device_id": {
-                "$ref": "#/$defs/canonicalUuid"
-              }
-            }
-          }
-        }
-      }
-    },
-    {
-      "if": {
-        "properties": {
-          "source": {
-            "properties": {
-              "channel": {
-                "const": "android_recording"
-              }
-            },
-            "required": [
-              "channel"
-            ]
-          }
-        },
-        "required": [
-          "source"
-        ]
-      },
-      "then": {
-        "properties": {
-          "content": {
-            "$ref": "#/$defs/voiceContent"
-          },
-          "source": {
-            "properties": {
-              "origin": {
-                "properties": {
-                  "source_record_id": {
-                    "type": "null"
-                  },
-                  "source_record_version": {
-                    "type": "null"
-                  }
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     {
       "if": {
         "properties": {
@@ -290,10 +196,7 @@
           "type": "string",
           "enum": [
             "android_manual",
-            "android_recording",
-            "android_share_intent",
             "health_connect",
-            "file_import",
             "connector",
             "system"
           ]
@@ -305,7 +208,7 @@
           "type": "string",
           "minLength": 1,
           "maxLength": 64,
-          "description": "Recorded-time zone only: either canonical Z/±HH:MM fixed-offset text emitted by the M1 Android store or an installed IANA zone. It is validated against source.recorded_at and is independent of an event's effective timezone."
+          "description": "Recorded-time zone only: either canonical Z/±HH:MM fixed-offset text or an installed IANA zone. It is validated against source.recorded_at and is independent of an event's effective timezone."
         },
         "utc_offset_minutes": {
           "type": "integer",
@@ -409,100 +312,6 @@
               "minLength": 1
             }
           }
-        }
-      }
-    },
-    "textContent": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "kind",
-        "text"
-      ],
-      "properties": {
-        "kind": {
-          "const": "text"
-        },
-        "text": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 50000
-        }
-      }
-    },
-    "voiceContent": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "kind",
-        "transcript",
-        "blob_ref",
-        "mime_type",
-        "duration_ms"
-      ],
-      "properties": {
-        "kind": {
-          "const": "voice"
-        },
-        "transcript": {
-          "$ref": "#/$defs/nullableText"
-        },
-        "blob_ref": {
-          "type": "string",
-          "minLength": 1
-        },
-        "mime_type": {
-          "type": "string",
-          "pattern": "^audio/[A-Za-z0-9!#$&^_.+-]+$"
-        },
-        "duration_ms": {
-          "type": "integer",
-          "minimum": 1,
-          "maximum": 7200000
-        }
-      }
-    },
-    "photoContent": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "kind",
-        "blob_ref",
-        "mime_type"
-      ],
-      "properties": {
-        "kind": {
-          "const": "photo"
-        },
-        "blob_ref": {
-          "type": "string",
-          "minLength": 1
-        },
-        "mime_type": {
-          "type": "string",
-          "pattern": "^image/[A-Za-z0-9!#$&^_.+-]+$"
-        }
-      }
-    },
-    "documentContent": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "kind",
-        "blob_ref",
-        "mime_type"
-      ],
-      "properties": {
-        "kind": {
-          "const": "document"
-        },
-        "blob_ref": {
-          "type": "string",
-          "minLength": 1
-        },
-        "mime_type": {
-          "type": "string",
-          "minLength": 1
         }
       }
     },

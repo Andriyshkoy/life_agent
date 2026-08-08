@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
-"""Fast, dependency-free checks for repository documentation and seed data."""
+"""Fast, dependency-free checks for repository policy and public files."""
 
 from __future__ import annotations
 
-import csv
 import json
 import re
 import shutil
@@ -211,35 +210,16 @@ def validate_json() -> int:
     return len(paths)
 
 
-def validate_csv() -> int:
-    paths = sorted((ROOT / "templates").glob("*.csv"))
-    for path in paths:
-        with path.open(encoding="utf-8-sig", newline="") as stream:
-            reader = csv.reader(stream)
-            rows = list(reader)
-        if not rows or not rows[0]:
-            fail(f"{path.relative_to(ROOT)}: missing CSV header")
-        width = len(rows[0])
-        for row_number, row in enumerate(rows[1:], 2):
-            if len(row) != width:
-                fail(
-                    f"{path.relative_to(ROOT)}:{row_number}: "
-                    f"expected {width} columns, got {len(row)}"
-                )
-    return len(paths)
-
-
 def main() -> int:
     validate_documentation_boundary()
     tracked_count = validate_tracked_sensitive_paths()
     validate_tracked_text_whitespace()
     markdown_count, link_count = validate_markdown()
     json_count = validate_json()
-    csv_count = validate_csv()
     print(
         "PASS: "
         f"{markdown_count} Markdown files/{link_count} relative links, "
-        f"{json_count} JSON files, {csv_count} CSV files, "
+        f"{json_count} JSON files, "
         f"{tracked_count} tracked paths screened"
     )
     return 0

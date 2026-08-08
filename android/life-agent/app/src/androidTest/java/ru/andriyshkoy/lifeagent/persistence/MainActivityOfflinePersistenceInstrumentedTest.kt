@@ -63,7 +63,7 @@ import ru.andriyshkoy.lifeagent.ui.notes.NotesViewModel
  * MainActivity -> NotesViewModel -> RoomNotesRepository -> production SQLCipher DB.
  *
  * The last two methods are deliberately runner-selectable phases. A normal managed-device
- * run proves that they are independently valid; scripts/run_android_m1_cold_start_smoke.sh
+ * run proves that they are independently valid; scripts/run_android_local_cold_start_smoke.sh
  * runs them in separate processes with an explicit force-stop between them.
  */
 @RunWith(AndroidJUnit4::class)
@@ -99,16 +99,16 @@ class MainActivityOfflinePersistenceInstrumentedTest {
     @Test
     fun acceptanceFlowIsOfflineAppendOnlyAndRestoredAcrossActivityRecreation() {
         acceptanceStep("wait for initial persistent state") {
-            assertMinimalNetworkPermissions()
+            assertNoTransportPermissions()
             waitForReadyApplication()
         }
 
         val container = productionContainer()
         val before = tableCounts(container)
         val runId = UUID.randomUUID().toString().take(8)
-        val discardedDraft = "M1 synthetic discarded draft $runId"
-        val createdText = "M1 synthetic offline note $runId"
-        val correctedText = "M1 synthetic corrected note $runId"
+        val discardedDraft = "Local synthetic discarded draft $runId"
+        val createdText = "Local synthetic offline note $runId"
+        val correctedText = "Local synthetic corrected note $runId"
 
         acceptanceStep("enter unsaved draft") {
             openNoteEditor()
@@ -138,9 +138,9 @@ class MainActivityOfflinePersistenceInstrumentedTest {
             assertCounts(before, tableCounts(container), mutationCount = 0)
         }
 
-        val created = acceptanceStep("create append-only note and outbox operation") {
+        val created = acceptanceStep("create append-only local note") {
             createNote(createdText)
-            assertCurrentNoteAndOutbox(
+            assertCurrentNote(
                 container = container,
                 text = createdText,
                 expectedStatus = NoteRecordStatus.ACTIVE,
@@ -150,7 +150,7 @@ class MainActivityOfflinePersistenceInstrumentedTest {
             }
         }
 
-        val corrected = acceptanceStep("append correction and outbox operation") {
+        val corrected = acceptanceStep("append local correction") {
             composeRule.onNode(hasText("Исправить") and hasClickAction())
                 .performScrollTo()
                 .performSemanticsAction(SemanticsActions.OnClick)
@@ -191,7 +191,7 @@ class MainActivityOfflinePersistenceInstrumentedTest {
             waitForText("Что записать?")
             scrollToText(correctedText)
 
-            assertCurrentNoteAndOutbox(
+            assertCurrentNote(
                 container = container,
                 text = correctedText,
                 expectedStatus = NoteRecordStatus.ACTIVE,
@@ -208,7 +208,7 @@ class MainActivityOfflinePersistenceInstrumentedTest {
             scrollToText(correctedText)
         }
 
-        val retracted = acceptanceStep("append retraction and outbox operation") {
+        val retracted = acceptanceStep("append local retraction") {
             composeRule.onNodeWithText("Отменить запись")
                 .performScrollTo()
                 .performClick()
@@ -216,7 +216,7 @@ class MainActivityOfflinePersistenceInstrumentedTest {
             clickLastNodeWithText("Отменить запись")
             waitForText("Заметка отменена")
 
-            assertCurrentNoteAndOutbox(
+            assertCurrentNote(
                 container = container,
                 text = correctedText,
                 expectedStatus = NoteRecordStatus.RETRACTED,
@@ -230,11 +230,11 @@ class MainActivityOfflinePersistenceInstrumentedTest {
 
     @Test
     fun fullAppCaptureRemainsUsableAtTwoHundredPercentFontScale() {
-        assertMinimalNetworkPermissions()
+        assertNoTransportPermissions()
         waitForReadyApplication()
 
         val originalFontScale = activityFontScale()
-        val marker = "M1 synthetic 200 percent font ${UUID.randomUUID().toString().take(8)}"
+        val marker = "Local synthetic 200 percent font ${UUID.randomUUID().toString().take(8)}"
         try {
             setActivityFontScale(2f)
             assertEquals(2f, activityFontScale(), 0.01f)
@@ -249,7 +249,7 @@ class MainActivityOfflinePersistenceInstrumentedTest {
             waitForText("Что записать?")
             scrollToText(marker)
 
-            assertCurrentNoteAndOutbox(
+            assertCurrentNote(
                 container = productionContainer(),
                 text = marker,
                 expectedStatus = NoteRecordStatus.ACTIVE,
@@ -262,7 +262,7 @@ class MainActivityOfflinePersistenceInstrumentedTest {
 
     @Test
     fun phase1SeedSyntheticNoteForExternalColdStart() {
-        assertMinimalNetworkPermissions()
+        assertNoTransportPermissions()
         assertAirplaneModeWhenRequired()
         waitForReadyApplication()
 
@@ -272,7 +272,7 @@ class MainActivityOfflinePersistenceInstrumentedTest {
         if (existing == null) {
             createNote(marker)
         }
-        assertCurrentNoteAndOutbox(
+        assertCurrentNote(
             container = container,
             text = marker,
             expectedStatus = NoteRecordStatus.ACTIVE,
@@ -282,13 +282,13 @@ class MainActivityOfflinePersistenceInstrumentedTest {
 
     @Test
     fun phase2VerifySyntheticNoteAfterExternalColdStart() {
-        assertMinimalNetworkPermissions()
+        assertNoTransportPermissions()
         assertAirplaneModeWhenRequired()
         waitForReadyApplication()
 
         val marker = coldStartMarker()
         scrollToText(marker)
-        assertCurrentNoteAndOutbox(
+        assertCurrentNote(
             container = productionContainer(),
             text = marker,
             expectedStatus = NoteRecordStatus.ACTIVE,
@@ -354,7 +354,7 @@ class MainActivityOfflinePersistenceInstrumentedTest {
         nodes[lastIndex].performClick()
     }
 
-    private fun assertMinimalNetworkPermissions() {
+    private fun assertNoTransportPermissions() {
         @Suppress("DEPRECATION")
         val requested = context.packageManager
             .getPackageInfo(context.packageName, PackageManager.GET_PERMISSIONS)
@@ -362,24 +362,17 @@ class MainActivityOfflinePersistenceInstrumentedTest {
             .orEmpty()
             .toSet()
 
-        val expectedPlatformPermissions = setOf(
+        val forbiddenTransportPermissions = setOf(
             Manifest.permission.INTERNET,
             Manifest.permission.ACCESS_NETWORK_STATE,
             Manifest.permission.WAKE_LOCK,
             Manifest.permission.RECEIVE_BOOT_COMPLETED,
             Manifest.permission.FOREGROUND_SERVICE,
+            Manifest.permission.CHANGE_NETWORK_STATE,
         )
-        expectedPlatformPermissions.forEach { permission ->
-            assertTrue("Expected merged permission $permission", requested.contains(permission))
+        forbiddenTransportPermissions.forEach { permission ->
+            assertFalse("Transport permission must be absent: $permission", requested.contains(permission))
         }
-        assertFalse(requested.contains(Manifest.permission.CHANGE_NETWORK_STATE))
-
-        val generatedReceiverPermission =
-            "${context.packageName}.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION"
-        assertEquals(
-            expectedPlatformPermissions + generatedReceiverPermission,
-            requested,
-        )
     }
 
     private fun assertAirplaneModeWhenRequired() {
@@ -526,7 +519,7 @@ class MainActivityOfflinePersistenceInstrumentedTest {
         )
     }
 
-    private fun assertCurrentNoteAndOutbox(
+    private fun assertCurrentNote(
         container: AppContainer,
         text: String,
         expectedStatus: NoteRecordStatus,
@@ -536,14 +529,6 @@ class MainActivityOfflinePersistenceInstrumentedTest {
         assertEquals(expectedStatus, note.status)
         assertEquals(expectedRevisionNo, note.revisionNo)
 
-        val outbox = runBlocking(Dispatchers.IO) {
-            productionDatabase(container)
-                .noteMutationDao()
-                .findOutbox(note.operationId.toString())
-        }
-        assertNotNull(outbox)
-        assertEquals(note.eventId.toString(), outbox?.eventId)
-        assertEquals(note.revisionId.toString(), outbox?.revisionId)
         return note
     }
 
@@ -556,7 +541,6 @@ class MainActivityOfflinePersistenceInstrumentedTest {
         assertEquals(before.heads + if (mutationCount == 0) 0 else 1, after.heads)
         assertEquals(before.captures + mutationCount, after.captures)
         assertEquals(before.revisions + mutationCount, after.revisions)
-        assertEquals(before.outboxOperations + mutationCount, after.outboxOperations)
         assertEquals(before.parents + (mutationCount - 1).coerceAtLeast(0), after.parents)
     }
 
@@ -665,7 +649,7 @@ class MainActivityOfflinePersistenceInstrumentedTest {
     ): T = try {
         block()
     } catch (failure: Throwable) {
-        throw AssertionError("M1 acceptance failed at step: $label", failure)
+        throw AssertionError("Local acceptance failed at step: $label", failure)
     }
 
     private companion object {
@@ -673,9 +657,9 @@ class MainActivityOfflinePersistenceInstrumentedTest {
         const val CLICK_ACK_TIMEOUT_MILLIS = 5_000L
         const val CLEANUP_TIMEOUT_MILLIS = 5_000L
         const val POLL_INTERVAL_MILLIS = 25L
-        const val COLD_MARKER_ARGUMENT = "m1ColdStartMarker"
-        const val REQUIRE_AIRPLANE_MODE_ARGUMENT = "m1RequireAirplaneMode"
-        const val DEFAULT_COLD_MARKER = "m1-synthetic-cold-start-marker-v1"
+        const val COLD_MARKER_ARGUMENT = "localColdStartMarker"
+        const val REQUIRE_AIRPLANE_MODE_ARGUMENT = "localRequireAirplaneMode"
+        const val DEFAULT_COLD_MARKER = "local-synthetic-cold-start-marker-v1"
         const val ONBOARDING_CONTINUE_TEXT = "Продолжить локально"
         const val CREATED_NOTE_SNACKBAR_TEXT = "Заметка сохранена на устройстве"
         val COLD_MARKER_PATTERN = Regex("[A-Za-z0-9._-]{8,96}")

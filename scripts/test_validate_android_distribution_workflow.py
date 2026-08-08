@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Regression tests for the Android dev distribution trust boundary."""
+"""Regression tests for the Android development APK release boundary."""
 
 from __future__ import annotations
 
@@ -9,14 +9,17 @@ from pathlib import Path
 
 from scripts.validate_android_distribution_workflow import (
     ANDROID_BUILD,
+    ANDROID_ROOT_BUILD,
     CI_WORKFLOW,
     DISTRIBUTION_WORKFLOW,
     INSTRUMENTED_WORKFLOW,
     AndroidDistributionValidationError,
-    validate_android_build_defaults,
+    validate_android_build,
+    validate_android_root_build,
     validate_distribution_workflow,
-    validate_no_tracked_deployment_coordinates,
-    validate_untrusted_ci,
+    validate_generic_ci,
+    validate_instrumented_workflow,
+    validate_no_server_configuration,
 )
 
 
@@ -27,77 +30,158 @@ class AndroidDistributionWorkflowValidatorTest(unittest.TestCase):
         cls.ci = CI_WORKFLOW.read_text(encoding="utf-8")
         cls.instrumented = INSTRUMENTED_WORKFLOW.read_text(encoding="utf-8")
         cls.android_build = ANDROID_BUILD.read_text(encoding="utf-8")
+        cls.android_root_build = ANDROID_ROOT_BUILD.read_text(encoding="utf-8")
 
     def test_repository_workflows_keep_the_trust_boundary(self) -> None:
         validate_distribution_workflow(self.distribution)
-        validate_untrusted_ci(self.ci)
-        validate_untrusted_ci(self.instrumented)
-        validate_android_build_defaults(self.android_build)
+        validate_generic_ci(self.ci)
+        validate_generic_ci(self.instrumented)
+        validate_instrumented_workflow(self.instrumented)
+        validate_android_build(self.android_build)
+        validate_android_root_build(self.android_root_build)
 
-    def test_distribution_variable_cannot_move_to_secrets(self) -> None:
+    def test_distribution_requires_same_repository_source(self) -> None:
         mutated = self.distribution.replace(
-            "vars.LIFE_AGENT_API_ORIGIN",
-            "secrets.LIFE_AGENT_API_ORIGIN",
+            "github.event.workflow_run.head_repository.full_name == github.repository",
+            "true",
             1,
         )
         with self.assertRaisesRegex(
             AndroidDistributionValidationError,
-            "trusted GitHub Variables",
+            "same-repository",
         ):
             validate_distribution_workflow(mutated)
 
-    def test_distribution_variable_must_be_checked_before_checkout(self) -> None:
+    def test_distribution_checkout_must_use_verified_revision(self) -> None:
         mutated = self.distribution.replace(
-            '! is_non_blank "$LIFE_AGENT_API_ORIGIN" ||\n',
-            "",
+            "ref: ${{ env.SOURCE_SHA }}",
+            "ref: develop",
             1,
         )
-        with self.assertRaisesRegex(AndroidDistributionValidationError, "blank input"):
-            validate_distribution_workflow(mutated)
-
-    def test_distribution_variable_must_reach_the_container_by_name(self) -> None:
-        mutated = self.distribution.replace(
-            "            --env LIFE_AGENT_API_SPKI_PINS \\\n",
-            "",
-            1,
-        )
-        with self.assertRaisesRegex(
-            AndroidDistributionValidationError, "forwarded by name"
-        ):
-            validate_distribution_workflow(mutated)
-
-    def test_untrusted_ci_cannot_receive_distribution_variables(self) -> None:
-        mutated = self.ci + "\n# LIFE_AGENT_API_ORIGIN\n"
         with self.assertRaisesRegex(
             AndroidDistributionValidationError,
-            "untrusted CI",
+            "verified checkout",
         ):
-            validate_untrusted_ci(mutated)
+            validate_distribution_workflow(mutated)
 
-    def test_android_build_variables_must_default_to_empty(self) -> None:
-        mutated = self.android_build.replace(
-            '.environmentVariable("LIFE_AGENT_API_ORIGIN")\n    .orElse("")',
-            '.environmentVariable("LIFE_AGENT_API_ORIGIN")',
+    def test_distribution_must_build_internal_apk_itself(self) -> None:
+        mutated = self.distribution.replace(
+            "./gradlew --no-daemon --stacktrace :app:assembleInternal",
+            "./gradlew --no-daemon --stacktrace :app:assembleDebug",
             1,
         )
-        with self.assertRaisesRegex(AndroidDistributionValidationError, "default"):
-            validate_android_build_defaults(mutated)
-
-    def test_concrete_coordinate_is_rejected_from_tracked_deployment_source(
-        self,
-    ) -> None:
-        coordinate = "https://" + "prod.example.invalid"
-        path = self.write_temporary_source(f'val endpoint = "{coordinate}"\n')
         with self.assertRaisesRegex(
-            AndroidDistributionValidationError, "HTTPS coordinate"
+            AndroidDistributionValidationError,
+            "Android build token",
         ):
-            validate_no_tracked_deployment_coordinates([path])
+            validate_distribution_workflow(mutated)
 
-    def test_concrete_pin_is_rejected_from_tracked_deployment_source(self) -> None:
-        pin = "sha256/" + ("A" * 43) + "="
-        path = self.write_temporary_source(f'val pin = "{pin}"\n')
-        with self.assertRaisesRegex(AndroidDistributionValidationError, "SPKI pin"):
-            validate_no_tracked_deployment_coordinates([path])
+    def test_signing_material_must_come_from_environment_secret(self) -> None:
+        mutated = self.distribution.replace(
+            "secrets.LIFE_AGENT_DEV_KEYSTORE_BASE64",
+            "vars.LIFE_AGENT_DEV_KEYSTORE_BASE64",
+            1,
+        )
+        with self.assertRaisesRegex(
+            AndroidDistributionValidationError,
+            "signing or identity guard",
+        ):
+            validate_distribution_workflow(mutated)
+
+    def test_external_signature_verification_cannot_be_removed(self) -> None:
+        mutated = self.distribution.replace(
+            "              verify",
+            "              version",
+            1,
+        )
+        with self.assertRaisesRegex(
+            AndroidDistributionValidationError,
+            "signing or identity guard",
+        ):
+            validate_distribution_workflow(mutated)
+
+    def test_release_asset_digest_verification_cannot_be_removed(self) -> None:
+        mutated = self.distribution.replace(
+            'if [ "$asset_digest" != "$expected_digest" ]',
+            'if [ -z "$asset_digest" ]',
+            1,
+        )
+        with self.assertRaisesRegex(
+            AndroidDistributionValidationError,
+            "rolling release guard",
+        ):
+            validate_distribution_workflow(mutated)
+
+    def test_generic_ci_cannot_duplicate_internal_build(self) -> None:
+        mutated = self.ci + "\n# :app:assembleInternal\n"
+        with self.assertRaisesRegex(
+            AndroidDistributionValidationError,
+            "duplicate",
+        ):
+            validate_generic_ci(mutated)
+
+    def test_generic_ci_cannot_restore_backend_job(self) -> None:
+        mutated = self.ci + "\n  backend-quality:\n"
+        with self.assertRaisesRegex(
+            AndroidDistributionValidationError,
+            "retired job",
+        ):
+            validate_generic_ci(mutated)
+
+    def test_instrumented_check_name_cannot_drift(self) -> None:
+        mutated = self.instrumented.replace(
+            "    name: android-instrumented",
+            "    name: android-milestone-instrumented",
+            1,
+        )
+        with self.assertRaisesRegex(
+            AndroidDistributionValidationError,
+            "instrumented workflow token",
+        ):
+            validate_instrumented_workflow(mutated)
+
+    def test_android_build_cannot_embed_server_configuration(self) -> None:
+        mutated = self.android_build + "\n// LIFE_AGENT_API_ORIGIN\n"
+        with self.assertRaisesRegex(
+            AndroidDistributionValidationError,
+            "retired configuration",
+        ):
+            validate_android_build(mutated)
+
+    def test_android_build_cannot_embed_distribution_signing(self) -> None:
+        mutated = self.android_build + '\nsigningConfigs.create("distribution")\n'
+        with self.assertRaisesRegex(
+            AndroidDistributionValidationError,
+            "retired configuration",
+        ):
+            validate_android_build(mutated)
+
+    def test_android_build_cannot_restore_network_dependency(self) -> None:
+        mutated = self.android_build + '\nimplementation("com.squareup.okhttp3:okhttp:5.3.2")\n'
+        with self.assertRaisesRegex(
+            AndroidDistributionValidationError,
+            "retired configuration",
+        ):
+            validate_android_build(mutated)
+
+    def test_root_build_cannot_restore_serialization_compiler_plugin(self) -> None:
+        mutated = (
+            self.android_root_build
+            + '\nid("org.jetbrains.kotlin.plugin.serialization") version "2.3.20"\n'
+        )
+        with self.assertRaisesRegex(
+            AndroidDistributionValidationError,
+            "serialization compiler plugin",
+        ):
+            validate_android_root_build(mutated)
+
+    def test_server_configuration_is_rejected_from_android_source(self) -> None:
+        path = self.write_temporary_source("// LIFE_AGENT_API_SPKI_PINS\n")
+        with self.assertRaisesRegex(
+            AndroidDistributionValidationError,
+            "retired server configuration",
+        ):
+            validate_no_server_configuration([path])
 
     def write_temporary_source(self, content: str) -> Path:
         temporary_directory = tempfile.TemporaryDirectory(

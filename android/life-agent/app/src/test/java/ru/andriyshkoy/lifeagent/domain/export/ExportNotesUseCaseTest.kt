@@ -24,7 +24,7 @@ class ExportNotesUseCaseTest {
         val bytes = runSuspend { useCase() }
 
         assertEquals(
-            """{"events":[],"format":"life-agent-notes","format_version":"1.0.0","revisions":[]}""",
+            """{"events":[],"format":"life-agent-notes","format_version":"2.0.0","revisions":[]}""",
             bytes.toString(Charsets.UTF_8),
         )
     }

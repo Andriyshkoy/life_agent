@@ -10,7 +10,6 @@ on:
       - develop
 
 permissions:
-  actions: read
   contents: write
 
 concurrency:
@@ -31,27 +30,7 @@ jobs:
     env:
       SOURCE_SHA: ${{ github.event.workflow_run.head_sha }}
       SOURCE_RUN_NUMBER: ${{ github.event.workflow_run.run_number }}
-      LIFE_AGENT_API_ORIGIN: ${{ vars.LIFE_AGENT_API_ORIGIN }}
-      LIFE_AGENT_API_SPKI_PINS: ${{ vars.LIFE_AGENT_API_SPKI_PINS }}
     steps:
-      - name: Require trusted Android deployment configuration
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          is_non_blank() {
-            case "$1" in
-              *[![:space:]]*) return 0 ;;
-              *) return 1 ;;
-            esac
-          }
-
-          if ! is_non_blank "$LIFE_AGENT_API_ORIGIN" ||
-            ! is_non_blank "$LIFE_AGENT_API_SPKI_PINS"; then
-            echo "Android dev distribution deployment configuration is unavailable."
-            exit 1
-          fi
-
       - name: Check out the verified develop revision
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -65,7 +44,7 @@ jobs:
             --tag life-agent-product-builder:distribution \
             android/life-agent
 
-      - name: Build configured unsigned internal APK
+      - name: Build unsigned internal APK
         run: |
           set -euo pipefail
 
@@ -81,8 +60,6 @@ jobs:
             --user "$(id -u):$(id -g)" \
             --env ANDROID_USER_HOME=/tmp/android-user-home \
             --env GRADLE_USER_HOME=/tmp/gradle-home \
-            --env LIFE_AGENT_API_ORIGIN \
-            --env LIFE_AGENT_API_SPKI_PINS \
             --env LIFE_AGENT_VERSION_CODE="$version_code" \
             --env LIFE_AGENT_VERSION_NAME="0.1.0.$SOURCE_RUN_NUMBER+$short_sha" \
             --volume \
@@ -99,6 +76,12 @@ jobs:
           install -m 0600 \
             android/life-agent/app/build/outputs/apk/internal/app-internal-unsigned.apk \
             "$RUNNER_TEMP/unsigned/app-internal-unsigned.apk"
+
+      - name: Validate internal Android security declarations
+        run: |
+          python3 scripts/validate_android_security.py \
+            --merged-manifest \
+              android/life-agent/app/build/intermediates/merged_manifests/internal/processInternalManifest/AndroidManifest.xml
 
       - name: Prepare signing material
         env:

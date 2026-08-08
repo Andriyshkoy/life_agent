@@ -1,20 +1,18 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://life-agent.local/schemas/life-event.schema.json",
-  "title": "Life Agent canonical MVP event revision",
-  "description": "An immutable local or server-committed MVP event revision. This document deliberately has no person_id, subject_id or owner field: the backend derives ownership exclusively from the authenticated device session.",
+  "title": "Life Agent canonical local event revision",
+  "description": "An immutable on-device event revision. installation_id and local_owner_id form an opaque local namespace; person_id, subject_id and remote identity fields are forbidden by the closed shape.",
   "type": "object",
   "additionalProperties": false,
   "required": [
     "schema_version",
-    "persistence_state",
     "identity",
     "event_id",
     "revision_id",
     "revision_no",
     "kind",
     "assertion_status",
-    "lifecycle",
     "record_status",
     "verification_status",
     "source",
@@ -22,19 +20,11 @@
     "payload",
     "evidence",
     "quality_flags",
-    "revision",
-    "server"
+    "revision"
   ],
   "properties": {
     "schema_version": {
-      "const": "4.0.0"
-    },
-    "persistence_state": {
-      "type": "string",
-      "enum": [
-        "local_pending",
-        "server_committed"
-      ]
+      "const": "5.0.0"
     },
     "identity": {
       "$ref": "#/$defs/localIdentity"
@@ -50,7 +40,7 @@
       "minimum": 1
     },
     "kind": {
-      "$ref": "mvp-event-payloads.schema.json#/$defs/kind"
+      "$ref": "event-payloads.schema.json#/$defs/kind"
     },
     "assertion_status": {
       "type": "string",
@@ -58,10 +48,6 @@
         "observed",
         "uncertain"
       ]
-    },
-    "lifecycle": {
-      "type": "null",
-      "description": "Reserved for a future planned-event schema and always null in this MVP contract."
     },
     "record_status": {
       "type": "string",
@@ -86,7 +72,7 @@
       "$ref": "#/$defs/eventTime"
     },
     "payload": {
-      "$ref": "mvp-event-payloads.schema.json#/$defs/payload"
+      "$ref": "event-payloads.schema.json#/$defs/payload"
     },
     "evidence": {
       "type": "array",
@@ -105,60 +91,9 @@
     },
     "revision": {
       "$ref": "#/$defs/revision"
-    },
-    "server": {
-      "$ref": "#/$defs/serverCommit"
     }
   },
   "allOf": [
-    {
-      "if": {
-        "properties": {
-          "persistence_state": {
-            "const": "local_pending"
-          }
-        },
-        "required": [
-          "persistence_state"
-        ]
-      },
-      "then": {
-        "properties": {
-          "server": {
-            "properties": {
-              "received_at": {
-                "type": "null"
-              },
-              "server_sequence": {
-                "type": "null"
-              }
-            }
-          }
-        }
-      },
-      "else": {
-        "properties": {
-          "identity": {
-            "properties": {
-              "device_id": {
-                "$ref": "#/$defs/canonicalUuid"
-              }
-            }
-          },
-          "server": {
-            "properties": {
-              "received_at": {
-                "$ref": "#/$defs/canonicalDateTime"
-              },
-              "server_sequence": {
-                "type": "integer",
-                "minimum": 1
-              }
-            }
-          }
-        }
-      }
-    },
     {
       "if": {
         "properties": {
@@ -499,7 +434,7 @@
             "$ref": "#/$defs/pointEventTime"
           },
           "payload": {
-            "$ref": "mvp-event-payloads.schema.json#/$defs/meal"
+            "$ref": "event-payloads.schema.json#/$defs/meal"
           }
         }
       }
@@ -531,7 +466,7 @@
             "$ref": "#/$defs/intervalEventTime"
           },
           "payload": {
-            "$ref": "mvp-event-payloads.schema.json#/$defs/sleep"
+            "$ref": "event-payloads.schema.json#/$defs/sleep"
           }
         }
       }
@@ -560,7 +495,7 @@
             "$ref": "#/$defs/pointEventTime"
           },
           "payload": {
-            "$ref": "mvp-event-payloads.schema.json#/$defs/wellbeing"
+            "$ref": "event-payloads.schema.json#/$defs/wellbeing"
           }
         }
       }
@@ -589,7 +524,7 @@
             "$ref": "#/$defs/pointEventTime"
           },
           "payload": {
-            "$ref": "mvp-event-payloads.schema.json#/$defs/medication_intake"
+            "$ref": "event-payloads.schema.json#/$defs/medication_intake"
           }
         }
       }
@@ -618,7 +553,7 @@
             "$ref": "#/$defs/pointEventTime"
           },
           "payload": {
-            "$ref": "mvp-event-payloads.schema.json#/$defs/supplement_intake"
+            "$ref": "event-payloads.schema.json#/$defs/supplement_intake"
           }
         }
       }
@@ -650,7 +585,7 @@
             "$ref": "#/$defs/pointEventTime"
           },
           "payload": {
-            "$ref": "mvp-event-payloads.schema.json#/$defs/measurement"
+            "$ref": "event-payloads.schema.json#/$defs/measurement"
           }
         }
       }
@@ -679,7 +614,7 @@
             "$ref": "#/$defs/pointEventTime"
           },
           "payload": {
-            "$ref": "mvp-event-payloads.schema.json#/$defs/note"
+            "$ref": "event-payloads.schema.json#/$defs/note"
           }
         }
       }
@@ -741,21 +676,16 @@
       "additionalProperties": false,
       "required": [
         "installation_id",
-        "local_owner_id",
-        "device_id"
+        "local_owner_id"
       ],
       "properties": {
         "installation_id": {
           "$ref": "#/$defs/canonicalUuid",
-          "description": "Opaque identifier for this APK installation; it is not a security principal."
+          "description": "Opaque identifier for this app installation."
         },
         "local_owner_id": {
           "$ref": "#/$defs/canonicalUuid",
-          "description": "Opaque single-owner namespace used before enrollment; it is never accepted as server ownership."
-        },
-        "device_id": {
-          "$ref": "#/$defs/nullableUuid",
-          "description": "Nullable server-issued enrichment. The sync API verifies any non-null value against the authenticated device session."
+          "description": "Opaque single-owner namespace within this installation."
         }
       }
     },
@@ -778,7 +708,8 @@
           "$ref": "#/$defs/canonicalUuid"
         },
         "operation_id": {
-          "$ref": "#/$defs/canonicalUuid"
+          "$ref": "#/$defs/canonicalUuid",
+          "description": "Stable local mutation identifier used for idempotent replay after process restoration."
         },
         "channel": {
           "type": "string",
@@ -1262,10 +1193,7 @@
         },
         "relation": {
           "type": "string",
-          "enum": [
-            "supersedes",
-            "resolves"
-          ]
+          "const": "supersedes"
         }
       }
     },
@@ -1299,7 +1227,7 @@
         },
         "parents": {
           "type": "array",
-          "maxItems": 2,
+          "maxItems": 1,
           "uniqueItems": true,
           "oneOf": [
             {
@@ -1312,17 +1240,6 @@
                 "properties": {
                   "relation": {
                     "const": "supersedes"
-                  }
-                }
-              }
-            },
-            {
-              "minItems": 2,
-              "maxItems": 2,
-              "items": {
-                "properties": {
-                  "relation": {
-                    "const": "resolves"
                   }
                 }
               }
@@ -1398,35 +1315,6 @@
           ]
         }
       ]
-    },
-    "serverCommit": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "received_at",
-        "server_sequence"
-      ],
-      "properties": {
-        "received_at": {
-          "oneOf": [
-            {
-              "$ref": "#/$defs/canonicalDateTime",
-              "readOnly": true
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "server_sequence": {
-          "type": [
-            "integer",
-            "null"
-          ],
-          "minimum": 1,
-          "readOnly": true
-        }
-      }
     }
   }
 }

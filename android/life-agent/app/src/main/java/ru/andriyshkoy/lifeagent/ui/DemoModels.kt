@@ -11,7 +11,6 @@ enum class DemoRoute {
     CatalogFood,
     CatalogWellbeing,
     CatalogMedication,
-    SyncSetup,
     HealthConnect,
     TimeZone,
     Diagnostics,
@@ -53,7 +52,6 @@ fun DemoRoute.backTarget(): DemoRoute = when (this) {
     DemoRoute.CatalogMedication,
     -> DemoRoute.Catalogs
 
-    DemoRoute.SyncSetup,
     DemoRoute.HealthConnect,
     DemoRoute.TimeZone,
     DemoRoute.Diagnostics,

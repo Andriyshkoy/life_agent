@@ -12,7 +12,6 @@ from scripts.validate_android_security import (
     validate_all,
     validate_extraction_rules,
     validate_manifest,
-    validate_network_security_config,
 )
 
 
@@ -82,13 +81,10 @@ class AndroidSecurityValidatorTest(unittest.TestCase):
     def test_allow_backup_must_remain_false(self) -> None:
         xml = f"""\
 <manifest xmlns:android="{ANDROID_NS}">
-  <uses-permission android:name="android.permission.INTERNET" />
-  <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
   <application
       android:allowBackup="true"
       android:dataExtractionRules="@xml/data_extraction_rules"
       android:fullBackupContent="@xml/backup_rules_legacy"
-      android:networkSecurityConfig="@xml/network_security_config"
       android:usesCleartextTraffic="false" />
 </manifest>
 """
@@ -96,47 +92,34 @@ class AndroidSecurityValidatorTest(unittest.TestCase):
         with self.assertRaisesRegex(SecurityValidationError, "allowBackup"):
             validate_manifest(path)
 
-    def test_internet_permission_is_required(self) -> None:
-        xml = self.valid_manifest().replace(
-            '  <uses-permission android:name="android.permission.INTERNET" />\n',
-            "",
-        )
-        path = self.write_temporary_xml(xml)
-        with self.assertRaisesRegex(SecurityValidationError, "required permissions missing"):
-            validate_manifest(path)
-
-    def test_network_observation_permission_is_required(self) -> None:
-        xml = self.valid_manifest().replace(
-            "  <uses-permission "
-            'android:name="android.permission.ACCESS_NETWORK_STATE" />\n',
-            "",
-        )
-        path = self.write_temporary_xml(xml)
-        with self.assertRaisesRegex(SecurityValidationError, "required permissions missing"):
-            validate_manifest(path)
-
-    def test_network_management_permissions_are_forbidden(self) -> None:
+    def test_network_permissions_are_forbidden(self) -> None:
         xml = self.valid_manifest().replace(
             "  <application",
             "  <uses-permission "
-            'android:name="android.permission.CHANGE_NETWORK_STATE" />\n'
+            'android:name="android.permission.INTERNET" />\n'
             "  <application",
         )
         path = self.write_temporary_xml(xml)
-        with self.assertRaisesRegex(SecurityValidationError, "forbidden permissions present"):
+        with self.assertRaisesRegex(
+            SecurityValidationError,
+            "forbidden permissions present",
+        ):
             validate_manifest(path)
 
-    def test_source_manifest_rejects_library_generated_permissions(self) -> None:
+    def test_background_worker_permissions_are_forbidden(self) -> None:
         xml = self.valid_manifest().replace(
             "  <application",
             "  <uses-permission android:name=\"android.permission.WAKE_LOCK\" />\n"
             "  <application",
         )
         path = self.write_temporary_xml(xml)
-        with self.assertRaisesRegex(SecurityValidationError, "unexpected permissions present"):
+        with self.assertRaisesRegex(
+            SecurityValidationError,
+            "forbidden permissions present",
+        ):
             validate_manifest(path)
 
-    def test_merged_manifest_allows_only_work_manager_generated_permissions(self) -> None:
+    def test_merged_manifest_allows_only_androidx_receiver_permission(self) -> None:
         path = self.write_temporary_xml(self.valid_merged_manifest())
 
         validate_manifest(path, merged=True)
@@ -148,33 +131,33 @@ class AndroidSecurityValidatorTest(unittest.TestCase):
             "  <application",
         )
         path = self.write_temporary_xml(xml)
-        with self.assertRaisesRegex(SecurityValidationError, "unexpected permissions present"):
+        with self.assertRaisesRegex(
+            SecurityValidationError,
+            "unexpected permissions present",
+        ):
             validate_manifest(path, merged=True)
 
-    def test_network_security_config_requires_only_system_trust(self) -> None:
-        xml = """\
-<network-security-config>
-  <base-config cleartextTrafficPermitted="false">
-    <trust-anchors>
-      <certificates src="user" />
-    </trust-anchors>
-  </base-config>
-</network-security-config>
-"""
+    def test_merged_manifest_requires_androidx_receiver_permission(self) -> None:
+        package_name = "ru.andriyshkoy.lifeagent.test"
+        xml = self.valid_merged_manifest().replace(
+            "  <uses-permission android:name=\""
+            f"{package_name}.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION\" />\n",
+            "",
+        )
         path = self.write_temporary_xml(xml)
-        with self.assertRaisesRegex(SecurityValidationError, "only system certificates"):
-            validate_network_security_config(path)
+        with self.assertRaisesRegex(
+            SecurityValidationError,
+            "required permissions missing",
+        ):
+            validate_manifest(path, merged=True)
 
     def valid_manifest(self) -> str:
         return f"""\
 <manifest xmlns:android="{ANDROID_NS}">
-  <uses-permission android:name="android.permission.INTERNET" />
-  <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
   <application
       android:allowBackup="false"
       android:dataExtractionRules="@xml/data_extraction_rules"
       android:fullBackupContent="@xml/backup_rules_legacy"
-      android:networkSecurityConfig="@xml/network_security_config"
       android:usesCleartextTraffic="false" />
 </manifest>
 """
@@ -186,11 +169,6 @@ class AndroidSecurityValidatorTest(unittest.TestCase):
             f'<manifest xmlns:android="{ANDROID_NS}" package="{package_name}">',
         ).replace(
             "  <application",
-            "  <uses-permission android:name=\"android.permission.WAKE_LOCK\" />\n"
-            "  <uses-permission "
-            "android:name=\"android.permission.RECEIVE_BOOT_COMPLETED\" />\n"
-            "  <uses-permission "
-            "android:name=\"android.permission.FOREGROUND_SERVICE\" />\n"
             "  <uses-permission android:name=\""
             f"{package_name}.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION\" />\n"
             "  <application",

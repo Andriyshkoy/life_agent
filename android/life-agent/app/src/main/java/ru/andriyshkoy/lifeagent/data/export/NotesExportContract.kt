@@ -1,7 +1,7 @@
 package ru.andriyshkoy.lifeagent.data.export
 
 const val NOTES_EXPORT_FORMAT = "life-agent-notes"
-const val NOTES_EXPORT_FORMAT_VERSION = "1.0.0"
+const val NOTES_EXPORT_FORMAT_VERSION = "2.0.0"
 
 data class NoteEventPointerSnapshot(
     val eventId: String,

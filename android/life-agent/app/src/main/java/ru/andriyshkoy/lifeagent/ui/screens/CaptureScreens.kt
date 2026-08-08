@@ -227,7 +227,7 @@ fun FoodCaptureScreen(
             }
             item { TimestampSelector() }
             item {
-                HelperText("Предпросмотр M1: питание и КБЖУ пока не сохраняются.")
+                HelperText("Предпросмотр: питание и КБЖУ пока не сохраняются.")
             }
         }
     }
@@ -328,7 +328,7 @@ fun WellbeingCaptureScreen(
             }
             item { TimestampSelector() }
             item {
-                HelperText("Предпросмотр M1: самочувствие пока не сохраняется.")
+                HelperText("Предпросмотр: самочувствие пока не сохраняется.")
             }
         }
     }
@@ -411,7 +411,7 @@ fun MedicationCaptureScreen(
             }
             item { TimestampSelector() }
             item {
-                HelperText("Предпросмотр M1: приём пока не сохраняется.")
+                HelperText("Предпросмотр: приём пока не сохраняется.")
             }
         }
     }

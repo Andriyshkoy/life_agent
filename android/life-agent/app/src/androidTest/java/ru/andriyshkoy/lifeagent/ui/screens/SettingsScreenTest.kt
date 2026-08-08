@@ -82,7 +82,7 @@ class SettingsScreenTest {
     }
 
     @Test
-    fun healthConnectScreenIsAnExplicitDisabledM4Preview() {
+    fun healthConnectScreenIsAnExplicitDisabledPreview() {
         composeRule.setContent {
             LifeAgentTheme(darkTheme = false) {
                 HealthConnectScreen(onBack = {})
@@ -90,7 +90,7 @@ class SettingsScreenTest {
         }
 
         composeRule.onNodeWithText(
-            "Подключение Health Connect появится на M4; сейчас данные не читаются.",
+            "Интеграция Health Connect ещё не реализована; сейчас данные не читаются.",
         ).assertIsDisplayed()
         composeRule.onNodeWithText("Выдать доступ").assertIsNotEnabled()
     }
@@ -157,7 +157,7 @@ class SettingsScreenTest {
     }
 
     @Test
-    fun diagnosticsSurfaceShowsOnlyVersionStorageAndBodylessSyncNavigation() {
+    fun diagnosticsSurfaceShowsOnlyVersionAndLocalStorageState() {
         composeRule.setContent {
             LifeAgentTheme(darkTheme = false) {
                 DiagnosticsScreen(
@@ -169,10 +169,9 @@ class SettingsScreenTest {
         }
 
         composeRule.onNodeWithText("Зашифрованное хранилище доступно").assertIsDisplayed()
+        composeRule.onNodeWithText("Локальная база открыта и готова к записи").assertIsDisplayed()
         composeRule.onNodeWithText("0.1.0-test").assertIsDisplayed()
-        composeRule.onNodeWithText(
-            "Подключение и очередь доступны в настройках синхронизации",
-        ).assertIsDisplayed()
+        composeRule.onNodeWithText("Локальное хранилище").assertIsDisplayed()
         composeRule.onNodeWithText(
             "ID, логи и значения здоровья здесь не отображаются.",
             substring = true,
@@ -194,8 +193,7 @@ class SettingsScreenTest {
 
         composeRule.onNodeWithText("Зашифрованное хранилище недоступно").assertIsDisplayed()
         composeRule.onNodeWithText(
-            "чтение и сохранение недоступны",
-            substring = true,
+            "Чтение и запись локальных данных отключены",
         ).assertIsDisplayed()
     }
 
@@ -208,7 +206,7 @@ class SettingsScreenTest {
         }
 
         composeRule.onNodeWithText(
-            "Отдельной кнопки удаления внутри Life Agent в M1 нет.",
+            "Отдельной кнопки удаления внутри Life Agent пока нет.",
             substring = true,
         ).assertIsDisplayed()
         composeRule.onNodeWithText(

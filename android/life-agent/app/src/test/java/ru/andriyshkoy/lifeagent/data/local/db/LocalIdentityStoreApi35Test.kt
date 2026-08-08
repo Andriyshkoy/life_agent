@@ -52,8 +52,6 @@ class LocalIdentityStoreApi35Test {
 
         assertEquals(installationId.toString(), created.installationId)
         assertEquals(ownerId.toString(), created.localOwnerId)
-        assertNull(created.serverDeviceId)
-        assertNull(created.serverPersonId)
         assertEquals(created, replayed)
         assertTrue(generated.isEmpty())
         assertEquals(

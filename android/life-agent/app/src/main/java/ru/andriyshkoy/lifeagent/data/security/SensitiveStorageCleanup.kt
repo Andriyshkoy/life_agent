@@ -7,7 +7,6 @@ package ru.andriyshkoy.lifeagent.data.security
 internal class RetryableSensitiveStorageCloser(
     private val closeDatabase: () -> Unit,
     private val closeKey: () -> Unit,
-    private val closeProcessSecrets: () -> Unit = {},
 ) {
     private val lock = Any()
     private var closedSuccessfully = false
@@ -16,8 +15,7 @@ internal class RetryableSensitiveStorageCloser(
         synchronized(lock) {
             if (closedSuccessfully) return
 
-            val failure = closeProcessSecretsDatabaseThenKey(
-                closeProcessSecrets = closeProcessSecrets,
+            val failure = closeDatabaseThenKey(
                 closeDatabase = closeDatabase,
                 closeKey = closeKey,
             )
@@ -40,30 +38,9 @@ internal fun closeDatabaseThenKey(
     primaryFailure: Throwable? = null,
     closeDatabase: () -> Unit,
     closeKey: () -> Unit,
-): Throwable? = closeProcessSecretsDatabaseThenKey(
-    primaryFailure = primaryFailure,
-    closeProcessSecrets = {},
-    closeDatabase = closeDatabase,
-    closeKey = closeKey,
-)
-
-/**
- * Wipes process-only credential material before closing Room and destroys the
- * SQLCipher key last. Every cleanup step runs even when an earlier step fails.
- */
-internal fun closeProcessSecretsDatabaseThenKey(
-    primaryFailure: Throwable? = null,
-    closeProcessSecrets: () -> Unit,
-    closeDatabase: () -> Unit,
-    closeKey: () -> Unit,
 ): Throwable? {
     var failure = primaryFailure
 
-    try {
-        closeProcessSecrets()
-    } catch (closeFailure: Throwable) {
-        failure = failure.merge(closeFailure)
-    }
     try {
         closeDatabase()
     } catch (closeFailure: Throwable) {

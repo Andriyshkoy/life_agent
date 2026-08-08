@@ -1,3 +1,0 @@
-preset_id,target_type,target_id,target_version,preset_name,aliases,quantity,unit,equivalent_weight_g,equivalent_volume_ml,is_default,notes
-example_preset_001,food,example_food_001,,"Столовая ложка","ложка;ст. л.",1,tbsp,10,,false,"Удалите или замените эту example_* строку"
-example_preset_002,recipe,example_recipe_001,1,"Тарелка","миска;порция",1,portion,275,,true,"Удалите или замените эту example_* строку"

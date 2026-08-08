@@ -1,3 +1,0 @@
-preset_id,item_id,preset_name,aliases,intake_quantity,intake_unit,active_amount,active_unit,is_default,notes
-example_dose_001,example_med_001,"Обычная доза","одна капсула",1,capsule,2000,IU,true,"Удалите или замените эту example_* строку"
-example_dose_002,example_med_002,"Одна таблетка","таблетка",1,tablet,200,mg,true,"Удалите или замените эту example_* строку"

@@ -110,6 +110,7 @@ class CanonicalNotesExportCodec(
                 .sortedWith(
                     compareBy<NoteRevisionInspection>(
                         NoteRevisionInspection::eventId,
+                        NoteRevisionInspection::revisionNo,
                         NoteRevisionInspection::revisionId,
                     ),
                 )

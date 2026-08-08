@@ -48,7 +48,6 @@ import ru.andriyshkoy.lifeagent.ui.screens.MedicationCaptureScreen
 import ru.andriyshkoy.lifeagent.ui.screens.NoteCaptureScreen
 import ru.andriyshkoy.lifeagent.ui.screens.PrivacyScreen
 import ru.andriyshkoy.lifeagent.ui.screens.SettingsScreen
-import ru.andriyshkoy.lifeagent.ui.screens.SyncSetupScreen
 import ru.andriyshkoy.lifeagent.ui.screens.TimeZoneScreen
 import ru.andriyshkoy.lifeagent.ui.screens.WellbeingCaptureScreen
 import ru.andriyshkoy.lifeagent.ui.notes.NoteAction
@@ -57,9 +56,6 @@ import ru.andriyshkoy.lifeagent.ui.notes.LastNoteUiState
 import ru.andriyshkoy.lifeagent.ui.notes.NotesController
 import ru.andriyshkoy.lifeagent.ui.notes.NotesUiState
 import ru.andriyshkoy.lifeagent.ui.notes.PreviewNotesController
-import ru.andriyshkoy.lifeagent.ui.sync.LocalOnlySyncSetupController
-import ru.andriyshkoy.lifeagent.ui.sync.SyncSetupController
-import ru.andriyshkoy.lifeagent.ui.sync.SyncSetupUiState
 import ru.andriyshkoy.lifeagent.ui.theme.LifeAgentTheme
 import ru.andriyshkoy.lifeagent.ui.theme.ThemeMode
 import ru.andriyshkoy.lifeagent.ui.theme.resolveDarkTheme
@@ -94,7 +90,6 @@ fun LifeAgentApp(
     zoneId: ZoneId = ZoneId.systemDefault(),
     appVersion: String = BuildConfig.VERSION_NAME,
     notesController: NotesController? = null,
-    syncSetupController: SyncSetupController? = null,
     fallbackLastCommitted: LastNoteUiState = LastNoteUiState.Empty,
     onExportNotes: () -> Unit = {},
     externalMessage: AppSnackbarMessage? = null,
@@ -106,7 +101,7 @@ fun LifeAgentApp(
     var routeName by rememberSaveable { mutableStateOf(initialRoute.name) }
     var themeModeName by rememberSaveable { mutableStateOf(initialThemeMode.name) }
 
-    val route = DemoRoute.valueOf(routeName)
+    val route = DemoRoute.entries.firstOrNull { it.name == routeName } ?: DemoRoute.Add
     val themeMode = ThemeMode.valueOf(themeModeName)
     val darkTheme = resolveDarkTheme(themeMode)
     val fallbackNotesController = remember(clock, zoneId, fallbackLastCommitted) {
@@ -118,9 +113,6 @@ fun LifeAgentApp(
     }
     val activeNotesController = notesController ?: fallbackNotesController
     val notesState by activeNotesController.uiState.collectAsStateWithLifecycle()
-    val fallbackSyncSetupController = remember { LocalOnlySyncSetupController() }
-    val activeSyncSetupController = syncSetupController ?: fallbackSyncSetupController
-    val syncSetupState by activeSyncSetupController.uiState.collectAsStateWithLifecycle()
 
     LifeAgentTheme(darkTheme = darkTheme) {
         LifeAgentAppContent(
@@ -133,8 +125,6 @@ fun LifeAgentApp(
             zoneId = zoneId,
             appVersion = appVersion,
             notesState = notesState,
-            syncSetupController = activeSyncSetupController,
-            syncSetupState = syncSetupState,
             onNoteAction = activeNotesController::dispatch,
             onExportNotes = onExportNotes,
             externalMessage = externalMessage,
@@ -157,8 +147,6 @@ private fun LifeAgentAppContent(
     zoneId: ZoneId,
     appVersion: String,
     notesState: NotesUiState,
-    syncSetupController: SyncSetupController,
-    syncSetupState: SyncSetupUiState,
     onNoteAction: (NoteAction) -> Unit,
     onExportNotes: () -> Unit,
     externalMessage: AppSnackbarMessage?,
@@ -267,8 +255,6 @@ private fun LifeAgentAppContent(
                             )
                         },
                         notesState = notesState,
-                        syncSetupController = syncSetupController,
-                        syncSetupState = syncSetupState,
                         onNoteAction = onNoteAction,
                         onExportNotes = onExportNotes,
                         modifier = Modifier.padding(padding),
@@ -311,8 +297,6 @@ private fun LifeAgentAppContent(
                         )
                     },
                     notesState = notesState,
-                    syncSetupController = syncSetupController,
-                    syncSetupState = syncSetupState,
                     onNoteAction = onNoteAction,
                     onExportNotes = onExportNotes,
                     modifier = Modifier.padding(padding),
@@ -386,8 +370,8 @@ private fun LifeAgentAppContent(
             text = {
                 Text(
                     "Заметки сохраняются в зашифрованной базе на этом устройстве. " +
-                        "Синхронизация с сервером пока не настроена и не нужна для работы. " +
-                        "Её можно включить позже в Настройках.\n\n" +
+                        "Все записи остаются на устройстве. Незашифрованный файл создаётся " +
+                        "только по явной команде экспорта.\n\n" +
                         "Часовой пояс событий: ${zoneId.id}",
                 )
             },
@@ -430,8 +414,6 @@ private fun AppScreen(
     appVersion: String,
     onPreviewSave: (String) -> Unit,
     notesState: NotesUiState,
-    syncSetupController: SyncSetupController,
-    syncSetupState: SyncSetupUiState,
     onNoteAction: (NoteAction) -> Unit,
     onExportNotes: () -> Unit,
     modifier: Modifier = Modifier,
@@ -473,7 +455,6 @@ private fun AppScreen(
             modifier = modifier,
             onExportNotes = onExportNotes,
             notesPersistenceAvailable = notesState.persistenceAvailable,
-            syncSetupState = syncSetupState,
             zoneId = zoneId,
             appVersion = appVersion,
         )
@@ -525,12 +506,6 @@ private fun AppScreen(
             modifier,
         )
 
-        DemoRoute.SyncSetup -> SyncSetupScreen(
-            onBack = onBack,
-            modifier = modifier,
-            controller = syncSetupController,
-            zoneId = zoneId,
-        )
         DemoRoute.HealthConnect -> HealthConnectScreen(onBack, modifier)
         DemoRoute.TimeZone -> TimeZoneScreen(
             onBack = onBack,

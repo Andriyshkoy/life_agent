@@ -1,9 +1,0 @@
-{
-  "protocol_version": "1.0.0",
-  "message_type": "bootstrap_request",
-  "request_id": "83000000-0000-4000-8000-000000000001",
-  "bootstrap_id": "73000000-0000-4000-8000-000000000001",
-  "device_id": "91000000-0000-4000-8000-000000000006",
-  "page_size": 3,
-  "page_cursor": null
-}

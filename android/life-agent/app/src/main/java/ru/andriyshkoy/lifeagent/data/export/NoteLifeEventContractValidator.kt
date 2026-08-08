@@ -11,7 +11,7 @@ import java.time.ZoneId
 import java.time.ZoneOffset
 
 /**
- * On-device validation for the note subset of life-event.schema.json.
+ * On-device validation for the local note event export contract.
  *
  * The export boundary deliberately validates persisted canonical documents
  * again. Room constraints protect relational shape, but they cannot prove that
@@ -29,17 +29,7 @@ internal class NoteLifeEventContractValidator {
         document.requireExactFields(LIFE_EVENT_FIELDS, path, violations)
 
         document.requireString("schema_version", path, violations)
-            .expect("4.0.0", "$path.schema_version", violations)
-        val persistenceState = document.requireString(
-            "persistence_state",
-            path,
-            violations,
-        )
-        persistenceState.expectOneOf(
-            PERSISTENCE_STATES,
-            "$path.persistence_state",
-            violations,
-        )
+            .expect("5.0.0", "$path.schema_version", violations)
 
         val identity = validateIdentity(
             document.requireObject("identity", path, violations),
@@ -60,7 +50,6 @@ internal class NoteLifeEventContractValidator {
             .expect("note", "$path.kind", violations)
         document.requireString("assertion_status", path, violations)
             .expectOneOf(ASSERTION_STATUSES, "$path.assertion_status", violations)
-        document.requireNull("lifecycle", path, violations)
         val recordStatus = document.requireString("record_status", path, violations)
         recordStatus.expectOneOf(RECORD_STATUSES, "$path.record_status", violations)
         val verificationStatus = document.requireString(
@@ -109,12 +98,6 @@ internal class NoteLifeEventContractValidator {
             path = "$path.revision",
             violations = violations,
         )
-        val server = validateServer(
-            document.requireObject("server", path, violations),
-            "$path.server",
-            violations,
-        )
-
         if (source.channel != "android_manual") {
             violations += "$path.source.channel must be 'android_manual' for a note"
         }
@@ -132,23 +115,6 @@ internal class NoteLifeEventContractValidator {
             violations += "$path.source.origin.user_entered must be true for a manual note"
         }
 
-        when (persistenceState) {
-            "local_pending" -> {
-                if (server.receivedAt != null || server.sequence != null) {
-                    violations += "$path.server must be empty for local_pending"
-                }
-            }
-
-            "server_committed" -> {
-                if (identity.deviceId == null) {
-                    violations += "$path.identity.device_id is required for server_committed"
-                }
-                if (server.receivedAt == null || server.sequence == null) {
-                    violations += "$path.server commit fields are required for server_committed"
-                }
-            }
-        }
-
         validateContentHash(
             document = document,
             storedHash = revision.contentSha256,
@@ -162,6 +128,7 @@ internal class NoteLifeEventContractValidator {
             eventId = eventId,
             revisionId = revisionId,
             revisionNo = revisionNo,
+            captureId = source.captureId,
             operationId = source.operationId,
             installationId = identity.installationId,
             localOwnerId = identity.localOwnerId,
@@ -188,18 +155,9 @@ internal class NoteLifeEventContractValidator {
         )
         validateUuid(installationId, "$path.installation_id", violations)
         validateUuid(localOwnerId, "$path.local_owner_id", violations)
-        val deviceId = identity.requireNullableString(
-            "device_id",
-            path,
-            violations,
-        )
-        if (deviceId != null) {
-            validateUuid(deviceId, "$path.device_id", violations)
-        }
         return IdentityInspection(
             installationId = installationId,
             localOwnerId = localOwnerId,
-            deviceId = deviceId,
         )
     }
 
@@ -363,28 +321,28 @@ internal class NoteLifeEventContractValidator {
         )
 
         if (effectiveStartText == null) {
-            violations += "$path.effective_start_utc is required for an M1 note"
+            violations += "$path.effective_start_utc is required for a note"
         }
         if (effectiveEndText != null) {
             violations += "$path.effective_end_utc must be null for a point note"
         }
         if (originalLocalStartText == null) {
-            violations += "$path.original_local_start is required for an M1 note"
+            violations += "$path.original_local_start is required for a note"
         }
         if (originalLocalEndText != null) {
             violations += "$path.original_local_end must be null for a point note"
         }
         if (startOffset == null) {
-            violations += "$path.start_offset_seconds is required for an M1 note"
+            violations += "$path.start_offset_seconds is required for a note"
         }
         if (endOffset != null) {
             violations += "$path.end_offset_seconds must be null for a point note"
         }
         if (localDateText == null) {
-            violations += "$path.local_date is required for an M1 note"
+            violations += "$path.local_date is required for a note"
         }
         if (precision !in NOTE_POINT_PRECISIONS) {
-            violations += "$path.temporal_precision is not valid for an M1 point note"
+            violations += "$path.temporal_precision is not valid for a point note"
         }
         if (
             effectiveStart != null &&
@@ -563,8 +521,7 @@ internal class NoteLifeEventContractValidator {
             violations += "$path.parents contains too many entries"
         }
         val parentRevisionIds = mutableListOf<String>()
-        val uniqueParents = mutableSetOf<Pair<String, String>>()
-        val relations = mutableListOf<String>()
+        val uniqueParents = mutableSetOf<String>()
         parents.elements.forEachIndexed { index, value ->
             val parentPath = "$path.parents[$index]"
             val parent = value as? CanonicalJsonObject
@@ -581,21 +538,10 @@ internal class NoteLifeEventContractValidator {
             validateUuid(parentRevisionId, "$parentPath.revision_id", violations)
             val relation = parent.requireString("relation", parentPath, violations)
             relation.expectOneOf(PARENT_RELATIONS, "$parentPath.relation", violations)
-            if (!uniqueParents.add(parentRevisionId to relation)) {
+            if (!uniqueParents.add(parentRevisionId)) {
                 violations += "$path.parents contains a duplicate parent"
             }
             parentRevisionIds += parentRevisionId
-            relations += relation
-        }
-
-        when (parents.elements.size) {
-            0 -> Unit
-            1 -> if (relations.singleOrNull() != "supersedes") {
-                violations += "$path.parents single parent must supersede"
-            }
-            2 -> if (relations.any { it != "resolves" }) {
-                violations += "$path.parents merge parents must resolve"
-            }
         }
         if (revisionNo == BigInteger.ONE && parents.elements.isNotEmpty()) {
             violations += "$path.parents must be empty for revision_no=1"
@@ -611,27 +557,6 @@ internal class NoteLifeEventContractValidator {
             contentSha256 = contentSha256,
             parentRevisionIds = parentRevisionIds,
         )
-    }
-
-    private fun validateServer(
-        server: CanonicalJsonObject,
-        path: String,
-        violations: MutableList<String>,
-    ): ServerInspection {
-        server.requireExactFields(SERVER_FIELDS, path, violations)
-        val receivedAt = server.requireNullableString(
-            "received_at",
-            path,
-            violations,
-        )
-        receivedAt?.let { parseInstant(it, "$path.received_at", violations) }
-        val sequence = server.requireNullableInteger(
-            "server_sequence",
-            path,
-            violations,
-            minimum = BigInteger.ONE,
-        )
-        return ServerInspection(receivedAt = receivedAt, sequence = sequence)
     }
 
     private fun validateContentHash(
@@ -753,16 +678,6 @@ internal class NoteLifeEventContractValidator {
             return null
         }
         return value.value
-    }
-
-    private fun CanonicalJsonObject.requireNull(
-        name: String,
-        path: String,
-        violations: MutableList<String>,
-    ) {
-        if (properties[name] !== CanonicalJsonNull) {
-            violations += "$path.$name must be null"
-        }
     }
 
     private fun CanonicalJsonObject.requirePositiveInteger(
@@ -921,7 +836,6 @@ internal class NoteLifeEventContractValidator {
     private data class IdentityInspection(
         val installationId: String,
         val localOwnerId: String,
-        val deviceId: String?,
     )
 
     private data class SourceInspection(
@@ -939,16 +853,11 @@ internal class NoteLifeEventContractValidator {
         val parentRevisionIds: List<String>,
     )
 
-    private data class ServerInspection(
-        val receivedAt: String?,
-        val sequence: BigInteger?,
-    )
-
     private companion object {
         val MIN_TIMEZONE_OFFSET = BigInteger.valueOf(-50_400)
         val MAX_TIMEZONE_OFFSET = BigInteger.valueOf(50_400)
         const val MAX_NOTE_CODE_POINTS = 50_000
-        const val MAX_REVISION_PARENTS = 2
+        const val MAX_REVISION_PARENTS = 1
         const val INVALID_STRING = "<invalid>"
 
         val EMPTY_OBJECT = CanonicalJsonObject(emptyMap())
@@ -968,7 +877,6 @@ internal class NoteLifeEventContractValidator {
         val EVIDENCE_FIELD_PATH = Regex("^/payload(?:/(?:[^~/]|~0|~1)*)*$")
         val ARRAY_INDEX = Regex("0|[1-9][0-9]*")
 
-        val PERSISTENCE_STATES = setOf("local_pending", "server_committed")
         val ASSERTION_STATUSES = setOf("observed", "uncertain")
         val RECORD_STATUSES = setOf("active", "retracted")
         val VERIFICATION_STATUSES = setOf(
@@ -994,18 +902,16 @@ internal class NoteLifeEventContractValidator {
         )
         val NOTE_POINT_PRECISIONS = setOf("exact", "minute", "hour")
         val REVISION_ACTORS = setOf("user", "system", "connector")
-        val PARENT_RELATIONS = setOf("supersedes", "resolves")
+        val PARENT_RELATIONS = setOf("supersedes")
 
         val LIFE_EVENT_FIELDS = setOf(
             "schema_version",
-            "persistence_state",
             "identity",
             "event_id",
             "revision_id",
             "revision_no",
             "kind",
             "assertion_status",
-            "lifecycle",
             "record_status",
             "verification_status",
             "source",
@@ -1014,12 +920,10 @@ internal class NoteLifeEventContractValidator {
             "evidence",
             "quality_flags",
             "revision",
-            "server",
         )
         val IDENTITY_FIELDS = setOf(
             "installation_id",
             "local_owner_id",
-            "device_id",
         )
         val SOURCE_FIELDS = setOf(
             "capture_id",
@@ -1063,7 +967,6 @@ internal class NoteLifeEventContractValidator {
             "parents",
         )
         val PARENT_FIELDS = setOf("revision_id", "relation")
-        val SERVER_FIELDS = setOf("received_at", "server_sequence")
     }
 }
 
