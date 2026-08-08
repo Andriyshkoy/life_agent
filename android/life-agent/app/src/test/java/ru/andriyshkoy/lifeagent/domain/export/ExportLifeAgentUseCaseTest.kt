@@ -5,26 +5,27 @@ import kotlin.coroutines.EmptyCoroutineContext
 import kotlin.coroutines.startCoroutine
 import org.junit.Assert.assertEquals
 import org.junit.Test
-import ru.andriyshkoy.lifeagent.data.export.CanonicalNotesExportCodec
-import ru.andriyshkoy.lifeagent.data.export.NotesExportSnapshot
+import ru.andriyshkoy.lifeagent.data.export.CanonicalLifeAgentExportCodec
+import ru.andriyshkoy.lifeagent.data.export.CatalogExportSnapshot
+import ru.andriyshkoy.lifeagent.data.export.LifeAgentExportSnapshot
 
-class ExportNotesUseCaseTest {
+class ExportLifeAgentUseCaseTest {
     @Test
-    fun delegatesSnapshotToCanonicalCodec() {
-        val snapshot = NotesExportSnapshot(
+    fun delegatesCompleteSnapshotToCanonicalCodec() {
+        val snapshot = LifeAgentExportSnapshot(
+            catalogs = CatalogExportSnapshot.Empty,
             events = emptyList(),
             revisions = emptyList(),
         )
-        val source = NotesExportSnapshotSource { snapshot }
-        val useCase = ExportNotesUseCase(
-            source = source,
-            codec = CanonicalNotesExportCodec(),
+        val useCase = ExportLifeAgentUseCase(
+            source = LifeAgentExportSnapshotSource { snapshot },
+            codec = CanonicalLifeAgentExportCodec(),
         )
 
         val bytes = runSuspend { useCase() }
 
         assertEquals(
-            """{"events":[],"format":"life-agent-notes","format_version":"2.0.0","revisions":[]}""",
+            """{"catalogs":{"heads":[],"items":[],"versions":[]},"events":[],"format":"life-agent","format_version":"1.0.0","revisions":[]}""",
             bytes.toString(Charsets.UTF_8),
         )
     }
@@ -40,8 +41,6 @@ class ExportNotesUseCaseTest {
                 }
             },
         )
-        return checkNotNull(outcome) {
-            "The test block unexpectedly suspended"
-        }.getOrThrow()
+        return checkNotNull(outcome) { "The test block unexpectedly suspended" }.getOrThrow()
     }
 }

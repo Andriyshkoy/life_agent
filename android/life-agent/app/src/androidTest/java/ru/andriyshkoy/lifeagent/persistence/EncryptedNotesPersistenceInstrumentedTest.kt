@@ -15,6 +15,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -40,6 +41,15 @@ import ru.andriyshkoy.lifeagent.notes.domain.NoteMutationOutcome
 import ru.andriyshkoy.lifeagent.notes.domain.NoteMutationReceipt
 import ru.andriyshkoy.lifeagent.notes.domain.NoteRecordStatus
 import ru.andriyshkoy.lifeagent.notes.domain.RetractNoteCommand
+import ru.andriyshkoy.lifeagent.wellbeing.data.RoomWellbeingCatalogRepository
+import ru.andriyshkoy.lifeagent.wellbeing.data.RoomWellbeingRepository
+import ru.andriyshkoy.lifeagent.wellbeing.domain.CreateWellbeingCommand
+import ru.andriyshkoy.lifeagent.wellbeing.domain.CreateWellbeingDimensionCommand
+import ru.andriyshkoy.lifeagent.wellbeing.domain.UpdateWellbeingDimensionCommand
+import ru.andriyshkoy.lifeagent.wellbeing.domain.WellbeingMutationDisposition
+import ru.andriyshkoy.lifeagent.wellbeing.domain.WellbeingMutationOutcome
+import ru.andriyshkoy.lifeagent.wellbeing.domain.WellbeingMutationReceipt
+import ru.andriyshkoy.lifeagent.wellbeing.domain.WellbeingOptionDraft
 
 @RunWith(AndroidJUnit4::class)
 class EncryptedNotesPersistenceInstrumentedTest {
@@ -51,6 +61,8 @@ class EncryptedNotesPersistenceInstrumentedTest {
     private var sqlCipherKey: SqlCipherKey? = null
     private var database: LifeAgentDatabase? = null
     private lateinit var repository: RoomNotesRepository
+    private lateinit var wellbeingRepository: RoomWellbeingRepository
+    private lateinit var wellbeingCatalogRepository: RoomWellbeingCatalogRepository
 
     @Before
     fun setUp() {
@@ -235,7 +247,149 @@ class EncryptedNotesPersistenceInstrumentedTest {
     }
 
     @Test
+    fun wellbeingReplayCatalogSnapshotsAndNoteCoexistenceSurviveEncryptedReopen() =
+        runBlocking {
+            val noteCommand = CreateNoteCommand(
+                ids = MutationIds(
+                    operationId = COEXISTENCE_NOTE_OPERATION_ID,
+                    captureId = COEXISTENCE_NOTE_CAPTURE_ID,
+                    eventId = COEXISTENCE_NOTE_EVENT_ID,
+                    revisionId = COEXISTENCE_NOTE_REVISION_ID,
+                ),
+                text = COEXISTENCE_NOTE_SENTINEL,
+                effectiveTime = effectiveTime(20),
+                recordedAt = recordedAt(21),
+            )
+            persisted(repository.create(noteCommand))
+
+            wellbeingCatalogRepository.ensureSeeded(BASE_INSTANT.plusSeconds(22 * 60))
+            assertEquals(
+                DEFAULT_WELLBEING_DIMENSION_COUNT,
+                wellbeingCatalogRepository.observeDimensions().first().size,
+            )
+            val originalDimension = wellbeingCatalogRepository.create(
+                CreateWellbeingDimensionCommand(
+                    dimensionId = WELLBEING_DIMENSION_ID,
+                    catalogVersionId = WELLBEING_CATALOG_VERSION_ONE_ID,
+                    label = WELLBEING_DIMENSION_SENTINEL,
+                    sortOrder = 50,
+                    options = listOf(
+                        WellbeingOptionDraft(
+                            optionId = WELLBEING_OPTION_ID,
+                            label = WELLBEING_OPTION_SENTINEL,
+                            sortOrder = 10,
+                        ),
+                    ),
+                    createdAt = BASE_INSTANT.plusSeconds(23 * 60),
+                ),
+            )
+            val valueSnapshot = originalDimension.snapshot(WELLBEING_OPTION_ID)
+            val command = CreateWellbeingCommand(
+                ids = MutationIds(
+                    operationId = WELLBEING_OPERATION_ID,
+                    captureId = WELLBEING_CAPTURE_ID,
+                    eventId = WELLBEING_EVENT_ID,
+                    revisionId = WELLBEING_REVISION_ID,
+                ),
+                values = listOf(valueSnapshot),
+                comment = WELLBEING_COMMENT_SENTINEL,
+                effectiveTime = effectiveTime(24),
+                recordedAt = recordedAt(25),
+            )
+
+            val committed = persistedWellbeing(wellbeingRepository.create(command))
+            val replayed = persistedWellbeing(wellbeingRepository.create(command))
+            assertEquals(WellbeingMutationDisposition.COMMITTED, committed.disposition)
+            assertEquals(WellbeingMutationDisposition.REPLAYED, replayed.disposition)
+            assertEquals(committed.wellbeing, replayed.wellbeing)
+            assertCounts(
+                captures = 2,
+                events = 2,
+                revisions = 2,
+                parents = 0,
+            )
+
+            val updatedDimension = wellbeingCatalogRepository.update(
+                UpdateWellbeingDimensionCommand(
+                    dimensionId = WELLBEING_DIMENSION_ID,
+                    catalogVersionId = WELLBEING_CATALOG_VERSION_TWO_ID,
+                    expectedCurrentVersionId = WELLBEING_CATALOG_VERSION_ONE_ID,
+                    label = WELLBEING_UPDATED_DIMENSION_SENTINEL,
+                    sortOrder = 50,
+                    active = true,
+                    options = listOf(
+                        WellbeingOptionDraft(
+                            optionId = WELLBEING_OPTION_ID,
+                            label = WELLBEING_UPDATED_OPTION_SENTINEL,
+                            sortOrder = 10,
+                        ),
+                    ),
+                    createdAt = BASE_INSTANT.plusSeconds(26 * 60),
+                ),
+            )
+            assertEquals(2, updatedDimension.version)
+            assertEquals(2, updatedDimension.options.single().version)
+
+            val sensitiveMarkers = arrayOf(
+                COEXISTENCE_NOTE_SENTINEL,
+                WELLBEING_COMMENT_SENTINEL,
+                WELLBEING_DIMENSION_SENTINEL,
+                WELLBEING_OPTION_SENTINEL,
+                WELLBEING_UPDATED_DIMENSION_SENTINEL,
+                WELLBEING_UPDATED_OPTION_SENTINEL,
+                WELLBEING_OPERATION_ID.toString(),
+                WELLBEING_REVISION_ID.toString(),
+            )
+            assertEncryptedArtifacts(*sensitiveMarkers)
+
+            closeStore()
+            assertEncryptedArtifacts(*sensitiveMarkers)
+            openStore()
+
+            assertEquals(
+                COEXISTENCE_NOTE_SENTINEL,
+                requireNotNull(repository.getByEventId(COEXISTENCE_NOTE_EVENT_ID)).text,
+            )
+            val reopenedWellbeing = requireNotNull(
+                wellbeingRepository.getByEventId(WELLBEING_EVENT_ID),
+            )
+            assertEquals(WELLBEING_COMMENT_SENTINEL, reopenedWellbeing.payload.comment)
+            assertEquals(listOf(valueSnapshot), reopenedWellbeing.payload.values)
+            assertEquals(
+                WellbeingMutationDisposition.REPLAYED,
+                persistedWellbeing(wellbeingRepository.create(command)).disposition,
+            )
+            assertEquals(
+                WELLBEING_EVENT_ID,
+                requireNotNull(wellbeingRepository.observeLastCommitted().first()).eventId,
+            )
+
+            val reopenedCatalog = requireNotNull(
+                wellbeingCatalogRepository.getDimension(WELLBEING_DIMENSION_ID),
+            )
+            assertEquals(WELLBEING_UPDATED_DIMENSION_SENTINEL, reopenedCatalog.label)
+            assertEquals(WELLBEING_UPDATED_OPTION_SENTINEL, reopenedCatalog.options.single().label)
+            assertEquals(2, reopenedCatalog.version)
+            assertEquals(2, reopenedCatalog.options.single().version)
+            assertEquals(
+                listOf(1, 2),
+                wellbeingCatalogRepository.exportSnapshot()
+                    .versions
+                    .filter { it.catalogItemId == WELLBEING_DIMENSION_ID }
+                    .map { it.version },
+            )
+            assertCounts(
+                captures = 2,
+                events = 2,
+                revisions = 2,
+                parents = 0,
+            )
+            assertEncryptedArtifacts(*sensitiveMarkers)
+        }
+
+    @Test
     fun currentSchemaContainsOnlyTheElevenLocalTables() {
+        assertEquals(EXPECTED_ROOM_SCHEMA_VERSION, LifeAgentDatabase.VERSION)
         val db = requireDatabase().openHelper.writableDatabase
         val localTables = db.query(
             """
@@ -257,6 +411,15 @@ class EncryptedNotesPersistenceInstrumentedTest {
             db.query("PRAGMA user_version").use { cursor ->
                 check(cursor.moveToFirst())
                 cursor.getInt(0)
+            },
+        )
+        assertEquals(
+            ROOM_SCHEMA_IDENTITY_HASH,
+            db.query(
+                "SELECT identity_hash FROM room_master_table WHERE id = 42",
+            ).use { cursor ->
+                check(cursor.moveToFirst())
+                cursor.getString(0)
             },
         )
 
@@ -359,7 +522,7 @@ class EncryptedNotesPersistenceInstrumentedTest {
         assertEquals(LifeAgentDatabase.VERSION, pragmaUserVersion(db))
         assertEquals(0, applicationObjectCount(db, "local_legacy_probe"))
         assertEquals(0, applicationObjectCount(db, "sync_*"))
-        val counts = runBlocking { requireDatabase().noteMutationDao().tableCounts() }
+        val counts = runBlocking { requireDatabase().lifeEventMutationDao().tableCounts() }
         assertEquals(0, counts.captures)
         assertEquals(0, counts.events)
         assertEquals(0, counts.revisions)
@@ -398,6 +561,13 @@ class EncryptedNotesPersistenceInstrumentedTest {
             database = requireDatabase(),
             collectorVersion = "local-instrumented-test",
         )
+        wellbeingRepository = RoomWellbeingRepository(
+            database = requireDatabase(),
+            collectorVersion = "local-instrumented-test",
+        )
+        wellbeingCatalogRepository = RoomWellbeingCatalogRepository(
+            database = requireDatabase(),
+        )
         requireDatabase().openHelper.writableDatabase
     }
 
@@ -424,15 +594,17 @@ class EncryptedNotesPersistenceInstrumentedTest {
 
     private suspend fun assertCounts(
         captures: Int,
+        events: Int = 1,
         revisions: Int,
         parents: Int,
+        heads: Int = events,
     ) {
-        val counts = requireDatabase().noteMutationDao().tableCounts()
+        val counts = requireDatabase().lifeEventMutationDao().tableCounts()
         assertEquals(captures, counts.captures)
-        assertEquals(1, counts.events)
+        assertEquals(events, counts.events)
         assertEquals(revisions, counts.revisions)
         assertEquals(parents, counts.parents)
-        assertEquals(1, counts.heads)
+        assertEquals(heads, counts.heads)
     }
 
     private suspend fun assertParent(
@@ -499,14 +671,15 @@ class EncryptedNotesPersistenceInstrumentedTest {
             }
         }
 
-    private fun assertEncryptedArtifacts() {
+    private fun assertEncryptedArtifacts(vararg additionalMarkers: String) {
         val databaseFile = context.getDatabasePath(databaseName)
         assertTrue(databaseFile.isFile)
-        val encodings = listOf(
+        val markers = listOf(
             PRODUCTION_NOTE_SENTINEL,
             PRODUCTION_OPERATION_ID.toString(),
             PRODUCTION_REVISION_ID.toString(),
-        ).flatMap { marker ->
+        ) + additionalMarkers
+        val encodings = markers.flatMap { marker ->
             listOf(
                 marker.toByteArray(StandardCharsets.UTF_8),
                 marker.toByteArray(StandardCharsets.UTF_16LE),
@@ -538,6 +711,12 @@ class EncryptedNotesPersistenceInstrumentedTest {
         (outcome as? NoteMutationOutcome.Persisted)?.receipt
             ?: throw AssertionError("Expected a persisted note mutation, got $outcome")
 
+    private fun persistedWellbeing(
+        outcome: WellbeingMutationOutcome,
+    ): WellbeingMutationReceipt =
+        (outcome as? WellbeingMutationOutcome.Persisted)?.receipt
+            ?: throw AssertionError("Expected a persisted wellbeing mutation, got $outcome")
+
     private fun mutationIds(
         operation: Long,
         capture: Long,
@@ -567,6 +746,19 @@ class EncryptedNotesPersistenceInstrumentedTest {
         const val CONCURRENT_RETRY_COUNT = 24
         const val PRODUCTION_NOTE_SENTINEL =
             "LIFE_AGENT_LOCAL_ROOM_SENTINEL_9F24A8C1_ёж"
+        const val COEXISTENCE_NOTE_SENTINEL =
+            "LIFE_AGENT_NOTE_COEXISTENCE_SENTINEL_71C4_ёж"
+        const val WELLBEING_COMMENT_SENTINEL =
+            "LIFE_AGENT_WELLBEING_COMMENT_SENTINEL_71C4_ёж"
+        const val WELLBEING_DIMENSION_SENTINEL = "Тестовое измерение 71C4"
+        const val WELLBEING_OPTION_SENTINEL = "Тестовый вариант 71C4"
+        const val WELLBEING_UPDATED_DIMENSION_SENTINEL =
+            "Изменённое измерение 71C4"
+        const val WELLBEING_UPDATED_OPTION_SENTINEL =
+            "Изменённый вариант 71C4"
+        const val DEFAULT_WELLBEING_DIMENSION_COUNT = 4
+        const val EXPECTED_ROOM_SCHEMA_VERSION = 7
+        const val ROOM_SCHEMA_IDENTITY_HASH = "a87a7ffa630566fd3067751d141b80f1"
         val DATABASE_ARTIFACT_SUFFIXES = listOf("", "-wal", "-shm")
         val BASE_INSTANT: Instant = Instant.parse("2026-01-15T03:00:00Z")
         val TEST_ZONE: ZoneId = ZoneId.of("Asia/Novosibirsk")
@@ -580,6 +772,30 @@ class EncryptedNotesPersistenceInstrumentedTest {
             UUID.fromString("2779908e-dc69-4237-8ecf-5c16d57284c9")
         val PRODUCTION_REVISION_ID: UUID =
             UUID.fromString("f1c935ee-b624-476f-b7a8-3404096b9e68")
+        val COEXISTENCE_NOTE_OPERATION_ID: UUID =
+            UUID.fromString("404e9553-9f42-45cc-a319-f07f4136f101")
+        val COEXISTENCE_NOTE_CAPTURE_ID: UUID =
+            UUID.fromString("404e9553-9f42-45cc-a319-f07f4136f102")
+        val COEXISTENCE_NOTE_EVENT_ID: UUID =
+            UUID.fromString("404e9553-9f42-45cc-a319-f07f4136f103")
+        val COEXISTENCE_NOTE_REVISION_ID: UUID =
+            UUID.fromString("404e9553-9f42-45cc-a319-f07f4136f104")
+        val WELLBEING_DIMENSION_ID: UUID =
+            UUID.fromString("71c4c7ca-8a06-4659-8704-5f89dc1e0101")
+        val WELLBEING_OPTION_ID: UUID =
+            UUID.fromString("71c4c7ca-8a06-4659-8704-5f89dc1e0102")
+        val WELLBEING_CATALOG_VERSION_ONE_ID: UUID =
+            UUID.fromString("71c4c7ca-8a06-4659-8704-5f89dc1e0103")
+        val WELLBEING_CATALOG_VERSION_TWO_ID: UUID =
+            UUID.fromString("71c4c7ca-8a06-4659-8704-5f89dc1e0104")
+        val WELLBEING_OPERATION_ID: UUID =
+            UUID.fromString("71c4c7ca-8a06-4659-8704-5f89dc1e0201")
+        val WELLBEING_CAPTURE_ID: UUID =
+            UUID.fromString("71c4c7ca-8a06-4659-8704-5f89dc1e0202")
+        val WELLBEING_EVENT_ID: UUID =
+            UUID.fromString("71c4c7ca-8a06-4659-8704-5f89dc1e0203")
+        val WELLBEING_REVISION_ID: UUID =
+            UUID.fromString("71c4c7ca-8a06-4659-8704-5f89dc1e0204")
         val EXPECTED_LOCAL_TABLES = listOf(
             "local_capture",
             "local_catalog_head",

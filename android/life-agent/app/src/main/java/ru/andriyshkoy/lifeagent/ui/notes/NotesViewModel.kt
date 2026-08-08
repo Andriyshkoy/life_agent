@@ -32,6 +32,11 @@ import ru.andriyshkoy.lifeagent.notes.domain.NoteTextPolicy
 import ru.andriyshkoy.lifeagent.notes.domain.NotesRepository
 import ru.andriyshkoy.lifeagent.notes.domain.RetractNoteCommand
 import ru.andriyshkoy.lifeagent.notes.domain.StaleNoteRevisionException
+import ru.andriyshkoy.lifeagent.ui.time.EventTimestampChoice
+import ru.andriyshkoy.lifeagent.ui.time.EventTimestampResolution
+import ru.andriyshkoy.lifeagent.ui.time.EventTimestampUiState
+import ru.andriyshkoy.lifeagent.ui.time.errorMessage
+import ru.andriyshkoy.lifeagent.ui.time.resolveEventTimestamp
 
 class NotesViewModel(
     private val repository: NotesRepository,
@@ -174,7 +179,7 @@ class NotesViewModel(
             it.copy(
                 editor = NoteEditorUiState(
                     mode = NoteEditorMode.Create,
-                    timestamp = NoteTimestampUiState(
+                    timestamp = EventTimestampUiState(
                         defaultTimezoneId = zoneIdProvider().id,
                     ),
                     persistenceAvailable = true,
@@ -220,8 +225,8 @@ class NotesViewModel(
                         editor = NoteEditorUiState(
                             mode = NoteEditorMode.Correct,
                             text = note.text,
-                            timestamp = NoteTimestampUiState(
-                                choice = NoteTimestampChoice.Custom(
+                            timestamp = EventTimestampUiState(
+                                choice = EventTimestampChoice.Custom(
                                     localDateTime = note.effectiveTime.originalLocal,
                                     zoneId = note.effectiveTime.timezoneId.id,
                                     preferredOffsetSeconds = note.effectiveTime.offset.totalSeconds,
@@ -267,10 +272,10 @@ class NotesViewModel(
         }
     }
 
-    private fun selectTimestamp(choice: NoteTimestampChoice) {
+    private fun selectTimestamp(choice: EventTimestampChoice) {
         val editor = mutableState.value.editor ?: return
         if (editor.isSubmitting || editor.retryAvailable) return
-        val resolution = resolveNoteTimestamp(
+        val resolution = resolveEventTimestamp(
             choice = choice,
             now = clock.instant(),
             defaultZoneId = zoneIdProvider(),
@@ -282,7 +287,7 @@ class NotesViewModel(
                     defaultTimezoneId = zoneIdProvider().id,
                     pickerVisible = false,
                     error = resolution.errorMessage(),
-                    overlapOffsetsSeconds = (resolution as? NoteTimestampResolution.Overlap)
+                    overlapOffsetsSeconds = (resolution as? EventTimestampResolution.Overlap)
                         ?.offsets
                         ?.map { it.totalSeconds }
                         .orEmpty(),
@@ -295,7 +300,7 @@ class NotesViewModel(
     private fun selectOverlapOffset(offsetSeconds: Int) {
         val choice = mutableState.value.editor
             ?.timestamp
-            ?.choice as? NoteTimestampChoice.Custom ?: return
+            ?.choice as? EventTimestampChoice.Custom ?: return
         selectTimestamp(choice.copy(preferredOffsetSeconds = offsetSeconds))
     }
 
@@ -309,18 +314,18 @@ class NotesViewModel(
         }
 
         val frozenNow = clock.instant()
-        val resolution = resolveNoteTimestamp(
+        val resolution = resolveEventTimestamp(
             choice = editor.timestamp.choice,
             now = frozenNow,
             defaultZoneId = zoneIdProvider(),
         )
-        if (resolution !is NoteTimestampResolution.Valid) {
+        if (resolution !is EventTimestampResolution.Valid) {
             updateEditor {
                 it.copy(
                     timestamp = it.timestamp.copy(
                         error = resolution.errorMessage(),
                         overlapOffsetsSeconds =
-                            (resolution as? NoteTimestampResolution.Overlap)
+                            (resolution as? EventTimestampResolution.Overlap)
                                 ?.offsets
                                 ?.map { it.totalSeconds }
                                 .orEmpty(),
@@ -755,6 +760,7 @@ private fun NoteSummary.toUi(): NoteSummaryUi = NoteSummaryUi(
     revisionId = revisionId,
     text = text,
     effectiveAt = effectiveTime.effectiveAt,
+    recordedAt = recordedAt.toInstant(),
     originalLocalDateTime = effectiveTime.originalLocal,
     timezoneId = effectiveTime.timezoneId.id,
     offsetSeconds = effectiveTime.offset.totalSeconds,
@@ -766,6 +772,7 @@ private fun NoteSnapshot.toUi(): NoteSummaryUi = NoteSummaryUi(
     revisionId = revisionId,
     text = text,
     effectiveAt = effectiveTime.effectiveAt,
+    recordedAt = recordedAt.toInstant(),
     originalLocalDateTime = effectiveTime.originalLocal,
     timezoneId = effectiveTime.timezoneId.id,
     offsetSeconds = effectiveTime.offset.totalSeconds,

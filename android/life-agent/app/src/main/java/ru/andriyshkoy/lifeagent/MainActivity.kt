@@ -32,6 +32,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import ru.andriyshkoy.lifeagent.data.export.LIFE_AGENT_EXPORT_FILENAME
 import ru.andriyshkoy.lifeagent.export.ContentResolverTruncatingOutputFactory
 import ru.andriyshkoy.lifeagent.export.ExportDeliveryResult
 import ru.andriyshkoy.lifeagent.export.ExportUiEvent
@@ -43,6 +44,8 @@ import ru.andriyshkoy.lifeagent.ui.LifeAgentApp
 import ru.andriyshkoy.lifeagent.ui.notes.LastNoteUiState
 import ru.andriyshkoy.lifeagent.ui.notes.NotesViewModel
 import ru.andriyshkoy.lifeagent.ui.theme.LifeAgentTheme
+import ru.andriyshkoy.lifeagent.ui.wellbeing.LastWellbeingUiState
+import ru.andriyshkoy.lifeagent.ui.wellbeing.WellbeingViewModel
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -114,6 +117,18 @@ private fun ReadyLifeAgentApp(
         }
     }
     val notesViewModel: NotesViewModel = viewModel(factory = notesFactory)
+    val wellbeingFactory = remember(container) {
+        viewModelFactory {
+            initializer {
+                WellbeingViewModel(
+                    repository = container.wellbeingRepository,
+                    catalogRepository = container.wellbeingCatalogRepository,
+                    savedStateHandle = createSavedStateHandle(),
+                )
+            }
+        }
+    }
+    val wellbeingViewModel: WellbeingViewModel = viewModel(factory = wellbeingFactory)
     val scope = rememberCoroutineScope()
 
     val preferences = remember(activity) {
@@ -139,7 +154,7 @@ private fun ReadyLifeAgentApp(
             try {
                 val result = withContext(Dispatchers.IO) {
                     deliverExportDocument(
-                        generate = { container.exportNotes() },
+                        generate = { container.exportLifeAgent() },
                         outputFactory = ContentResolverTruncatingOutputFactory(
                             contentResolver = activity.contentResolver,
                             destination = destination,
@@ -162,18 +177,19 @@ private fun ReadyLifeAgentApp(
 
     LifeAgentApp(
         notesController = notesViewModel,
+        wellbeingController = wellbeingViewModel,
         showFirstRun = showFirstRun,
         onContinueLocally = {
             preferences.edit().putBoolean(FIRST_RUN_COMPLETE, true).apply()
             showFirstRun = false
         },
-        onExportNotes = {
+        onExportLifeAgent = {
             val nextPhase = exportPhase.after(ExportUiEvent.ChooseRequested)
             if (nextPhase == exportPhase) return@LifeAgentApp
 
             exportPhase = nextPhase
             try {
-                createDocument.launch(EXPORT_FILENAME)
+                createDocument.launch(LIFE_AGENT_EXPORT_FILENAME)
             } catch (cancelled: CancellationException) {
                 exportPhase = exportPhase.after(ExportUiEvent.LaunchFailed)
                 throw cancelled
@@ -205,6 +221,7 @@ private fun UnavailableLifeAgentApp() {
     }
     LifeAgentApp(
         fallbackLastCommitted = LastNoteUiState.Failed,
+        fallbackLastWellbeing = LastWellbeingUiState.Failed,
         externalMessage = externalMessage,
         onExternalMessageConsumed = { consumedId ->
             if (externalMessage?.id == consumedId) {
@@ -217,7 +234,7 @@ private fun UnavailableLifeAgentApp() {
 private fun ExportDeliveryResult.toUserMessage(): AppSnackbarMessage =
     when (this) {
         ExportDeliveryResult.Success ->
-            appMessage("Экспорт заметок сохранён")
+            appMessage("Экспорт сохранён")
 
         ExportDeliveryResult.GenerationFailed ->
             appMessage(
@@ -262,4 +279,3 @@ private sealed interface StorageState {
 private const val UI_PREFERENCES = "life-agent-ui"
 private const val FIRST_RUN_COMPLETE = "first-run-local-mode-complete"
 private const val JSON_MIME_TYPE = "application/json"
-private const val EXPORT_FILENAME = "life-agent-notes.json"

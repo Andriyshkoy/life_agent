@@ -25,14 +25,16 @@ EXAMPLE_DIR = ROOT / "examples"
 EXPECTED_SCHEMA_FILES = {
     "capture-envelope.schema.json",
     "event-payloads.schema.json",
+    "life-agent-export.schema.json",
     "life-event.schema.json",
-    "notes-export.schema.json",
 }
 EXPECTED_EXAMPLE_FILES = {
     "capture-note.json",
+    "capture-wellbeing.json",
+    "life-agent-export.canonical.sha256",
+    "life-agent-export.json",
     "life-event-note.json",
-    "notes-export.canonical.sha256",
-    "notes-export.json",
+    "life-event-wellbeing.json",
 }
 
 SAFE_INTEGER_MAX = 9_007_199_254_740_991
@@ -171,8 +173,8 @@ def sha256(value: Any) -> str:
     return hashlib.sha256(canonical_json_bytes(value)).hexdigest()
 
 
-def note_revision_content_sha256(revision: dict[str, Any]) -> str | None:
-    """Mirror the Android codec's immutable linear note-revision digest."""
+def revision_content_sha256(revision: dict[str, Any]) -> str | None:
+    """Mirror the Android codecs' immutable linear event-revision digest."""
 
     parents = revision["revision"]["parents"]
     if len(parents) > 1:
@@ -362,12 +364,12 @@ def _event_semantic_errors(event: dict[str, Any]) -> list[str]:
                 errors.append("sleep stages overlap or are out of order")
             previous_end = stage_end
 
-    if event["kind"] == "note":
-        expected_digest = note_revision_content_sha256(event)
+    if event["kind"] in {"note", "wellbeing"}:
+        expected_digest = revision_content_sha256(event)
         if expected_digest is None:
-            errors.append("note revision is not linear")
+            errors.append("event revision is not linear")
         elif event["revision"]["content_sha256"] != expected_digest:
-            errors.append("note revision content_sha256 mismatch")
+            errors.append("event revision content_sha256 mismatch")
 
     return errors
 
@@ -506,7 +508,7 @@ def capture_event_semantic_errors(
 
     content = capture["content"]
     if content.get("kind") != "structured":
-        errors.append("local note capture must be structured")
+        errors.append("local manual capture must be structured")
     elif content.get("record_type") != event["kind"]:
         errors.append("capture record_type differs from event kind")
     elif content.get("payload") != event["payload"]:
@@ -514,10 +516,153 @@ def capture_event_semantic_errors(
     return errors
 
 
-def notes_export_semantic_errors(document: dict[str, Any]) -> list[str]:
-    """Validate the complete, deterministic linear revision graph."""
+def life_agent_export_semantic_errors(document: dict[str, Any]) -> list[str]:
+    """Validate catalog history, snapshots, and the complete linear event graph."""
 
+    try:
+        return _life_agent_export_semantic_errors(document)
+    except (
+        CanonicalValueError,
+        KeyError,
+        OverflowError,
+        RecursionError,
+        TypeError,
+        ValueError,
+        ZoneInfoNotFoundError,
+    ):
+        return ["export structured value failed validation safely"]
+
+
+def _life_agent_export_semantic_errors(document: dict[str, Any]) -> list[str]:
     errors: list[str] = []
+    catalogs = document["catalogs"]
+
+    item_order = [item["catalog_item_id"] for item in catalogs["items"]]
+    if item_order != sorted(item_order):
+        errors.append("catalog items are not sorted by catalog_item_id")
+    version_order = [
+        (version["catalog_item_id"], version["version_no"], version["catalog_version_id"])
+        for version in catalogs["versions"]
+    ]
+    if version_order != sorted(version_order):
+        errors.append("catalog versions are not in canonical item/version order")
+    head_order = [head["catalog_item_id"] for head in catalogs["heads"]]
+    if head_order != sorted(head_order):
+        errors.append("catalog heads are not sorted by catalog_item_id")
+
+    items: dict[str, dict[str, Any]] = {}
+    catalog_owner_ids: set[str] = set()
+    for item in catalogs["items"]:
+        item_id = item["catalog_item_id"]
+        if item_id in items:
+            errors.append("duplicate catalog_item_id")
+        items[item_id] = item
+        catalog_owner_ids.add(item["local_owner_id"])
+        parse_instant(item["created_at"])
+    if len(catalog_owner_ids) > 1:
+        errors.append("catalog items mix local owner namespaces")
+
+    versions_by_id: dict[str, dict[str, Any]] = {}
+    versions_by_item: dict[str, list[dict[str, Any]]] = {}
+    option_identity_owner: dict[str, str] = {}
+    option_version_content: dict[tuple[str, int], tuple[Any, ...]] = {}
+    option_ids: set[str] = set()
+    for version in catalogs["versions"]:
+        version_id = version["catalog_version_id"]
+        item_id = version["catalog_item_id"]
+        if version_id in versions_by_id:
+            errors.append("duplicate catalog_version_id")
+        versions_by_id[version_id] = version
+        versions_by_item.setdefault(item_id, []).append(version)
+        if item_id not in items:
+            errors.append("catalog version belongs to an unknown item")
+        parse_instant(version["created_at"])
+        if sha256(version["payload"]) != version["content_sha256"]:
+            errors.append("catalog version content_sha256 mismatch")
+
+        payload = version["payload"]
+        if payload["active"] and not any(
+            option["active"] for option in payload["options"]
+        ):
+            errors.append("active catalog dimension has no active option")
+        seen_options: set[str] = set()
+        active_labels: set[str] = set()
+        option_order = [
+            (option["sort_order"], option["option_id"])
+            for option in payload["options"]
+        ]
+        if option_order != sorted(option_order):
+            errors.append("catalog options are not in canonical sort order")
+        for option in payload["options"]:
+            option_id = option["option_id"]
+            option_ids.add(option_id)
+            if option_id in seen_options:
+                errors.append("catalog dimension repeats an option_id")
+            seen_options.add(option_id)
+            previous_owner = option_identity_owner.setdefault(option_id, item_id)
+            if previous_owner != item_id:
+                errors.append("option_id belongs to more than one dimension")
+            content = (
+                item_id,
+                option["active"],
+                option["label"],
+                option["sort_order"],
+            )
+            version_key = (option_id, option["option_version"])
+            previous_content = option_version_content.setdefault(version_key, content)
+            if previous_content != content:
+                errors.append("one option version has conflicting immutable content")
+            if option["active"]:
+                folded_label = option["label"].casefold()
+                if folded_label in active_labels:
+                    errors.append("active option labels repeat within a dimension")
+                active_labels.add(folded_label)
+
+    for item_id, item_versions in versions_by_item.items():
+        ordered = sorted(
+            item_versions,
+            key=lambda value: (value["version_no"], value["catalog_version_id"]),
+        )
+        if [value["version_no"] for value in ordered] != list(
+            range(1, len(ordered) + 1)
+        ):
+            errors.append("catalog version_no sequence is not contiguous")
+        last_option_versions: dict[str, int] = {}
+        for value in ordered:
+            for option in value["payload"]["options"]:
+                prior = last_option_versions.get(option["option_id"])
+                if prior is not None and option["option_version"] < prior:
+                    errors.append("option_version decreases across catalog history")
+                last_option_versions[option["option_id"]] = option["option_version"]
+
+    heads: dict[str, str] = {}
+    for head in catalogs["heads"]:
+        item_id = head["catalog_item_id"]
+        version_id = head["current_version_id"]
+        if item_id in heads:
+            errors.append("duplicate catalog head")
+        heads[item_id] = version_id
+        parse_instant(head["updated_at"])
+        current = versions_by_id.get(version_id)
+        if current is None:
+            errors.append("catalog current_version_id does not resolve")
+        elif current["catalog_item_id"] != item_id:
+            errors.append("catalog head selects another item's version")
+        item_versions = versions_by_item.get(item_id, [])
+        if item_versions and version_id != max(
+            item_versions,
+            key=lambda value: (value["version_no"], value["catalog_version_id"]),
+        )["catalog_version_id"]:
+            errors.append("catalog head does not select the latest version")
+    for item_id in items:
+        if item_id not in versions_by_item:
+            errors.append("catalog item has no versions")
+        if item_id not in heads:
+            errors.append("catalog item has no head")
+    for item_id in set(versions_by_item) | set(heads):
+        if item_id not in items:
+            errors.append("catalog history references an unknown item")
+
     pointers: dict[str, str] = {}
     pointer_order = [pointer["event_id"] for pointer in document["events"]]
     if pointer_order != sorted(pointer_order):
@@ -533,13 +678,17 @@ def notes_export_semantic_errors(document: dict[str, Any]) -> list[str]:
     operation_ids: set[str] = set()
     capture_ids: set[str] = set()
     owner_namespace: tuple[str, str] | None = None
-    order = [
+    revision_order = [
         (revision["event_id"], revision["revision_no"], revision["revision_id"])
         for revision in document["revisions"]
     ]
-    if order != sorted(order):
+    if revision_order != sorted(revision_order):
         errors.append("revisions are not in canonical event/revision order")
 
+    catalog_versions_by_number = {
+        (version["catalog_item_id"], version["version_no"]): version
+        for version in catalogs["versions"]
+    }
     for revision in document["revisions"]:
         revision_id = revision["revision_id"]
         event_id = revision["event_id"]
@@ -563,15 +712,55 @@ def notes_export_semantic_errors(document: dict[str, Any]) -> list[str]:
         elif owner_namespace != namespace:
             errors.append("export mixes local owner namespaces")
 
-        if revision["kind"] != "note":
-            errors.append("export contains a non-note revision")
+        if revision["kind"] not in {"note", "wellbeing"}:
+            errors.append("export contains an unimplemented event kind")
         errors.extend(event_semantic_errors(revision))
+
+        if revision["kind"] == "wellbeing":
+            for value in revision["payload"]["values"]:
+                catalog_version = catalog_versions_by_number.get(
+                    (value["dimension_id"], value["dimension_version"])
+                )
+                if catalog_version is None:
+                    errors.append("wellbeing dimension snapshot does not resolve")
+                    continue
+                payload = catalog_version["payload"]
+                if value["dimension_label_snapshot"] != payload["label"]:
+                    errors.append("wellbeing dimension label snapshot differs from catalog")
+                option = next(
+                    (
+                        candidate
+                        for candidate in payload["options"]
+                        if candidate["option_id"] == value["option_id"]
+                        and candidate["option_version"] == value["option_version"]
+                    ),
+                    None,
+                )
+                if option is None:
+                    errors.append("wellbeing option snapshot is not a member of dimension")
+                elif (
+                    value["option_label_snapshot"] != option["label"]
+                    or value["option_sort_order_snapshot"] != option["sort_order"]
+                ):
+                    errors.append("wellbeing option snapshot differs from catalog")
+
+    if owner_namespace is not None and catalog_owner_ids not in (
+        set(),
+        {owner_namespace[1]},
+    ):
+        errors.append("catalogs and events do not share one local owner")
 
     for event_id, revisions in revisions_by_event.items():
         if event_id not in pointers:
             errors.append("orphan revisions for undeclared event")
             continue
-        ordered = sorted(revisions, key=lambda revision: revision["revision_no"])
+        kinds = {revision["kind"] for revision in revisions}
+        if len(kinds) != 1:
+            errors.append("one event contains revisions of different kinds")
+        ordered = sorted(
+            revisions,
+            key=lambda revision: (revision["revision_no"], revision["revision_id"]),
+        )
         if [revision["revision_no"] for revision in ordered] != list(
             range(1, len(ordered) + 1)
         ):
@@ -581,12 +770,11 @@ def notes_export_semantic_errors(document: dict[str, Any]) -> list[str]:
             if index == 0:
                 if parents:
                     errors.append("root revision has a parent")
-            else:
-                if (
-                    len(parents) != 1
-                    or parents[0]["revision_id"] != ordered[index - 1]["revision_id"]
-                ):
-                    errors.append("revision does not supersede its immediate predecessor")
+            elif (
+                len(parents) != 1
+                or parents[0]["revision_id"] != ordered[index - 1]["revision_id"]
+            ):
+                errors.append("revision does not supersede its immediate predecessor")
             for parent in parents:
                 parent_revision = revisions_by_id.get(parent["revision_id"])
                 if parent_revision is None:
@@ -604,6 +792,22 @@ def notes_export_semantic_errors(document: dict[str, Any]) -> list[str]:
             errors.append("current_revision_id belongs to another event")
         if event_id not in revisions_by_event:
             errors.append("event pointer has no revisions")
+
+    identity_namespaces = {
+        "catalog_item_id": set(items),
+        "catalog_version_id": set(versions_by_id),
+        "option_id": option_ids,
+        "event_id": set(pointers),
+        "revision_id": set(revisions_by_id),
+        "capture_id": capture_ids,
+        "operation_id": operation_ids,
+    }
+    names = sorted(identity_namespaces)
+    for index, left in enumerate(names):
+        for right in names[index + 1 :]:
+            if identity_namespaces[left] & identity_namespaces[right]:
+                errors.append(f"global IDs collide between {left} and {right}")
+
     return sorted(set(errors))
 
 
@@ -698,14 +902,18 @@ def main() -> int:
     }
     validators = build_validators(schemas)
 
-    capture = load_json(EXAMPLE_DIR / "capture-note.json")
-    event = load_json(EXAMPLE_DIR / "life-event-note.json")
-    notes_export = load_json(EXAMPLE_DIR / "notes-export.json")
+    capture_note = load_json(EXAMPLE_DIR / "capture-note.json")
+    capture_wellbeing = load_json(EXAMPLE_DIR / "capture-wellbeing.json")
+    event_note = load_json(EXAMPLE_DIR / "life-event-note.json")
+    event_wellbeing = load_json(EXAMPLE_DIR / "life-event-wellbeing.json")
+    life_export = load_json(EXAMPLE_DIR / "life-agent-export.json")
 
     fixture_contracts = (
-        ("capture-note", "capture-envelope.schema.json", capture),
-        ("life-event-note", "life-event.schema.json", event),
-        ("notes-export", "notes-export.schema.json", notes_export),
+        ("capture-note", "capture-envelope.schema.json", capture_note),
+        ("capture-wellbeing", "capture-envelope.schema.json", capture_wellbeing),
+        ("life-event-note", "life-event.schema.json", event_note),
+        ("life-event-wellbeing", "life-event.schema.json", event_wellbeing),
+        ("life-agent-export", "life-agent-export.schema.json", life_export),
     )
     for label, schema_name, fixture in fixture_contracts:
         assert_no_errors(
@@ -713,31 +921,38 @@ def main() -> int:
             schema_error_summary(validators[schema_name], fixture),
         )
 
-    assert_no_errors("capture semantics", capture_semantic_errors(capture))
-    assert_no_errors("event semantics", event_semantic_errors(event))
-    assert_no_errors(
-        "capture/event semantics",
-        capture_event_semantic_errors(capture, event),
-    )
-    assert_no_errors(
-        "notes export semantics",
-        notes_export_semantic_errors(notes_export),
-    )
+    for kind, capture, event in (
+        ("note", capture_note, event_note),
+        ("wellbeing", capture_wellbeing, event_wellbeing),
+    ):
+        assert_no_errors(f"{kind} capture semantics", capture_semantic_errors(capture))
+        assert_no_errors(f"{kind} event semantics", event_semantic_errors(event))
+        assert_no_errors(
+            f"{kind} capture/event semantics",
+            capture_event_semantic_errors(capture, event),
+        )
+    assert_no_errors("life export semantics", life_agent_export_semantic_errors(life_export))
     golden_text = (
-        EXAMPLE_DIR / "notes-export.canonical.sha256"
+        EXAMPLE_DIR / "life-agent-export.canonical.sha256"
     ).read_text(encoding="ascii").strip()
     expected_digest, separator, expected_filename = golden_text.partition("  ")
-    if separator != "  " or expected_filename != "notes-export.json":
-        raise AssertionError("notes export golden has a noncanonical line format")
-    if expected_digest != sha256(notes_export):
-        raise AssertionError("notes export canonical digest mismatch")
+    if separator != "  " or expected_filename != "life-agent-export.json":
+        raise AssertionError("life export golden has a noncanonical line format")
+    if expected_digest != sha256(life_export):
+        raise AssertionError("life export canonical digest mismatch")
 
-    if capture["schema_version"] != "5.0.0":
+    if any(
+        capture["schema_version"] != "5.0.0"
+        for capture in (capture_note, capture_wellbeing)
+    ):
         raise AssertionError("capture fixture is not schema v5")
-    if event["schema_version"] != "5.0.0":
+    if any(
+        event["schema_version"] != "5.0.0"
+        for event in (event_note, event_wellbeing)
+    ):
         raise AssertionError("event fixture is not schema v5")
-    if notes_export["format_version"] != "2.0.0":
-        raise AssertionError("notes export fixture is not format v2")
+    if life_export["format_version"] != "1.0.0":
+        raise AssertionError("life export fixture is not format v1")
 
     expect_strict_json_rejection("duplicate key", '{"a":1,"a":2}')
     expect_strict_json_rejection("non-finite number", '{"a":NaN}')
@@ -751,7 +966,10 @@ def main() -> int:
 
     capture_validator = validators["capture-envelope.schema.json"]
     event_validator = validators["life-event.schema.json"]
-    export_validator = validators["notes-export.schema.json"]
+    export_validator = validators["life-agent-export.schema.json"]
+
+    capture = capture_note
+    event = event_note
 
     stale_capture_state = copy.deepcopy(capture)
     stale_capture_state["persistence_state"] = "local_pending"
@@ -783,8 +1001,8 @@ def main() -> int:
     old_event_version = copy.deepcopy(event)
     old_event_version["schema_version"] = "4.0.0"
     assert_schema_rejects("old event version", event_validator, old_event_version)
-    old_export_version = copy.deepcopy(notes_export)
-    old_export_version["format_version"] = "1.0.0"
+    old_export_version = copy.deepcopy(life_export)
+    old_export_version["format_version"] = "2.0.0"
     assert_schema_rejects("old export version", export_validator, old_export_version)
 
     merge_revision = copy.deepcopy(event)
@@ -830,19 +1048,56 @@ def main() -> int:
     if not capture_event_semantic_errors(capture, bad_cross_event):
         raise AssertionError("capture/event validation accepted mixed owner namespaces")
 
-    bad_export_pointer = copy.deepcopy(notes_export)
+    bad_wellbeing_digest = copy.deepcopy(event_wellbeing)
+    bad_wellbeing_digest["revision"]["content_sha256"] = "0" * 64
+    assert_semantic_rejects(
+        "wellbeing event digest",
+        event_semantic_errors,
+        bad_wellbeing_digest,
+    )
+    repeated_dimension = copy.deepcopy(event_wellbeing)
+    repeated_dimension["payload"]["values"].append(
+        copy.deepcopy(repeated_dimension["payload"]["values"][0])
+    )
+    assert_semantic_rejects(
+        "repeated wellbeing dimension",
+        event_semantic_errors,
+        repeated_dimension,
+    )
+
+    bad_catalog_digest = copy.deepcopy(life_export)
+    bad_catalog_digest["catalogs"]["versions"][0]["content_sha256"] = "0" * 64
+    assert_semantic_rejects(
+        "catalog digest",
+        life_agent_export_semantic_errors,
+        bad_catalog_digest,
+    )
+    bad_option_membership = copy.deepcopy(life_export)
+    bad_option_membership["revisions"][1]["payload"]["values"][0]["option_id"] = (
+        "62000000-0000-4000-8000-000000000099"
+    )
+    bad_option_membership["revisions"][1]["revision"]["content_sha256"] = (
+        revision_content_sha256(bad_option_membership["revisions"][1])
+    )
+    assert_semantic_rejects(
+        "wellbeing option membership",
+        life_agent_export_semantic_errors,
+        bad_option_membership,
+    )
+
+    bad_export_pointer = copy.deepcopy(life_export)
     bad_export_pointer["events"][0]["current_revision_id"] = (
         "30000000-0000-4000-8000-000000000099"
     )
     assert_semantic_rejects(
         "export unresolved current pointer",
-        notes_export_semantic_errors,
+        life_agent_export_semantic_errors,
         bad_export_pointer,
     )
 
     print(
-        "Validated 4 local schemas, 3 JSON fixtures, "
-        "capture/event provenance, linear revisions, export graph and golden hash."
+        "Validated 4 local schemas, 5 JSON fixtures, catalog history, "
+        "capture/event provenance, mixed revision graph and golden hash."
     )
     return 0
 

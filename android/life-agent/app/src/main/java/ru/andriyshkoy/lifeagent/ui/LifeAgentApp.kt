@@ -50,6 +50,8 @@ import ru.andriyshkoy.lifeagent.ui.screens.PrivacyScreen
 import ru.andriyshkoy.lifeagent.ui.screens.SettingsScreen
 import ru.andriyshkoy.lifeagent.ui.screens.TimeZoneScreen
 import ru.andriyshkoy.lifeagent.ui.screens.WellbeingCaptureScreen
+import ru.andriyshkoy.lifeagent.ui.screens.WellbeingCatalogScreen
+import ru.andriyshkoy.lifeagent.ui.screens.WellbeingLoadErrorScreen
 import ru.andriyshkoy.lifeagent.ui.notes.NoteAction
 import ru.andriyshkoy.lifeagent.ui.notes.NoteDialogUi
 import ru.andriyshkoy.lifeagent.ui.notes.LastNoteUiState
@@ -59,6 +61,12 @@ import ru.andriyshkoy.lifeagent.ui.notes.PreviewNotesController
 import ru.andriyshkoy.lifeagent.ui.theme.LifeAgentTheme
 import ru.andriyshkoy.lifeagent.ui.theme.ThemeMode
 import ru.andriyshkoy.lifeagent.ui.theme.resolveDarkTheme
+import ru.andriyshkoy.lifeagent.ui.wellbeing.LastWellbeingUiState
+import ru.andriyshkoy.lifeagent.ui.wellbeing.UnavailableWellbeingController
+import ru.andriyshkoy.lifeagent.ui.wellbeing.WellbeingAction
+import ru.andriyshkoy.lifeagent.ui.wellbeing.WellbeingController
+import ru.andriyshkoy.lifeagent.ui.wellbeing.WellbeingDialogUi
+import ru.andriyshkoy.lifeagent.ui.wellbeing.WellbeingUiState
 
 private data class DestinationVisual(
     val destination: TopLevelDestination,
@@ -91,7 +99,9 @@ fun LifeAgentApp(
     appVersion: String = BuildConfig.VERSION_NAME,
     notesController: NotesController? = null,
     fallbackLastCommitted: LastNoteUiState = LastNoteUiState.Empty,
-    onExportNotes: () -> Unit = {},
+    wellbeingController: WellbeingController? = null,
+    fallbackLastWellbeing: LastWellbeingUiState = LastWellbeingUiState.Empty,
+    onExportLifeAgent: () -> Unit = {},
     externalMessage: AppSnackbarMessage? = null,
     onExternalMessageConsumed: (String) -> Unit = {},
     onExternalMessageAction: (String) -> Unit = {},
@@ -113,6 +123,13 @@ fun LifeAgentApp(
     }
     val activeNotesController = notesController ?: fallbackNotesController
     val notesState by activeNotesController.uiState.collectAsStateWithLifecycle()
+    val fallbackWellbeingController = remember(fallbackLastWellbeing) {
+        UnavailableWellbeingController(
+            initialLastCommitted = fallbackLastWellbeing,
+        )
+    }
+    val activeWellbeingController = wellbeingController ?: fallbackWellbeingController
+    val wellbeingState by activeWellbeingController.uiState.collectAsStateWithLifecycle()
 
     LifeAgentTheme(darkTheme = darkTheme) {
         LifeAgentAppContent(
@@ -126,7 +143,9 @@ fun LifeAgentApp(
             appVersion = appVersion,
             notesState = notesState,
             onNoteAction = activeNotesController::dispatch,
-            onExportNotes = onExportNotes,
+            wellbeingState = wellbeingState,
+            onWellbeingAction = activeWellbeingController::dispatch,
+            onExportLifeAgent = onExportLifeAgent,
             externalMessage = externalMessage,
             onExternalMessageConsumed = onExternalMessageConsumed,
             onExternalMessageAction = onExternalMessageAction,
@@ -148,7 +167,9 @@ private fun LifeAgentAppContent(
     appVersion: String,
     notesState: NotesUiState,
     onNoteAction: (NoteAction) -> Unit,
-    onExportNotes: () -> Unit,
+    wellbeingState: WellbeingUiState,
+    onWellbeingAction: (WellbeingAction) -> Unit,
+    onExportLifeAgent: () -> Unit,
     externalMessage: AppSnackbarMessage?,
     onExternalMessageConsumed: (String) -> Unit,
     onExternalMessageAction: (String) -> Unit,
@@ -195,6 +216,18 @@ private fun LifeAgentAppContent(
         onNoteAction(NoteAction.CompletionConsumed)
     }
 
+    LaunchedEffect(wellbeingState.completion?.id) {
+        val completion = wellbeingState.completion ?: return@LaunchedEffect
+        onNavigate(DemoRoute.Add)
+        if (completion.message != null) {
+            localMessage = AppSnackbarMessage(
+                id = completion.id.toString(),
+                text = completion.message,
+            )
+        }
+        onWellbeingAction(WellbeingAction.CompletionConsumed)
+    }
+
     LaunchedEffect(route, notesState.editor, notesState.editorLoading) {
         if (
             route == DemoRoute.CaptureNote &&
@@ -206,6 +239,23 @@ private fun LifeAgentAppContent(
         }
     }
 
+    LaunchedEffect(
+        route,
+        wellbeingState.editor,
+        wellbeingState.editorLoading,
+        wellbeingState.editorLoadError,
+    ) {
+        if (
+            route == DemoRoute.CaptureWellbeing &&
+            wellbeingState.editor == null &&
+            !wellbeingState.editorLoading &&
+            wellbeingState.editorLoadError == null &&
+            wellbeingState.completion == null
+        ) {
+            onWellbeingAction(WellbeingAction.StartCreate)
+        }
+    }
+
     val onBack = { onNavigate(route.backTarget()) }
 
     if (
@@ -213,7 +263,16 @@ private fun LifeAgentAppContent(
         notesState.editor == null
     ) {
         BackHandler { onNoteAction(NoteAction.ExitRequested) }
-    } else if (route.topLevelDestination() == null && route != DemoRoute.CaptureNote) {
+    } else if (
+        route == DemoRoute.CaptureWellbeing &&
+        wellbeingState.editor == null
+    ) {
+        BackHandler { onWellbeingAction(WellbeingAction.ExitRequested) }
+    } else if (
+        route.topLevelDestination() == null &&
+        route != DemoRoute.CaptureNote &&
+        route != DemoRoute.CaptureWellbeing
+    ) {
         BackHandler(onBack = onBack)
     }
 
@@ -256,7 +315,9 @@ private fun LifeAgentAppContent(
                         },
                         notesState = notesState,
                         onNoteAction = onNoteAction,
-                        onExportNotes = onExportNotes,
+                        wellbeingState = wellbeingState,
+                        onWellbeingAction = onWellbeingAction,
+                        onExportLifeAgent = onExportLifeAgent,
                         modifier = Modifier.padding(padding),
                     )
                 }
@@ -298,7 +359,9 @@ private fun LifeAgentAppContent(
                     },
                     notesState = notesState,
                     onNoteAction = onNoteAction,
-                    onExportNotes = onExportNotes,
+                    wellbeingState = wellbeingState,
+                    onWellbeingAction = onWellbeingAction,
+                    onExportLifeAgent = onExportLifeAgent,
                     modifier = Modifier.padding(padding),
                 )
             }
@@ -363,13 +426,91 @@ private fun LifeAgentAppContent(
         null -> Unit
     }
 
+    when (val dialog = wellbeingState.dialog) {
+        WellbeingDialogUi.DiscardDraft -> {
+            AlertDialog(
+                onDismissRequest = {
+                    onWellbeingAction(WellbeingAction.DismissDialog)
+                },
+                title = { Text("Закрыть без сохранения?") },
+                text = {
+                    Text("Выбранные значения и комментарий будут удалены.")
+                },
+                confirmButton = {
+                    TextButton(
+                        onClick = {
+                            onWellbeingAction(WellbeingAction.ConfirmDiscard)
+                        },
+                    ) {
+                        Text("Удалить черновик", color = MaterialTheme.colorScheme.error)
+                    }
+                },
+                dismissButton = {
+                    TextButton(
+                        onClick = {
+                            onWellbeingAction(WellbeingAction.DismissDialog)
+                        },
+                    ) {
+                        Text("Продолжить редактирование")
+                    }
+                },
+            )
+        }
+
+        is WellbeingDialogUi.ConfirmUndo -> {
+            AlertDialog(
+                onDismissRequest = {
+                    onWellbeingAction(WellbeingAction.DismissDialog)
+                },
+                title = { Text("Отменить запись самочувствия?") },
+                text = {
+                    Text(
+                        if (wellbeingState.undoRetryAvailable) {
+                            "Отмена не подтверждена как сохранённая. Повтор использует ту же операцию."
+                        } else {
+                            "Запись останется в локальной истории, но перестанет быть текущим активным фактом."
+                        },
+                    )
+                },
+                confirmButton = {
+                    TextButton(
+                        onClick = {
+                            onWellbeingAction(WellbeingAction.ConfirmUndo)
+                        },
+                        enabled = !wellbeingState.mutationInProgress,
+                    ) {
+                        Text(
+                            if (wellbeingState.undoRetryAvailable) {
+                                "Повторить"
+                            } else {
+                                "Отменить запись"
+                            },
+                            color = MaterialTheme.colorScheme.error,
+                        )
+                    }
+                },
+                dismissButton = {
+                    TextButton(
+                        onClick = {
+                            onWellbeingAction(WellbeingAction.DismissDialog)
+                        },
+                    ) {
+                        Text("Оставить")
+                    }
+                },
+            )
+        }
+
+        null -> Unit
+    }
+
     if (showFirstRun) {
         AlertDialog(
             onDismissRequest = {},
             title = { Text("Локальная работа готова") },
             text = {
                 Text(
-                    "Заметки сохраняются в зашифрованной базе на этом устройстве. " +
+                    "Данные сохраняются в зашифрованной базе на этом устройстве. " +
                         "Все записи остаются на устройстве. Незашифрованный файл создаётся " +
                         "только по явной команде экспорта.\n\n" +
                         "Часовой пояс событий: ${zoneId.id}",
@@ -415,7 +556,9 @@ private fun AppScreen(
     onPreviewSave: (String) -> Unit,
     notesState: NotesUiState,
     onNoteAction: (NoteAction) -> Unit,
-    onExportNotes: () -> Unit,
+    wellbeingState: WellbeingUiState,
+    onWellbeingAction: (WellbeingAction) -> Unit,
+    onExportLifeAgent: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     when (route) {
@@ -426,7 +569,9 @@ private fun AppScreen(
             clock = clock,
             zoneId = zoneId,
             lastNote = notesState.lastCommitted,
-            persistenceAvailable = notesState.persistenceAvailable,
+            lastWellbeing = wellbeingState.lastCommitted,
+            persistenceAvailable = notesState.persistenceAvailable &&
+                wellbeingState.persistenceAvailable,
             onStartNote = {
                 onNoteAction(NoteAction.StartCreate)
                 onNavigate(DemoRoute.CaptureNote)
@@ -441,6 +586,16 @@ private fun AppScreen(
             onRetryLastNote = {
                 onNoteAction(NoteAction.RetryLastCommitted)
             },
+            onCorrectWellbeing = {
+                onWellbeingAction(WellbeingAction.StartCorrection(it.eventId))
+                onNavigate(DemoRoute.CaptureWellbeing)
+            },
+            onUndoWellbeing = {
+                onWellbeingAction(WellbeingAction.RequestUndo(it.eventId))
+            },
+            onRetryLastWellbeing = {
+                onWellbeingAction(WellbeingAction.RetryLastCommitted)
+            },
         )
 
         DemoRoute.Catalogs -> CatalogsScreen(
@@ -453,8 +608,9 @@ private fun AppScreen(
             onThemeModeChange = onThemeModeChange,
             onNavigate = onNavigate,
             modifier = modifier,
-            onExportNotes = onExportNotes,
-            notesPersistenceAvailable = notesState.persistenceAvailable,
+            onExportLifeAgent = onExportLifeAgent,
+            persistenceAvailable = notesState.persistenceAvailable &&
+                wellbeingState.persistenceAvailable,
             zoneId = zoneId,
             appVersion = appVersion,
         )
@@ -464,11 +620,30 @@ private fun AppScreen(
             { onPreviewSave("Питание") },
             modifier,
         )
-        DemoRoute.CaptureWellbeing -> WellbeingCaptureScreen(
-            onBack,
-            { onPreviewSave("Самочувствие") },
-            modifier,
-        )
+        DemoRoute.CaptureWellbeing -> {
+            val editor = wellbeingState.editor
+            when {
+                editor != null -> WellbeingCaptureScreen(
+                    state = editor,
+                    onAction = onWellbeingAction,
+                    modifier = modifier,
+                )
+
+                wellbeingState.editorLoadError != null -> WellbeingLoadErrorScreen(
+                    message = wellbeingState.editorLoadError,
+                    onRetry = { onWellbeingAction(WellbeingAction.RetryEditorLoad) },
+                    onBack = { onWellbeingAction(WellbeingAction.ExitRequested) },
+                    modifier = modifier,
+                )
+
+                else -> androidx.compose.foundation.layout.Box(
+                    modifier = modifier.fillMaxSize(),
+                    contentAlignment = androidx.compose.ui.Alignment.Center,
+                ) {
+                    CircularProgressIndicator()
+                }
+            }
+        }
 
         DemoRoute.CaptureMedication -> MedicationCaptureScreen(
             onBack,
@@ -494,10 +669,11 @@ private fun AppScreen(
             }
         }
         DemoRoute.CatalogFood -> CatalogListScreen(CatalogKind.Food, onBack, modifier)
-        DemoRoute.CatalogWellbeing -> CatalogListScreen(
-            CatalogKind.Wellbeing,
-            onBack,
-            modifier,
+        DemoRoute.CatalogWellbeing -> WellbeingCatalogScreen(
+            state = wellbeingState.catalog,
+            onBack = onBack,
+            onRetry = { onWellbeingAction(WellbeingAction.RetryCatalog) },
+            modifier = modifier,
         )
 
         DemoRoute.CatalogMedication -> CatalogListScreen(

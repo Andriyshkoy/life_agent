@@ -3,8 +3,10 @@ package ru.andriyshkoy.lifeagent.data.local.db
 import androidx.room.Database
 import androidx.room.RoomDatabase
 import ru.andriyshkoy.lifeagent.data.local.db.dao.IdentityDao
-import ru.andriyshkoy.lifeagent.data.local.db.dao.NoteMutationDao
+import ru.andriyshkoy.lifeagent.data.local.db.dao.LifeEventMutationDao
 import ru.andriyshkoy.lifeagent.data.local.db.dao.NoteQueryDao
+import ru.andriyshkoy.lifeagent.data.local.db.dao.WellbeingCatalogDao
+import ru.andriyshkoy.lifeagent.data.local.db.dao.WellbeingQueryDao
 import ru.andriyshkoy.lifeagent.data.local.db.entity.LocalCaptureEntity
 import ru.andriyshkoy.lifeagent.data.local.db.entity.LocalCatalogHeadEntity
 import ru.andriyshkoy.lifeagent.data.local.db.entity.LocalCatalogItemEntity
@@ -37,9 +39,13 @@ import ru.andriyshkoy.lifeagent.data.local.db.entity.LocalRevisionParentEntity
 abstract class LifeAgentDatabase : RoomDatabase() {
     abstract fun identityDao(): IdentityDao
 
-    abstract fun noteMutationDao(): NoteMutationDao
+    abstract fun lifeEventMutationDao(): LifeEventMutationDao
 
     abstract fun noteQueryDao(): NoteQueryDao
+
+    abstract fun wellbeingQueryDao(): WellbeingQueryDao
+
+    abstract fun wellbeingCatalogDao(): WellbeingCatalogDao
 
     companion object {
         const val NAME = "life-agent.db"

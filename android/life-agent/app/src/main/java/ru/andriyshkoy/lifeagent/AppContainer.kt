@@ -3,7 +3,7 @@ package ru.andriyshkoy.lifeagent
 import android.content.Context
 import androidx.sqlite.db.SupportSQLiteDatabase
 import java.io.Closeable
-import ru.andriyshkoy.lifeagent.data.export.CanonicalNotesExportCodec
+import ru.andriyshkoy.lifeagent.data.export.CanonicalLifeAgentExportCodec
 import ru.andriyshkoy.lifeagent.data.local.db.LifeAgentDatabase
 import ru.andriyshkoy.lifeagent.data.local.db.LifeAgentDatabaseFactory
 import ru.andriyshkoy.lifeagent.data.security.DatabaseKeyManager
@@ -12,10 +12,14 @@ import ru.andriyshkoy.lifeagent.data.security.SqlCipherKey
 import ru.andriyshkoy.lifeagent.data.security.SqlCipherOpenHelperFactoryProvider
 import ru.andriyshkoy.lifeagent.data.security.SqlCipherRuntime
 import ru.andriyshkoy.lifeagent.data.security.closeDatabaseThenKey
-import ru.andriyshkoy.lifeagent.domain.export.ExportNotesUseCase
-import ru.andriyshkoy.lifeagent.domain.export.NotesRepositoryExportSnapshotSource
+import ru.andriyshkoy.lifeagent.domain.export.ExportLifeAgentUseCase
+import ru.andriyshkoy.lifeagent.domain.export.RepositoriesLifeAgentExportSnapshotSource
 import ru.andriyshkoy.lifeagent.notes.data.RoomNotesRepository
 import ru.andriyshkoy.lifeagent.notes.domain.NotesRepository
+import ru.andriyshkoy.lifeagent.wellbeing.data.RoomWellbeingCatalogRepository
+import ru.andriyshkoy.lifeagent.wellbeing.data.RoomWellbeingRepository
+import ru.andriyshkoy.lifeagent.wellbeing.domain.WellbeingCatalogRepository
+import ru.andriyshkoy.lifeagent.wellbeing.domain.WellbeingRepository
 
 /**
  * Process graph for encrypted local storage.
@@ -30,7 +34,9 @@ class AppContainer(
     private val storageCloser: RetryableSensitiveStorageCloser
 
     val notesRepository: NotesRepository
-    val exportNotes: ExportNotesUseCase
+    val wellbeingRepository: WellbeingRepository
+    val wellbeingCatalogRepository: WellbeingCatalogRepository
+    val exportLifeAgent: ExportLifeAgentUseCase
 
     init {
         SqlCipherRuntime.initialize()
@@ -49,16 +55,27 @@ class AppContainer(
             openedDatabase = db
             verifyEncryptedDatabase(db.openHelper.writableDatabase)
 
-            val repository = RoomNotesRepository(
+            val notes = RoomNotesRepository(
                 database = db,
                 collectorVersion = BuildConfig.VERSION_NAME,
             )
+            val wellbeing = RoomWellbeingRepository(
+                database = db,
+                collectorVersion = BuildConfig.VERSION_NAME,
+            )
+            val wellbeingCatalog = RoomWellbeingCatalogRepository(database = db)
             databaseKey = key
             database = db
-            notesRepository = repository
-            exportNotes = ExportNotesUseCase(
-                source = NotesRepositoryExportSnapshotSource(notesRepository),
-                codec = CanonicalNotesExportCodec(),
+            notesRepository = notes
+            wellbeingRepository = wellbeing
+            wellbeingCatalogRepository = wellbeingCatalog
+            exportLifeAgent = ExportLifeAgentUseCase(
+                source = RepositoriesLifeAgentExportSnapshotSource(
+                    notesRepository = notesRepository,
+                    wellbeingRepository = wellbeingRepository,
+                    wellbeingCatalogRepository = wellbeingCatalogRepository,
+                ),
+                codec = CanonicalLifeAgentExportCodec(),
             )
             storageCloser = RetryableSensitiveStorageCloser(
                 closeDatabase = database::close,

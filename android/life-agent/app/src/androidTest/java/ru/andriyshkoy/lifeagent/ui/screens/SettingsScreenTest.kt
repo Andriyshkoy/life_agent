@@ -33,12 +33,12 @@ class SettingsScreenTest {
                     themeMode = ThemeMode.Light,
                     onThemeModeChange = {},
                     onNavigate = {},
-                    notesPersistenceAvailable = true,
+                    persistenceAvailable = true,
                 )
             }
         }
 
-        composeRule.onNodeWithText("Заметки · JSON без шифрования").assertIsDisplayed()
+        composeRule.onNodeWithText("Локальный журнал · JSON без шифрования").assertIsDisplayed()
         composeRule.onNodeWithText("Экспорт").assertIsEnabled()
     }
 
@@ -50,7 +50,7 @@ class SettingsScreenTest {
                     themeMode = ThemeMode.Light,
                     onThemeModeChange = {},
                     onNavigate = {},
-                    notesPersistenceAvailable = false,
+                    persistenceAvailable = false,
                 )
             }
         }
@@ -68,7 +68,7 @@ class SettingsScreenTest {
                     themeMode = ThemeMode.Light,
                     onThemeModeChange = {},
                     onNavigate = { destination = it },
-                    notesPersistenceAvailable = true,
+                    persistenceAvailable = true,
                 )
             }
         }
@@ -104,7 +104,7 @@ class SettingsScreenTest {
                     themeMode = ThemeMode.Light,
                     onThemeModeChange = {},
                     onNavigate = destinations::add,
-                    notesPersistenceAvailable = true,
+                    persistenceAvailable = true,
                     zoneId = ZoneId.of("Asia/Novosibirsk"),
                     appVersion = "0.1.0-test",
                 )

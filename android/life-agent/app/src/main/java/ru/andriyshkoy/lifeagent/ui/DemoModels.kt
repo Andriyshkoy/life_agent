@@ -71,14 +71,6 @@ enum class MealType(val label: String) {
     Snack("Перекус"),
 }
 
-enum class WellbeingOption(val label: String, val emoji: String) {
-    Great("Отлично", "●"),
-    Calm("Спокойно", "●"),
-    Tired("Устал", "●"),
-    Anxious("Тревожно", "●"),
-    Bad("Плохо", "●"),
-}
-
 enum class CatalogKind(
     val title: String,
     val subtitle: String,
@@ -91,8 +83,8 @@ enum class CatalogKind(
     ),
     Wellbeing(
         title = "Самочувствие",
-        subtitle = "Состояния и личные шкалы",
-        countLabel = "8 вариантов",
+        subtitle = "Показатели и варианты состояния",
+        countLabel = "4 показателя",
     ),
     Medication(
         title = "Лекарства и БАДы",
@@ -114,13 +106,6 @@ object DemoContent {
         DemoCatalogItem("Греческий йогурт", "Продукт · 100 г"),
         DemoCatalogItem("Омлет", "Готовое блюдо · 1 порция", "Недавнее"),
         DemoCatalogItem("Банан", "Продукт · 1 шт."),
-    )
-
-    val wellbeingItems = listOf(
-        DemoCatalogItem("Спокойно", "Базовое состояние"),
-        DemoCatalogItem("Устал", "Базовое состояние"),
-        DemoCatalogItem("Тревожно", "Базовое состояние"),
-        DemoCatalogItem("Собранно", "Личный вариант"),
     )
 
     val medicationItems = listOf(

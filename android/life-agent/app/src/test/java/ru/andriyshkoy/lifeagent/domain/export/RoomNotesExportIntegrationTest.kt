@@ -22,8 +22,12 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import ru.andriyshkoy.lifeagent.core.id.MutationIds
 import ru.andriyshkoy.lifeagent.core.time.PointTimeResolver
-import ru.andriyshkoy.lifeagent.data.export.CanonicalNotesExportCodec
-import ru.andriyshkoy.lifeagent.data.export.NotesExportValidationException
+import ru.andriyshkoy.lifeagent.data.export.CanonicalLifeAgentExportCodec
+import ru.andriyshkoy.lifeagent.data.export.CanonicalLifeEventJson
+import ru.andriyshkoy.lifeagent.data.export.CatalogExportSnapshot
+import ru.andriyshkoy.lifeagent.data.export.EventPointerExportSnapshot
+import ru.andriyshkoy.lifeagent.data.export.LifeAgentExportSnapshot
+import ru.andriyshkoy.lifeagent.data.export.LifeAgentExportValidationException
 import ru.andriyshkoy.lifeagent.data.local.db.LifeAgentDatabase
 import ru.andriyshkoy.lifeagent.data.local.db.LifeAgentDatabaseFactory
 import ru.andriyshkoy.lifeagent.notes.data.RoomNotesRepository
@@ -38,8 +42,8 @@ import ru.andriyshkoy.lifeagent.notes.domain.RetractNoteCommand
 class RoomNotesExportIntegrationTest {
     private lateinit var database: LifeAgentDatabase
     private lateinit var repository: RoomNotesRepository
-    private lateinit var codec: CanonicalNotesExportCodec
-    private lateinit var exportNotes: ExportNotesUseCase
+    private lateinit var codec: CanonicalLifeAgentExportCodec
+    private lateinit var exportLifeAgent: ExportLifeAgentUseCase
 
     @Before
     fun setUp() {
@@ -49,9 +53,25 @@ class RoomNotesExportIntegrationTest {
             database = database,
             collectorVersion = "integration-test",
         )
-        codec = CanonicalNotesExportCodec()
-        exportNotes = ExportNotesUseCase(
-            source = NotesRepositoryExportSnapshotSource(repository),
+        codec = CanonicalLifeAgentExportCodec()
+        exportLifeAgent = ExportLifeAgentUseCase(
+            source = LifeAgentExportSnapshotSource {
+                val notes = repository.exportSnapshot()
+                LifeAgentExportSnapshot(
+                    catalogs = CatalogExportSnapshot.Empty,
+                    events = notes.events.map { pointer ->
+                        EventPointerExportSnapshot(
+                            eventId = pointer.eventId.toString(),
+                            currentRevisionId = pointer.currentRevisionId.toString(),
+                        )
+                    },
+                    revisions = notes.revisions.map { revision ->
+                        CanonicalLifeEventJson.fromJson(
+                            revision.canonicalJson.toByteArray(Charsets.UTF_8),
+                        )
+                    },
+                )
+            },
             codec = codec,
         )
     }
@@ -90,8 +110,8 @@ class RoomNotesExportIntegrationTest {
             ),
         ).persisted()
 
-        val first = exportNotes()
-        val second = exportNotes()
+        val first = exportLifeAgent()
+        val second = exportLifeAgent()
         val decoded = codec.decode(first)
 
         assertArrayEquals(first, second)
@@ -165,7 +185,7 @@ class RoomNotesExportIntegrationTest {
         val failure = runCatching { repository.exportSnapshot() }.exceptionOrNull()
 
         assertTrue(failure is CorruptLocalNoteException)
-        assertEquals(1, database.noteMutationDao().tableCounts().revisions)
+        assertEquals(1, database.lifeEventMutationDao().tableCounts().revisions)
     }
 
     @Test
@@ -239,10 +259,10 @@ class RoomNotesExportIntegrationTest {
         return outcome.note.revisionId
     }
 
-    private suspend fun exportValidationFailure(): NotesExportValidationException {
-        val failure = runCatching { exportNotes() }.exceptionOrNull()
-        assertTrue(failure is NotesExportValidationException)
-        return failure as NotesExportValidationException
+    private suspend fun exportValidationFailure(): LifeAgentExportValidationException {
+        val failure = runCatching { exportLifeAgent() }.exceptionOrNull()
+        assertTrue(failure is LifeAgentExportValidationException)
+        return failure as LifeAgentExportValidationException
     }
 
     private fun effectiveTime(

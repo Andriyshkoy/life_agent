@@ -11,19 +11,19 @@ import java.time.ZoneId
 import java.time.ZoneOffset
 
 /**
- * On-device validation for the local note event export contract.
+ * On-device validation for implemented local event revisions in an export.
  *
  * The export boundary deliberately validates persisted canonical documents
  * again. Room constraints protect relational shape, but they cannot prove that
  * migrated JSON blobs, timestamps, enums, or content digests still satisfy the
  * public life-event contract.
  */
-internal class NoteLifeEventContractValidator {
+internal class LifeEventContractValidator {
     fun inspect(
         index: Int,
-        raw: CanonicalNoteRevisionJson,
+        raw: CanonicalLifeEventJson,
         violations: MutableList<String>,
-    ): NoteRevisionInspection {
+    ): LifeEventRevisionInspection {
         val path = "revisions[$index]"
         val document = raw.document
         document.requireExactFields(LIFE_EVENT_FIELDS, path, violations)
@@ -46,8 +46,8 @@ internal class NoteLifeEventContractValidator {
             violations,
         )
 
-        document.requireString("kind", path, violations)
-            .expect("note", "$path.kind", violations)
+        val kind = document.requireString("kind", path, violations)
+        kind.expectOneOf(IMPLEMENTED_KINDS, "$path.kind", violations)
         document.requireString("assertion_status", path, violations)
             .expectOneOf(ASSERTION_STATUSES, "$path.assertion_status", violations)
         val recordStatus = document.requireString("record_status", path, violations)
@@ -69,14 +69,16 @@ internal class NoteLifeEventContractValidator {
             violations,
         )
         validateTime(
-            document.requireObject("time", path, violations),
-            "$path.time",
-            violations,
+            time = document.requireObject("time", path, violations),
+            kind = kind,
+            path = "$path.time",
+            violations = violations,
         )
-        validatePayload(
-            document.requireObject("payload", path, violations),
-            "$path.payload",
-            violations,
+        val wellbeingValues = validatePayload(
+            payload = document.requireObject("payload", path, violations),
+            kind = kind,
+            path = "$path.payload",
+            violations = violations,
         )
         validateEvidence(
             root = document,
@@ -99,10 +101,10 @@ internal class NoteLifeEventContractValidator {
             violations = violations,
         )
         if (source.channel != "android_manual") {
-            violations += "$path.source.channel must be 'android_manual' for a note"
+            violations += "$path.source.channel must be 'android_manual'"
         }
         if (verificationStatus != "user_confirmed") {
-            violations += "$path.verification_status must be 'user_confirmed' for a note"
+            violations += "$path.verification_status must be 'user_confirmed'"
         }
         if (
             source.sourceRecordId != null ||
@@ -112,7 +114,7 @@ internal class NoteLifeEventContractValidator {
             violations += "$path.source manual source-record fields must be null"
         }
         if (source.originUserEntered != true) {
-            violations += "$path.source.origin.user_entered must be true for a manual note"
+            violations += "$path.source.origin.user_entered must be true"
         }
 
         validateContentHash(
@@ -123,7 +125,7 @@ internal class NoteLifeEventContractValidator {
             violations = violations,
         )
 
-        return NoteRevisionInspection(
+        return LifeEventRevisionInspection(
             raw = raw,
             eventId = eventId,
             revisionId = revisionId,
@@ -132,8 +134,10 @@ internal class NoteLifeEventContractValidator {
             operationId = source.operationId,
             installationId = identity.installationId,
             localOwnerId = identity.localOwnerId,
+            kind = kind,
             recordStatus = recordStatus,
             parentRevisionIds = revision.parentRevisionIds,
+            wellbeingValues = wellbeingValues,
         )
     }
 
@@ -245,6 +249,7 @@ internal class NoteLifeEventContractValidator {
 
     private fun validateTime(
         time: CanonicalJsonObject,
+        kind: String,
         path: String,
         violations: MutableList<String>,
     ) {
@@ -321,28 +326,28 @@ internal class NoteLifeEventContractValidator {
         )
 
         if (effectiveStartText == null) {
-            violations += "$path.effective_start_utc is required for a note"
+            violations += "$path.effective_start_utc is required for a $kind event"
         }
         if (effectiveEndText != null) {
-            violations += "$path.effective_end_utc must be null for a point note"
+            violations += "$path.effective_end_utc must be null for a point event"
         }
         if (originalLocalStartText == null) {
-            violations += "$path.original_local_start is required for a note"
+            violations += "$path.original_local_start is required for a $kind event"
         }
         if (originalLocalEndText != null) {
-            violations += "$path.original_local_end must be null for a point note"
+            violations += "$path.original_local_end must be null for a point event"
         }
         if (startOffset == null) {
-            violations += "$path.start_offset_seconds is required for a note"
+            violations += "$path.start_offset_seconds is required for a $kind event"
         }
         if (endOffset != null) {
-            violations += "$path.end_offset_seconds must be null for a point note"
+            violations += "$path.end_offset_seconds must be null for a point event"
         }
         if (localDateText == null) {
-            violations += "$path.local_date is required for a note"
+            violations += "$path.local_date is required for a $kind event"
         }
-        if (precision !in NOTE_POINT_PRECISIONS) {
-            violations += "$path.temporal_precision is not valid for a point note"
+        if (precision !in POINT_PRECISIONS) {
+            violations += "$path.temporal_precision is not valid for a point event"
         }
         if (
             effectiveStart != null &&
@@ -382,10 +387,24 @@ internal class NoteLifeEventContractValidator {
 
     private fun validatePayload(
         payload: CanonicalJsonObject,
+        kind: String,
+        path: String,
+        violations: MutableList<String>,
+    ): List<WellbeingValueInspection> = when (kind) {
+        "note" -> {
+            validateNotePayload(payload, path, violations)
+            emptyList()
+        }
+        "wellbeing" -> validateWellbeingPayload(payload, path, violations)
+        else -> emptyList()
+    }
+
+    private fun validateNotePayload(
+        payload: CanonicalJsonObject,
         path: String,
         violations: MutableList<String>,
     ) {
-        payload.requireExactFields(PAYLOAD_FIELDS, path, violations)
+        payload.requireExactFields(NOTE_PAYLOAD_FIELDS, path, violations)
         val text = payload.requireString("text", path, violations)
         val codePoints = text.codePointCount(0, text.length)
         if (text.isBlank()) {
@@ -393,6 +412,116 @@ internal class NoteLifeEventContractValidator {
         }
         if (codePoints > MAX_NOTE_CODE_POINTS) {
             violations += "$path.text exceeds $MAX_NOTE_CODE_POINTS Unicode code points"
+        }
+    }
+
+    private fun validateWellbeingPayload(
+        payload: CanonicalJsonObject,
+        path: String,
+        violations: MutableList<String>,
+    ): List<WellbeingValueInspection> {
+        payload.requireExactFields(WELLBEING_PAYLOAD_FIELDS, path, violations)
+        val values = payload.requireArray("values", path, violations)
+        if (values.elements.isEmpty()) {
+            violations += "$path.values must contain at least one dimension"
+        }
+        if (values.elements.size > MAX_WELLBEING_DIMENSIONS) {
+            violations += "$path.values contains more than $MAX_WELLBEING_DIMENSIONS dimensions"
+        }
+        val seenDimensions = mutableSetOf<String>()
+        val result = mutableListOf<WellbeingValueInspection>()
+        values.elements.forEachIndexed { index, value ->
+            val valuePath = "$path.values[$index]"
+            val item = value as? CanonicalJsonObject
+            if (item == null) {
+                violations += "$valuePath must be an object"
+                return@forEachIndexed
+            }
+            item.requireExactFields(WELLBEING_VALUE_FIELDS, valuePath, violations)
+            val dimensionId = item.requireString("dimension_id", valuePath, violations)
+            validateUuid(dimensionId, "$valuePath.dimension_id", violations)
+            if (!seenDimensions.add(dimensionId)) {
+                violations += "$path.values repeats dimension_id $dimensionId"
+            }
+            val dimensionVersion = item.requirePositiveInteger(
+                "dimension_version",
+                valuePath,
+                violations,
+            )
+            val dimensionLabel = item.requireString(
+                "dimension_label_snapshot",
+                valuePath,
+                violations,
+            )
+            validateWellbeingLabel(
+                dimensionLabel,
+                "$valuePath.dimension_label_snapshot",
+                violations,
+            )
+            val optionId = item.requireString("option_id", valuePath, violations)
+            validateUuid(optionId, "$valuePath.option_id", violations)
+            val optionVersion = item.requirePositiveInteger(
+                "option_version",
+                valuePath,
+                violations,
+            )
+            val optionLabel = item.requireString(
+                "option_label_snapshot",
+                valuePath,
+                violations,
+            )
+            validateWellbeingLabel(
+                optionLabel,
+                "$valuePath.option_label_snapshot",
+                violations,
+            )
+            val optionSortOrder = item.requireInteger(
+                "option_sort_order_snapshot",
+                valuePath,
+                violations,
+            )
+            if (dimensionVersion > MAX_INT || optionVersion > MAX_INT) {
+                violations += "$valuePath version exceeds the local integer range"
+            }
+            if (optionSortOrder < MIN_INT || optionSortOrder > MAX_INT) {
+                violations += "$valuePath.option_sort_order_snapshot exceeds the local integer range"
+            }
+            result += WellbeingValueInspection(
+                dimensionId = dimensionId,
+                dimensionVersion = dimensionVersion,
+                dimensionLabel = dimensionLabel,
+                optionId = optionId,
+                optionVersion = optionVersion,
+                optionLabel = optionLabel,
+                optionSortOrder = optionSortOrder,
+            )
+        }
+        val comment = payload.requireNullableString("comment", path, violations)
+        if (comment != null) {
+            if (comment.isBlank()) {
+                violations += "$path.comment must contain a visible character when present"
+            }
+            if (comment.codePointCount(0, comment.length) > MAX_WELLBEING_COMMENT_CODE_POINTS) {
+                violations +=
+                    "$path.comment exceeds $MAX_WELLBEING_COMMENT_CODE_POINTS Unicode code points"
+            }
+        }
+        return result
+    }
+
+    private fun validateWellbeingLabel(
+        value: String,
+        path: String,
+        violations: MutableList<String>,
+    ) {
+        if (value.isBlank()) {
+            violations += "$path must contain a visible character"
+        }
+        if (value != value.trim()) {
+            violations += "$path must be normalized"
+        }
+        if (value.codePointCount(0, value.length) > MAX_WELLBEING_LABEL_CODE_POINTS) {
+            violations += "$path exceeds $MAX_WELLBEING_LABEL_CODE_POINTS Unicode code points"
         }
     }
 
@@ -569,7 +698,7 @@ internal class NoteLifeEventContractValidator {
         if (!SHA256.matches(storedHash)) {
             return
         }
-        val expected = NoteRevisionContentHash.expectedForLinearRevision(document)
+        val expected = LifeEventRevisionContentHash.expectedForLinearRevision(document)
         if (expected == null) {
             if (parentRevisionIds.size <= 1) {
                 violations += "$path cannot be verified from the revision document"
@@ -692,6 +821,19 @@ internal class NoteLifeEventContractValidator {
         }
         if (value.value < BigInteger.ONE) {
             violations += "$path.$name must be at least 1"
+        }
+        return value.value
+    }
+
+    private fun CanonicalJsonObject.requireInteger(
+        name: String,
+        path: String,
+        violations: MutableList<String>,
+    ): BigInteger {
+        val value = properties[name]
+        if (value !is CanonicalJsonInteger) {
+            violations += "$path.$name must be an integer"
+            return BigInteger.ZERO
         }
         return value.value
     }
@@ -856,7 +998,12 @@ internal class NoteLifeEventContractValidator {
     private companion object {
         val MIN_TIMEZONE_OFFSET = BigInteger.valueOf(-50_400)
         val MAX_TIMEZONE_OFFSET = BigInteger.valueOf(50_400)
+        val MIN_INT = BigInteger.valueOf(Int.MIN_VALUE.toLong())
+        val MAX_INT = BigInteger.valueOf(Int.MAX_VALUE.toLong())
         const val MAX_NOTE_CODE_POINTS = 50_000
+        const val MAX_WELLBEING_DIMENSIONS = 64
+        const val MAX_WELLBEING_LABEL_CODE_POINTS = 64
+        const val MAX_WELLBEING_COMMENT_CODE_POINTS = 2_000
         const val MAX_REVISION_PARENTS = 1
         const val INVALID_STRING = "<invalid>"
 
@@ -900,7 +1047,8 @@ internal class NoteLifeEventContractValidator {
             "approximate",
             "unknown",
         )
-        val NOTE_POINT_PRECISIONS = setOf("exact", "minute", "hour")
+        val POINT_PRECISIONS = setOf("exact", "minute", "hour")
+        val IMPLEMENTED_KINDS = setOf("note", "wellbeing")
         val REVISION_ACTORS = setOf("user", "system", "connector")
         val PARENT_RELATIONS = setOf("supersedes")
 
@@ -950,7 +1098,17 @@ internal class NoteLifeEventContractValidator {
             "local_date",
             "source_expression",
         )
-        val PAYLOAD_FIELDS = setOf("text")
+        val NOTE_PAYLOAD_FIELDS = setOf("text")
+        val WELLBEING_PAYLOAD_FIELDS = setOf("values", "comment")
+        val WELLBEING_VALUE_FIELDS = setOf(
+            "dimension_id",
+            "dimension_version",
+            "dimension_label_snapshot",
+            "option_id",
+            "option_version",
+            "option_label_snapshot",
+            "option_sort_order_snapshot",
+        )
         val EVIDENCE_FIELDS = setOf(
             "capture_ref",
             "field_path",
@@ -970,7 +1128,7 @@ internal class NoteLifeEventContractValidator {
     }
 }
 
-internal object NoteRevisionContentHash {
+internal object LifeEventRevisionContentHash {
     fun expectedForLinearRevision(
         document: CanonicalJsonObject,
     ): String? {

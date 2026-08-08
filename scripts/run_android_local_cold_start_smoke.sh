@@ -6,8 +6,8 @@ readonly TEST_PACKAGE="ru.andriyshkoy.lifeagent.local.test"
 readonly MAIN_ACTIVITY="ru.andriyshkoy.lifeagent.MainActivity"
 readonly TEST_RUNNER="${TEST_PACKAGE}/androidx.test.runner.AndroidJUnitRunner"
 readonly TEST_CLASS="ru.andriyshkoy.lifeagent.persistence.MainActivityOfflinePersistenceInstrumentedTest"
-readonly SEED_METHOD="phase1SeedSyntheticNoteForExternalColdStart"
-readonly VERIFY_METHOD="phase2VerifySyntheticNoteAfterExternalColdStart"
+readonly SEED_METHOD="phase1SeedSyntheticWellbeingForExternalColdStart"
+readonly VERIFY_METHOD="phase2VerifySyntheticWellbeingAfterExternalColdStart"
 readonly DEVICE_QUERY_TIMEOUT="15s"
 readonly INSTALL_TIMEOUT="180s"
 readonly INSTRUMENTATION_TIMEOUT="180s"
@@ -357,4 +357,4 @@ fi
 
 run_phase "$VERIFY_METHOD"
 
-printf 'PASS: airplane-mode UI seed, force-stop, cold-launch UI, and local SQLCipher note persistence.\n'
+printf 'PASS: airplane-mode Wellbeing seed, force-stop, cold-launch UI, and local SQLCipher persistence.\n'

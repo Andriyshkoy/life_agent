@@ -55,7 +55,7 @@ class RoomNotesRepository(
     private val codec: CanonicalNoteCodec = CanonicalNoteCodec(),
 ) : NotesRepository {
     private val identityStore = LocalIdentityStore(database, uuidGenerator)
-    private val mutationDao = database.noteMutationDao()
+    private val mutationDao = database.lifeEventMutationDao()
     private val queryDao = database.noteQueryDao()
 
     init {
@@ -273,6 +273,7 @@ class RoomNotesRepository(
                     text = note.text,
                     status = note.status,
                     effectiveTime = note.effectiveTime,
+                    recordedAt = note.recordedAt,
                 )
             }
         }

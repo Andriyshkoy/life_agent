@@ -14,9 +14,11 @@ import androidx.compose.ui.test.hasAnyDescendant
 import androidx.compose.ui.test.hasClickAction
 import androidx.compose.ui.test.hasScrollAction
 import androidx.compose.ui.test.hasSetTextAction
+import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.v2.createEmptyComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
+import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
@@ -56,11 +58,14 @@ import ru.andriyshkoy.lifeagent.notes.domain.NoteRecordStatus
 import ru.andriyshkoy.lifeagent.notes.domain.NoteSnapshot
 import ru.andriyshkoy.lifeagent.ui.notes.NotesUiState
 import ru.andriyshkoy.lifeagent.ui.notes.NotesViewModel
+import ru.andriyshkoy.lifeagent.ui.screens.WELLBEING_COMMENT_TAG
+import ru.andriyshkoy.lifeagent.wellbeing.domain.WellbeingRecordStatus
+import ru.andriyshkoy.lifeagent.wellbeing.domain.WellbeingSnapshot
 
 /**
  * Black-box UI coverage backed by the real application graph:
  *
- * MainActivity -> NotesViewModel -> RoomNotesRepository -> production SQLCipher DB.
+ * MainActivity -> production ViewModels -> Room repositories -> production SQLCipher DB.
  *
  * The last two methods are deliberately runner-selectable phases. A normal managed-device
  * run proves that they are independently valid; scripts/run_android_local_cold_start_smoke.sh
@@ -261,37 +266,37 @@ class MainActivityOfflinePersistenceInstrumentedTest {
     }
 
     @Test
-    fun phase1SeedSyntheticNoteForExternalColdStart() {
+    fun phase1SeedSyntheticWellbeingForExternalColdStart() {
         assertNoTransportPermissions()
         assertAirplaneModeWhenRequired()
         waitForReadyApplication()
 
         val marker = coldStartMarker()
         val container = productionContainer()
-        val existing = findCurrentNote(container, marker)
+        val existing = findCurrentWellbeing(container, marker)
         if (existing == null) {
-            createNote(marker)
+            createWellbeing(marker)
         }
-        assertCurrentNote(
+        assertCurrentWellbeing(
             container = container,
-            text = marker,
-            expectedStatus = NoteRecordStatus.ACTIVE,
+            comment = marker,
+            expectedStatus = WellbeingRecordStatus.ACTIVE,
             expectedRevisionNo = 1,
         )
     }
 
     @Test
-    fun phase2VerifySyntheticNoteAfterExternalColdStart() {
+    fun phase2VerifySyntheticWellbeingAfterExternalColdStart() {
         assertNoTransportPermissions()
         assertAirplaneModeWhenRequired()
         waitForReadyApplication()
 
         val marker = coldStartMarker()
         scrollToText(marker)
-        assertCurrentNote(
+        assertCurrentWellbeing(
             container = productionContainer(),
-            text = marker,
-            expectedStatus = NoteRecordStatus.ACTIVE,
+            comment = marker,
+            expectedStatus = WellbeingRecordStatus.ACTIVE,
             expectedRevisionNo = 1,
         )
     }
@@ -323,6 +328,26 @@ class MainActivityOfflinePersistenceInstrumentedTest {
             .performClick()
         waitForText("Что записать?")
         scrollToText(text)
+    }
+
+    private fun createWellbeing(comment: String) {
+        composeRule.onNodeWithText("Самочувствие")
+            .performScrollTo()
+            .performClick()
+        waitForText("Как ты себя чувствуешь?")
+        waitForText("Нормальное")
+        composeRule.onNodeWithText("Нормальное")
+            .performScrollTo()
+            .performClick()
+        composeRule.onNode(hasScrollAction())
+            .performScrollToNode(hasTestTag(WELLBEING_COMMENT_TAG))
+        composeRule.onNodeWithTag(WELLBEING_COMMENT_TAG).performTextInput(comment)
+        closeSoftKeyboard()
+        composeRule.onNodeWithText("Записать самочувствие")
+            .assertIsEnabled()
+            .performClick()
+        waitForText("Что записать?")
+        scrollToText(comment)
     }
 
     private fun editor() = composeRule.onNode(hasSetTextAction())
@@ -407,7 +432,7 @@ class MainActivityOfflinePersistenceInstrumentedTest {
 
     private fun tableCounts(container: AppContainer): LocalTableCounts =
         runBlocking(Dispatchers.IO) {
-            productionDatabase(container).noteMutationDao().tableCounts()
+            productionDatabase(container).lifeEventMutationDao().tableCounts()
         }
 
     private fun findCurrentNote(
@@ -418,6 +443,19 @@ class MainActivityOfflinePersistenceInstrumentedTest {
         repository.exportSnapshot().events.forEach { event ->
             repository.getByEventId(event.eventId)
                 ?.takeIf { it.text == text }
+                ?.let { return@runBlocking it }
+        }
+        null
+    }
+
+    private fun findCurrentWellbeing(
+        container: AppContainer,
+        comment: String,
+    ): WellbeingSnapshot? = runBlocking(Dispatchers.IO) {
+        val repository = container.wellbeingRepository
+        repository.exportSnapshot().events.forEach { event ->
+            repository.getByEventId(event.eventId)
+                ?.takeIf { it.payload.comment == comment }
                 ?.let { return@runBlocking it }
         }
         null
@@ -530,6 +568,22 @@ class MainActivityOfflinePersistenceInstrumentedTest {
         assertEquals(expectedRevisionNo, note.revisionNo)
 
         return note
+    }
+
+    private fun assertCurrentWellbeing(
+        container: AppContainer,
+        comment: String,
+        expectedStatus: WellbeingRecordStatus,
+        expectedRevisionNo: Int,
+    ): WellbeingSnapshot {
+        val wellbeing = assertNotNullAndReturn(findCurrentWellbeing(container, comment))
+        assertEquals(expectedStatus, wellbeing.status)
+        assertEquals(expectedRevisionNo, wellbeing.revisionNo)
+        assertEquals(1, wellbeing.payload.values.size)
+        assertEquals("Общее самочувствие", wellbeing.payload.values.single().dimensionLabel)
+        assertEquals("Нормальное", wellbeing.payload.values.single().optionLabel)
+
+        return wellbeing
     }
 
     private fun assertCounts(
@@ -659,7 +713,7 @@ class MainActivityOfflinePersistenceInstrumentedTest {
         const val POLL_INTERVAL_MILLIS = 25L
         const val COLD_MARKER_ARGUMENT = "localColdStartMarker"
         const val REQUIRE_AIRPLANE_MODE_ARGUMENT = "localRequireAirplaneMode"
-        const val DEFAULT_COLD_MARKER = "local-synthetic-cold-start-marker-v1"
+        const val DEFAULT_COLD_MARKER = "local-synthetic-wellbeing-cold-start-v1"
         const val ONBOARDING_CONTINUE_TEXT = "Продолжить локально"
         const val CREATED_NOTE_SNACKBAR_TEXT = "Заметка сохранена на устройстве"
         val COLD_MARKER_PATTERN = Regex("[A-Za-z0-9._-]{8,96}")
