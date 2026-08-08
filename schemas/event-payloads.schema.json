@@ -18,7 +18,8 @@
     },
     "uuid": {
       "type": "string",
-      "format": "uuid"
+      "format": "uuid",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
     },
     "nullableUuid": {
       "oneOf": [
@@ -36,6 +37,15 @@
         "null"
       ],
       "minLength": 1
+    },
+    "nullableWellbeingComment": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1,
+      "maxLength": 2000,
+      "pattern": "\\S"
     },
     "nonNegativeDecimal": {
       "type": "string",
@@ -259,7 +269,8 @@
         },
         "dimension_label_snapshot": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "maxLength": 64
         },
         "option_id": {
           "$ref": "#/$defs/uuid"
@@ -270,7 +281,8 @@
         },
         "option_label_snapshot": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "maxLength": 64
         },
         "option_sort_order_snapshot": {
           "type": "integer"
@@ -288,13 +300,14 @@
         "values": {
           "type": "array",
           "minItems": 1,
+          "maxItems": 64,
           "items": {
             "$ref": "#/$defs/wellbeingValue"
           },
           "description": "The semantic validator rejects repeated dimension_id values; JSON Schema cannot express key-based uniqueness."
         },
         "comment": {
-          "$ref": "#/$defs/nullableText"
+          "$ref": "#/$defs/nullableWellbeingComment"
         }
       }
     },

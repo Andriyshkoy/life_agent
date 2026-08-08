@@ -2,6 +2,9 @@ package ru.andriyshkoy.lifeagent.data.local.db.dao
 
 import androidx.room.ColumnInfo
 import androidx.room.Embedded
+import ru.andriyshkoy.lifeagent.data.local.db.entity.LocalCatalogHeadEntity
+import ru.andriyshkoy.lifeagent.data.local.db.entity.LocalCatalogItemEntity
+import ru.andriyshkoy.lifeagent.data.local.db.entity.LocalCatalogVersionEntity
 import ru.andriyshkoy.lifeagent.data.local.db.entity.LocalEventRevisionEntity
 
 data class LocalIdentityRow(
@@ -47,4 +50,20 @@ data class LocalTableCounts(
     val parents: Int,
     @ColumnInfo(name = "heads")
     val heads: Int,
+)
+
+data class CurrentWellbeingCatalogRow(
+    @Embedded
+    val item: LocalCatalogItemEntity,
+    @Embedded(prefix = "version_")
+    val version: LocalCatalogVersionEntity,
+    @Embedded(prefix = "head_")
+    val head: LocalCatalogHeadEntity,
+)
+
+data class WellbeingCatalogVersionContextRow(
+    @Embedded
+    val item: LocalCatalogItemEntity,
+    @Embedded(prefix = "version_")
+    val version: LocalCatalogVersionEntity,
 )

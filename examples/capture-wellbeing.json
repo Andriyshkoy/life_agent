@@ -1,0 +1,49 @@
+{
+  "schema_version": "5.0.0",
+  "capture_id": "40000000-0000-4000-8000-000000000002",
+  "operation_id": "50000000-0000-4000-8000-000000000002",
+  "identity": {
+    "installation_id": "10000000-0000-4000-8000-000000000001",
+    "local_owner_id": "10000000-0000-4000-8000-000000000002"
+  },
+  "source": {
+    "channel": "android_manual",
+    "recorded_at": "2026-01-10T11:00:00Z",
+    "timezone_id": "Etc/UTC",
+    "utc_offset_minutes": 0,
+    "origin": {
+      "provider": null,
+      "app": "Life Agent Android",
+      "device": "Synthetic Android device",
+      "source_record_id": null,
+      "source_record_version": null,
+      "user_entered": true
+    },
+    "collector": {
+      "name": "life-agent-android",
+      "version": "0.1.0"
+    }
+  },
+  "content": {
+    "kind": "structured",
+    "record_type": "wellbeing",
+    "payload": {
+      "values": [
+        {
+          "dimension_id": "60000000-0000-4000-8000-000000000001",
+          "dimension_version": 1,
+          "dimension_label_snapshot": "Общее самочувствие",
+          "option_id": "62000000-0000-4000-8000-000000000001",
+          "option_version": 1,
+          "option_label_snapshot": "Нормальное",
+          "option_sort_order_snapshot": 2
+        }
+      ],
+      "comment": "Синтетический контекст."
+    }
+  },
+  "integrity": {
+    "sha256": "9f467b41b02343f790944d40d3516cf2e5ca29b2480aa2f9e1c26dc4f73ed659",
+    "byte_size": 418
+  }
+}

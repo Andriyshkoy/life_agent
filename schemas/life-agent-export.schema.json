@@ -1,0 +1,261 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://life-agent.local/schemas/life-agent-export.schema.json",
+  "title": "Life Agent canonical local export",
+  "description": "A complete local snapshot of editable catalog history, logical-event pointers, and immutable event revisions.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "format",
+    "format_version",
+    "catalogs",
+    "events",
+    "revisions"
+  ],
+  "properties": {
+    "format": {
+      "const": "life-agent"
+    },
+    "format_version": {
+      "const": "1.0.0"
+    },
+    "catalogs": {
+      "$ref": "#/$defs/catalogSnapshot"
+    },
+    "events": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/eventPointer"
+      }
+    },
+    "revisions": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/implementedRevision"
+      }
+    }
+  },
+  "$defs": {
+    "uuid": {
+      "type": "string",
+      "format": "uuid",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "catalogSnapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "items",
+        "versions",
+        "heads"
+      ],
+      "properties": {
+        "items": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/catalogItem"
+          }
+        },
+        "versions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/catalogVersion"
+          }
+        },
+        "heads": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/catalogHead"
+          }
+        }
+      }
+    },
+    "catalogItem": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "catalog_item_id",
+        "local_owner_id",
+        "catalog_kind",
+        "created_at"
+      ],
+      "properties": {
+        "catalog_item_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "local_owner_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "catalog_kind": {
+          "const": "wellbeing_dimension"
+        },
+        "created_at": {
+          "$ref": "#/$defs/timestamp"
+        }
+      }
+    },
+    "catalogVersion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "catalog_version_id",
+        "catalog_item_id",
+        "version_no",
+        "schema_version",
+        "payload",
+        "content_sha256",
+        "created_at"
+      ],
+      "properties": {
+        "catalog_version_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "catalog_item_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "version_no": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "schema_version": {
+          "const": "1.0.0"
+        },
+        "payload": {
+          "$ref": "#/$defs/wellbeingDimensionCatalogPayload"
+        },
+        "content_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "created_at": {
+          "$ref": "#/$defs/timestamp"
+        }
+      }
+    },
+    "catalogHead": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "catalog_item_id",
+        "current_version_id",
+        "updated_at"
+      ],
+      "properties": {
+        "catalog_item_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "current_version_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "updated_at": {
+          "$ref": "#/$defs/timestamp"
+        }
+      }
+    },
+    "wellbeingDimensionCatalogPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "active",
+        "label",
+        "options",
+        "sort_order"
+      ],
+      "properties": {
+        "active": {
+          "type": "boolean"
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "options": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 64,
+          "items": {
+            "$ref": "#/$defs/wellbeingOptionCatalogPayload"
+          }
+        },
+        "sort_order": {
+          "type": "integer"
+        }
+      }
+    },
+    "wellbeingOptionCatalogPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "active",
+        "label",
+        "option_id",
+        "option_version",
+        "sort_order"
+      ],
+      "properties": {
+        "active": {
+          "type": "boolean"
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "option_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "option_version": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "sort_order": {
+          "type": "integer"
+        }
+      }
+    },
+    "eventPointer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "event_id",
+        "current_revision_id"
+      ],
+      "properties": {
+        "event_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "current_revision_id": {
+          "$ref": "#/$defs/uuid"
+        }
+      }
+    },
+    "implementedRevision": {
+      "allOf": [
+        {
+          "$ref": "life-event.schema.json"
+        },
+        {
+          "properties": {
+            "kind": {
+              "enum": [
+                "note",
+                "wellbeing"
+              ]
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        }
+      ]
+    }
+  }
+}

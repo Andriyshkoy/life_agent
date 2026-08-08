@@ -6,6 +6,11 @@ import java.util.UUID
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import ru.andriyshkoy.lifeagent.ui.time.EventTimestampChoice
+import ru.andriyshkoy.lifeagent.ui.time.EventTimestampResolution
+import ru.andriyshkoy.lifeagent.ui.time.EventTimestampUiState
+import ru.andriyshkoy.lifeagent.ui.time.errorMessage
+import ru.andriyshkoy.lifeagent.ui.time.resolveEventTimestamp
 
 interface NotesController {
     val uiState: StateFlow<NotesUiState>
@@ -32,7 +37,7 @@ class PreviewNotesController(
                 if (mutableState.value.editor == null) {
                     mutableState.value = mutableState.value.copy(
                         editor = NoteEditorUiState(
-                            timestamp = NoteTimestampUiState(
+                            timestamp = EventTimestampUiState(
                                 defaultTimezoneId = defaultZoneId.id,
                             ),
                             persistenceAvailable = false,
@@ -88,8 +93,8 @@ class PreviewNotesController(
         }
     }
 
-    private fun selectTimestamp(choice: NoteTimestampChoice) {
-        val resolved = resolveNoteTimestamp(choice, clock.instant(), defaultZoneId)
+    private fun selectTimestamp(choice: EventTimestampChoice) {
+        val resolved = resolveEventTimestamp(choice, clock.instant(), defaultZoneId)
         updateEditor { editor ->
             editor.copy(
                 timestamp = editor.timestamp.copy(
@@ -97,7 +102,7 @@ class PreviewNotesController(
                     defaultTimezoneId = defaultZoneId.id,
                     pickerVisible = false,
                     error = resolved.errorMessage(),
-                    overlapOffsetsSeconds = (resolved as? NoteTimestampResolution.Overlap)
+                    overlapOffsetsSeconds = (resolved as? EventTimestampResolution.Overlap)
                         ?.offsets
                         ?.map { it.totalSeconds }
                         .orEmpty(),
@@ -109,7 +114,7 @@ class PreviewNotesController(
 
     private fun selectOverlapOffset(offsetSeconds: Int) {
         val editor = mutableState.value.editor ?: return
-        val choice = editor.timestamp.choice as? NoteTimestampChoice.Custom ?: return
+        val choice = editor.timestamp.choice as? EventTimestampChoice.Custom ?: return
         selectTimestamp(choice.copy(preferredOffsetSeconds = offsetSeconds))
     }
 
@@ -161,11 +166,4 @@ class PreviewNotesController(
         val editor = mutableState.value.editor ?: return
         mutableState.value = mutableState.value.copy(editor = transform(editor))
     }
-}
-
-internal fun NoteTimestampResolution.errorMessage(): String? = when (this) {
-    is NoteTimestampResolution.Valid -> null
-    is NoteTimestampResolution.Gap -> "Такого местного времени нет из-за смены часового пояса"
-    is NoteTimestampResolution.Overlap -> "Уточни смещение времени"
-    is NoteTimestampResolution.InvalidZone -> "Неизвестный часовой пояс"
 }

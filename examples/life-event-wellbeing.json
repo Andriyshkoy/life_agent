@@ -1,0 +1,77 @@
+{
+  "schema_version": "5.0.0",
+  "identity": {
+    "installation_id": "10000000-0000-4000-8000-000000000001",
+    "local_owner_id": "10000000-0000-4000-8000-000000000002"
+  },
+  "event_id": "20000000-0000-4000-8000-000000000002",
+  "revision_id": "30000000-0000-4000-8000-000000000002",
+  "revision_no": 1,
+  "kind": "wellbeing",
+  "assertion_status": "observed",
+  "record_status": "active",
+  "verification_status": "user_confirmed",
+  "source": {
+    "capture_id": "40000000-0000-4000-8000-000000000002",
+    "operation_id": "50000000-0000-4000-8000-000000000002",
+    "channel": "android_manual",
+    "source_record_id": null,
+    "source_record_version": null,
+    "source_modified_at": null,
+    "recorded_at": "2026-01-10T11:00:00Z",
+    "origin": {
+      "provider": null,
+      "app": "Life Agent Android",
+      "device": "Synthetic Android device",
+      "user_entered": true
+    },
+    "collector": {
+      "name": "life-agent-android",
+      "version": "0.1.0"
+    }
+  },
+  "time": {
+    "effective_start_utc": "2026-01-10T11:00:00Z",
+    "effective_end_utc": null,
+    "original_local_start": "2026-01-10T11:00:00",
+    "original_local_end": null,
+    "timezone_id": "Etc/UTC",
+    "start_offset_seconds": 0,
+    "end_offset_seconds": null,
+    "temporal_precision": "minute",
+    "local_date": "2026-01-10",
+    "source_expression": null
+  },
+  "payload": {
+    "values": [
+      {
+        "dimension_id": "60000000-0000-4000-8000-000000000001",
+        "dimension_version": 1,
+        "dimension_label_snapshot": "Общее самочувствие",
+        "option_id": "62000000-0000-4000-8000-000000000001",
+        "option_version": 1,
+        "option_label_snapshot": "Нормальное",
+        "option_sort_order_snapshot": 2
+      }
+    ],
+    "comment": "Синтетический контекст."
+  },
+  "evidence": [
+    {
+      "capture_ref": "#/source/capture_id",
+      "field_path": "/payload/values/0/option_id",
+      "artifact_id": null,
+      "locator": "android_form:/wellbeing/values/0",
+      "excerpt": null,
+      "human_confirmed": true
+    }
+  ],
+  "quality_flags": [],
+  "revision": {
+    "created_at": "2026-01-10T11:00:00Z",
+    "content_sha256": "2906e48551de758afa73c53ea8c23914f90e966fdcf25e3393dc3b3247bd8971",
+    "actor": "user",
+    "correction_reason": null,
+    "parents": []
+  }
+}

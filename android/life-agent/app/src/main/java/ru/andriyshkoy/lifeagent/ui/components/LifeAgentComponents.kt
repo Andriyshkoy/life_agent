@@ -382,10 +382,12 @@ fun SelectablePill(
     selected: Boolean,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
+    enabled: Boolean = true,
 ) {
     FilterChip(
         selected = selected,
         onClick = onClick,
+        enabled = enabled,
         label = { Text(label) },
         modifier = modifier.heightIn(min = 48.dp),
         shape = MaterialTheme.shapes.small,
@@ -406,7 +408,7 @@ fun SelectablePill(
             selectedLeadingIconColor = MaterialTheme.colorScheme.onPrimaryContainer,
         ),
         border = FilterChipDefaults.filterChipBorder(
-            enabled = true,
+            enabled = enabled,
             selected = selected,
             borderColor = MaterialTheme.colorScheme.outlineVariant,
             selectedBorderColor = Color.Transparent,

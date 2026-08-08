@@ -4,8 +4,6 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -26,7 +24,6 @@ import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.Medication
 import androidx.compose.material.icons.rounded.Restaurant
 import androidx.compose.material.icons.rounded.Search
-import androidx.compose.material.icons.rounded.SentimentSatisfied
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
@@ -37,7 +34,6 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -48,7 +44,6 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import ru.andriyshkoy.lifeagent.ui.MealType
-import ru.andriyshkoy.lifeagent.ui.WellbeingOption
 import ru.andriyshkoy.lifeagent.ui.components.DetailTopBar
 import ru.andriyshkoy.lifeagent.ui.components.MetricPill
 import ru.andriyshkoy.lifeagent.ui.components.PrimaryActionButton
@@ -228,107 +223,6 @@ fun FoodCaptureScreen(
             item { TimestampSelector() }
             item {
                 HelperText("Предпросмотр: питание и КБЖУ пока не сохраняются.")
-            }
-        }
-    }
-}
-
-@OptIn(ExperimentalLayoutApi::class)
-@Composable
-fun WellbeingCaptureScreen(
-    onBack: () -> Unit,
-    onSave: () -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    var selected by remember { mutableStateOf(WellbeingOption.Calm) }
-    var energy by remember { mutableIntStateOf(3) }
-    var comment by remember { mutableStateOf("") }
-
-    CaptureScaffold(
-        title = "Самочувствие",
-        saveLabel = "Записать самочувствие",
-        saveEnabled = true,
-        onBack = onBack,
-        onSave = onSave,
-        modifier = modifier,
-    ) { padding ->
-        LazyColumn(
-            modifier = Modifier
-                .padding(padding)
-                .fillMaxSize()
-                .widthIn(max = 680.dp)
-                .padding(horizontal = 20.dp),
-            contentPadding = PaddingValues(top = 12.dp, bottom = 24.dp),
-            verticalArrangement = Arrangement.spacedBy(20.dp),
-        ) {
-            item {
-                CaptureIntro(
-                    icon = Icons.Rounded.SentimentSatisfied,
-                    title = "Как ты сейчас?",
-                    subtitle = "Выбери ближайшее состояние. Правильного ответа нет.",
-                )
-            }
-            item {
-                FlowRow(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    WellbeingOption.entries.forEach { option ->
-                        SelectablePill(
-                            label = option.label,
-                            selected = selected == option,
-                            onClick = { selected = option },
-                        )
-                    }
-                }
-            }
-            item {
-                SectionTitle("Энергия")
-                Spacer(Modifier.height(10.dp))
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    (1..5).forEach { value ->
-                        SelectablePill(
-                            label = value.toString(),
-                            selected = energy == value,
-                            onClick = { energy = value },
-                            modifier = Modifier.weight(1f),
-                        )
-                    }
-                }
-                Spacer(Modifier.height(8.dp))
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                    Text(
-                        "Совсем нет сил",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Text(
-                        "Много энергии",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
-            item {
-                OutlinedTextField(
-                    value = comment,
-                    onValueChange = { comment = it },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(132.dp),
-                    label = { Text("Комментарий · необязательно") },
-                    placeholder = { Text("Что повлияло на состояние?") },
-                    maxLines = 5,
-                    shape = MaterialTheme.shapes.medium,
-                )
-            }
-            item { TimestampSelector() }
-            item {
-                HelperText("Предпросмотр: самочувствие пока не сохраняется.")
             }
         }
     }

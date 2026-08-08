@@ -10,8 +10,9 @@ import ru.andriyshkoy.lifeagent.data.local.db.entity.LocalEventRevisionEntity
 import ru.andriyshkoy.lifeagent.data.local.db.entity.LocalLifeEventEntity
 import ru.andriyshkoy.lifeagent.data.local.db.entity.LocalRevisionParentEntity
 
+/** Shared append-only mutation primitives for all local life-event domains. */
 @Dao
-interface NoteMutationDao {
+interface LifeEventMutationDao {
     @Query(
         """
         SELECT e.kind AS event_kind,

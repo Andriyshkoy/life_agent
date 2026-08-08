@@ -30,9 +30,9 @@ internal data class CanonicalJsonBoolean(
 internal data object CanonicalJsonNull : CanonicalJsonValue
 
 /**
- * Deterministic JSON codec for local note exports.
+ * Deterministic JSON codec for local Life Agent exports.
  *
- * Canonical local note revisions contain strings, integers, booleans, nulls,
+ * Canonical local documents contain strings, integers, booleans, nulls,
  * arrays and objects only. Object names use UTF-16 lexical order, matching the
  * RFC 8785/JCS ordering rule, and integers are emitted in their shortest
  * base-ten form. Floating-point values are rejected instead of implementing a
@@ -59,7 +59,7 @@ internal object CanonicalJson {
             bytes[1] == 0xBB.toByte() &&
             bytes[2] == 0xBF.toByte()
         ) {
-            throw NotesExportFormatException("JSON must not contain a UTF-8 BOM")
+            throw LifeAgentExportFormatException("JSON must not contain a UTF-8 BOM")
         }
         return try {
             StandardCharsets.UTF_8
@@ -69,7 +69,7 @@ internal object CanonicalJson {
                 .decode(ByteBuffer.wrap(bytes))
                 .toString()
         } catch (error: Exception) {
-            throw NotesExportFormatException("JSON is not valid UTF-8", error)
+            throw LifeAgentExportFormatException("JSON is not valid UTF-8", error)
         }
     }
 
@@ -263,12 +263,12 @@ internal object CanonicalJson {
                 index < source.length &&
                 (source[index] == '.' || source[index] == 'e' || source[index] == 'E')
             ) {
-                fail("Notes export does not allow non-integer JSON numbers")
+                fail("Life Agent export does not allow non-integer JSON numbers")
             }
             return try {
                 CanonicalJsonInteger(source.substring(start, index).toBigInteger())
             } catch (error: NumberFormatException) {
-                throw NotesExportFormatException("invalid integer at offset $start", error)
+                throw LifeAgentExportFormatException("invalid integer at offset $start", error)
             }
         }
 
@@ -304,7 +304,7 @@ internal object CanonicalJson {
         }
 
         private fun fail(message: String): Nothing {
-            throw NotesExportFormatException("$message at offset $index")
+            throw LifeAgentExportFormatException("$message at offset $index")
         }
     }
 
@@ -313,7 +313,7 @@ internal object CanonicalJson {
     ) {
         fun write(value: CanonicalJsonValue, depth: Int) {
             if (depth > MAX_NESTING_DEPTH) {
-                throw NotesExportFormatException(
+                throw LifeAgentExportFormatException(
                     "JSON nesting exceeds $MAX_NESTING_DEPTH",
                 )
             }
@@ -377,7 +377,7 @@ internal object CanonicalJson {
                                     index >= value.length ||
                                     !value[index].isLowSurrogate()
                                 ) {
-                                    throw NotesExportFormatException(
+                                    throw LifeAgentExportFormatException(
                                         "cannot encode an unpaired high surrogate",
                                     )
                                 }
@@ -385,7 +385,7 @@ internal object CanonicalJson {
                                 output.append(value[index++])
                             }
                             character.isLowSurrogate() -> {
-                                throw NotesExportFormatException(
+                                throw LifeAgentExportFormatException(
                                     "cannot encode an unpaired low surrogate",
                                 )
                             }

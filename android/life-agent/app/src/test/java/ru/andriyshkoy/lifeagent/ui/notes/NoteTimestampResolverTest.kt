@@ -7,25 +7,28 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import ru.andriyshkoy.lifeagent.core.time.TemporalPrecision
+import ru.andriyshkoy.lifeagent.ui.time.EventTimestampChoice
+import ru.andriyshkoy.lifeagent.ui.time.EventTimestampResolution
+import ru.andriyshkoy.lifeagent.ui.time.resolveEventTimestamp
 
-class NoteTimestampResolverTest {
+class EventTimestampResolverTest {
     @Test
     fun nowAndRelativeChoicesResolveFromTheSameSuppliedInstant() {
         val now = Instant.parse("2026-07-29T03:00:00Z")
         val zone = ZoneId.of("Asia/Novosibirsk")
 
-        val current = resolveNoteTimestamp(NoteTimestampChoice.Now, now, zone)
-            as NoteTimestampResolution.Valid
-        val fifteenMinutesAgo = resolveNoteTimestamp(
-            NoteTimestampChoice.FifteenMinutesAgo,
+        val current = resolveEventTimestamp(EventTimestampChoice.Now, now, zone)
+            as EventTimestampResolution.Valid
+        val fifteenMinutesAgo = resolveEventTimestamp(
+            EventTimestampChoice.FifteenMinutesAgo,
             now,
             zone,
-        ) as NoteTimestampResolution.Valid
-        val oneHourAgo = resolveNoteTimestamp(
-            NoteTimestampChoice.OneHourAgo,
+        ) as EventTimestampResolution.Valid
+        val oneHourAgo = resolveEventTimestamp(
+            EventTimestampChoice.OneHourAgo,
             now,
             zone,
-        ) as NoteTimestampResolution.Valid
+        ) as EventTimestampResolution.Valid
 
         assertEquals(now, current.value.effectiveAt)
         assertEquals(now.minusSeconds(15 * 60L), fifteenMinutesAgo.value.effectiveAt)
@@ -38,41 +41,41 @@ class NoteTimestampResolverTest {
 
     @Test
     fun nonexistentLocalTimeIsRejected() {
-        val choice = NoteTimestampChoice.Custom(
+        val choice = EventTimestampChoice.Custom(
             localDateTime = LocalDateTime.of(2026, 3, 29, 2, 30),
             zoneId = "Europe/Berlin",
         )
 
-        val result = resolveNoteTimestamp(
+        val result = resolveEventTimestamp(
             choice = choice,
             now = Instant.EPOCH,
             defaultZoneId = ZoneId.of("UTC"),
         )
 
-        assertTrue(result is NoteTimestampResolution.Gap)
+        assertTrue(result is EventTimestampResolution.Gap)
     }
 
     @Test
     fun ambiguousLocalTimeRequiresAndThenUsesExplicitOffset() {
         val local = LocalDateTime.of(2026, 10, 25, 2, 30)
-        val unresolved = resolveNoteTimestamp(
-            choice = NoteTimestampChoice.Custom(local, "Europe/Berlin"),
+        val unresolved = resolveEventTimestamp(
+            choice = EventTimestampChoice.Custom(local, "Europe/Berlin"),
             now = Instant.EPOCH,
             defaultZoneId = ZoneId.of("UTC"),
         )
 
-        assertTrue(unresolved is NoteTimestampResolution.Overlap)
-        val offsets = (unresolved as NoteTimestampResolution.Overlap).offsets
+        assertTrue(unresolved is EventTimestampResolution.Overlap)
+        val offsets = (unresolved as EventTimestampResolution.Overlap).offsets
 
-        val resolved = resolveNoteTimestamp(
-            choice = NoteTimestampChoice.Custom(
+        val resolved = resolveEventTimestamp(
+            choice = EventTimestampChoice.Custom(
                 localDateTime = local,
                 zoneId = "Europe/Berlin",
                 preferredOffsetSeconds = offsets.last().totalSeconds,
             ),
             now = Instant.EPOCH,
             defaultZoneId = ZoneId.of("UTC"),
-        ) as NoteTimestampResolution.Valid
+        ) as EventTimestampResolution.Valid
 
         assertEquals(offsets.last(), resolved.value.offset)
         assertEquals(local, resolved.value.originalLocal)

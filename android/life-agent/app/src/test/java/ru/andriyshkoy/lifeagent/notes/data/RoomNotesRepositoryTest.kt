@@ -56,7 +56,7 @@ class RoomNotesRepositoryTest {
 
         val committed = repository.create(command).persistedReceipt()
         val replayed = repository.create(command).persistedReceipt()
-        val counts = database.noteMutationDao().tableCounts()
+        val counts = database.lifeEventMutationDao().tableCounts()
 
         assertEquals(NoteMutationDisposition.COMMITTED, committed.disposition)
         assertEquals(NoteMutationDisposition.REPLAYED, replayed.disposition)
@@ -66,7 +66,9 @@ class RoomNotesRepositoryTest {
         assertEquals(1, counts.revisions)
         assertEquals(0, counts.parents)
         assertEquals(1, counts.heads)
-        assertEquals("первая заметка", repository.observeLastCommitted().first()?.text)
+        val summary = repository.observeLastCommitted().first()
+        assertEquals("первая заметка", summary?.text)
+        assertEquals(recordedAt(), summary?.recordedAt)
     }
 
     @Test
@@ -80,7 +82,7 @@ class RoomNotesRepositoryTest {
         }
 
         assertEquals(1, outcomes.map { it.note }.distinct().size)
-        assertEquals(1, database.noteMutationDao().tableCounts().revisions)
+        assertEquals(1, database.lifeEventMutationDao().tableCounts().revisions)
         assertEquals(1, outcomes.count { !it.replayed })
     }
 
@@ -107,7 +109,7 @@ class RoomNotesRepositoryTest {
         ).persistedReceipt()
 
         val current = repository.getByEventId(uuid(23))
-        val counts = database.noteMutationDao().tableCounts()
+        val counts = database.lifeEventMutationDao().tableCounts()
         val exported = repository.exportSnapshot()
 
         assertEquals(NoteRecordStatus.RETRACTED, current?.status)
@@ -167,13 +169,13 @@ class RoomNotesRepositoryTest {
         )
 
         assertTrue(outcome is NoteMutationOutcome.AlreadyRetracted)
-        assertEquals(2, database.noteMutationDao().tableCounts().revisions)
+        assertEquals(2, database.lifeEventMutationDao().tableCounts().revisions)
     }
 
     @Test
     fun `event identity collision leaves all table counts unchanged`() = runTest {
         repository.create(createCommand(ids(41, 42, 43, 44), "первая"))
-        val before = database.noteMutationDao().tableCounts()
+        val before = database.lifeEventMutationDao().tableCounts()
 
         org.junit.Assert.assertThrows(LocalIdentityCollisionException::class.java) {
             kotlinx.coroutines.runBlocking {
@@ -181,7 +183,7 @@ class RoomNotesRepositoryTest {
             }
         }
 
-        assertEquals(before, database.noteMutationDao().tableCounts())
+        assertEquals(before, database.lifeEventMutationDao().tableCounts())
     }
 
     @Test
@@ -190,7 +192,7 @@ class RoomNotesRepositoryTest {
         database.openHelper.writableDatabase.execSQL(
             "DELETE FROM local_identity_state",
         )
-        val before = database.noteMutationDao().tableCounts()
+        val before = database.lifeEventMutationDao().tableCounts()
 
         org.junit.Assert.assertThrows(CorruptLocalNoteException::class.java) {
             kotlinx.coroutines.runBlocking {
@@ -200,7 +202,7 @@ class RoomNotesRepositoryTest {
             }
         }
 
-        assertEquals(before, database.noteMutationDao().tableCounts())
+        assertEquals(before, database.lifeEventMutationDao().tableCounts())
         assertEquals(1, database.identityDao().ownerCount())
     }
 
@@ -280,7 +282,7 @@ class RoomNotesRepositoryTest {
                 cursor.getString(0)
             },
         )
-        assertEquals(3, database.noteMutationDao().tableCounts().revisions)
+        assertEquals(3, database.lifeEventMutationDao().tableCounts().revisions)
     }
 
     private fun createCommand(ids: MutationIds, text: String) = CreateNoteCommand(

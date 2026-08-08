@@ -16,12 +16,17 @@ import ru.andriyshkoy.lifeagent.ui.LifeAgentApp
 import ru.andriyshkoy.lifeagent.ui.notes.LastNoteUiState
 import ru.andriyshkoy.lifeagent.ui.notes.NoteAction
 import ru.andriyshkoy.lifeagent.ui.notes.NoteEditorUiState
-import ru.andriyshkoy.lifeagent.ui.notes.NoteTimestampUiState
 import ru.andriyshkoy.lifeagent.ui.notes.NotesController
 import ru.andriyshkoy.lifeagent.ui.notes.NotesUiState
+import ru.andriyshkoy.lifeagent.ui.time.EventTimestampUiState
 import ru.andriyshkoy.lifeagent.ui.screens.NoteCaptureScreen
 import ru.andriyshkoy.lifeagent.ui.theme.LifeAgentTheme
 import ru.andriyshkoy.lifeagent.ui.theme.ThemeMode
+import ru.andriyshkoy.lifeagent.ui.wellbeing.LastWellbeingUiState
+import ru.andriyshkoy.lifeagent.ui.wellbeing.WellbeingAction
+import ru.andriyshkoy.lifeagent.ui.wellbeing.WellbeingCatalogUiState
+import ru.andriyshkoy.lifeagent.ui.wellbeing.WellbeingController
+import ru.andriyshkoy.lifeagent.ui.wellbeing.WellbeingUiState
 
 @PreviewTest
 @Preview(
@@ -33,11 +38,13 @@ import ru.andriyshkoy.lifeagent.ui.theme.ThemeMode
 @Composable
 fun AddLightCompactScreenshot() {
     val notesController = remember { PersistedNotesScreenshotController() }
+    val wellbeingController = remember { PersistedWellbeingScreenshotController() }
     LifeAgentApp(
         initialThemeMode = ThemeMode.Light,
         clock = SCREENSHOT_CLOCK,
         zoneId = SCREENSHOT_ZONE_ID,
         notesController = notesController,
+        wellbeingController = wellbeingController,
     )
 }
 
@@ -52,11 +59,13 @@ fun AddLightCompactScreenshot() {
 @Composable
 fun AddDarkCompactScreenshot() {
     val notesController = remember { PersistedNotesScreenshotController() }
+    val wellbeingController = remember { PersistedWellbeingScreenshotController() }
     LifeAgentApp(
         initialThemeMode = ThemeMode.Dark,
         clock = SCREENSHOT_CLOCK,
         zoneId = SCREENSHOT_ZONE_ID,
         notesController = notesController,
+        wellbeingController = wellbeingController,
     )
 }
 
@@ -88,6 +97,7 @@ fun FoodLightCompactScreenshot() {
 @Composable
 fun SettingsDarkCompactScreenshot() {
     val notesController = remember { PersistedNotesScreenshotController() }
+    val wellbeingController = remember { PersistedWellbeingScreenshotController() }
     LifeAgentApp(
         initialRoute = DemoRoute.Settings,
         initialThemeMode = ThemeMode.Dark,
@@ -95,6 +105,7 @@ fun SettingsDarkCompactScreenshot() {
         zoneId = SCREENSHOT_ZONE_ID,
         appVersion = SCREENSHOT_APP_VERSION,
         notesController = notesController,
+        wellbeingController = wellbeingController,
     )
 }
 
@@ -164,12 +175,14 @@ fun PrivacyLightCompactScreenshot() {
 @Composable
 fun AddLightExpandedScreenshot() {
     val notesController = remember { PersistedNotesScreenshotController() }
+    val wellbeingController = remember { PersistedWellbeingScreenshotController() }
     LifeAgentApp(
         initialThemeMode = ThemeMode.Light,
         forceExpanded = true,
         clock = SCREENSHOT_CLOCK,
         zoneId = SCREENSHOT_ZONE_ID,
         notesController = notesController,
+        wellbeingController = wellbeingController,
     )
 }
 
@@ -187,7 +200,7 @@ fun NoteLightLargeFontScreenshot() {
         NoteCaptureScreen(
             state = NoteEditorUiState(
                 text = "После прогулки стало легче сосредоточиться.",
-                timestamp = NoteTimestampUiState(
+                timestamp = EventTimestampUiState(
                     defaultTimezoneId = SCREENSHOT_ZONE_ID.id,
                 ),
             ),
@@ -205,6 +218,18 @@ private class PersistedNotesScreenshotController : NotesController {
     )
 
     override fun dispatch(action: NoteAction) = Unit
+}
+
+private class PersistedWellbeingScreenshotController : WellbeingController {
+    override val uiState: StateFlow<WellbeingUiState> = MutableStateFlow(
+        WellbeingUiState(
+            lastCommitted = LastWellbeingUiState.Empty,
+            catalog = WellbeingCatalogUiState.Available(emptyList()),
+            persistenceAvailable = true,
+        ),
+    )
+
+    override fun dispatch(action: WellbeingAction) = Unit
 }
 
 private val SCREENSHOT_CLOCK = Clock.fixed(

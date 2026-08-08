@@ -69,6 +69,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.disabled
 import androidx.compose.ui.semantics.semantics
@@ -95,9 +96,13 @@ import ru.andriyshkoy.lifeagent.ui.components.StatusCard
 import ru.andriyshkoy.lifeagent.ui.notes.LastNoteUiState
 import ru.andriyshkoy.lifeagent.ui.notes.NoteRecordStatusUi
 import ru.andriyshkoy.lifeagent.ui.notes.NoteSummaryUi
-import ru.andriyshkoy.lifeagent.ui.notes.formatUtcOffset
+import ru.andriyshkoy.lifeagent.ui.time.formatUtcOffset
 import ru.andriyshkoy.lifeagent.ui.theme.LifeAgentThemeValues
 import ru.andriyshkoy.lifeagent.ui.theme.ThemeMode
+import ru.andriyshkoy.lifeagent.ui.wellbeing.LastWellbeingUiState
+import ru.andriyshkoy.lifeagent.ui.wellbeing.WellbeingCatalogUiState
+import ru.andriyshkoy.lifeagent.ui.wellbeing.WellbeingRecordStatusUi
+import ru.andriyshkoy.lifeagent.ui.wellbeing.WellbeingSummaryUi
 
 @Composable
 fun AddScreen(
@@ -107,11 +112,15 @@ fun AddScreen(
     clock: Clock = Clock.systemUTC(),
     zoneId: ZoneId = ZoneId.systemDefault(),
     lastNote: LastNoteUiState = LastNoteUiState.Empty,
+    lastWellbeing: LastWellbeingUiState = LastWellbeingUiState.Empty,
     persistenceAvailable: Boolean = false,
     onStartNote: () -> Unit = { onNavigate(DemoRoute.CaptureNote) },
     onCorrectNote: (NoteSummaryUi) -> Unit = {},
     onUndoNote: (NoteSummaryUi) -> Unit = {},
     onRetryLastNote: () -> Unit = {},
+    onCorrectWellbeing: (WellbeingSummaryUi) -> Unit = {},
+    onUndoWellbeing: (WellbeingSummaryUi) -> Unit = {},
+    onRetryLastWellbeing: () -> Unit = {},
 ) {
     Box(
         modifier = modifier.fillMaxSize(),
@@ -142,9 +151,13 @@ fun AddScreen(
                     LocalStateCard(persistenceAvailable)
                     RecentActivityCard(
                         lastNote = lastNote,
+                        lastWellbeing = lastWellbeing,
                         onCorrectNote = onCorrectNote,
                         onUndoNote = onUndoNote,
                         onRetryLastNote = onRetryLastNote,
+                        onCorrectWellbeing = onCorrectWellbeing,
+                        onUndoWellbeing = onUndoWellbeing,
+                        onRetryLastWellbeing = onRetryLastWellbeing,
                     )
                 }
             }
@@ -171,9 +184,13 @@ fun AddScreen(
                 item {
                     RecentActivityCard(
                         lastNote = lastNote,
+                        lastWellbeing = lastWellbeing,
                         onCorrectNote = onCorrectNote,
                         onUndoNote = onUndoNote,
                         onRetryLastNote = onRetryLastNote,
+                        onCorrectWellbeing = onCorrectWellbeing,
+                        onUndoWellbeing = onUndoWellbeing,
+                        onRetryLastWellbeing = onRetryLastWellbeing,
                     )
                 }
             }
@@ -292,14 +309,14 @@ private fun QuickActionGrid(
 private fun LocalStateCard(persistenceAvailable: Boolean) {
     StatusCard(
         title = if (persistenceAvailable) {
-            "Заметки сохраняются на устройстве"
+            "Данные сохраняются на устройстве"
         } else {
             "Зашифрованное хранилище недоступно"
         },
         subtitle = if (persistenceAvailable) {
             "Зашифрованная база доступна только этому приложению"
         } else {
-            "Чтение и запись заметок отключены"
+            "Чтение и запись данных отключены"
         },
         icon = Icons.Rounded.CloudOff,
     )
@@ -308,9 +325,13 @@ private fun LocalStateCard(persistenceAvailable: Boolean) {
 @Composable
 private fun RecentActivityCard(
     lastNote: LastNoteUiState,
+    lastWellbeing: LastWellbeingUiState,
     onCorrectNote: (NoteSummaryUi) -> Unit,
     onUndoNote: (NoteSummaryUi) -> Unit,
     onRetryLastNote: () -> Unit,
+    onCorrectWellbeing: (WellbeingSummaryUi) -> Unit,
+    onUndoWellbeing: (WellbeingSummaryUi) -> Unit,
+    onRetryLastWellbeing: () -> Unit,
 ) {
     Card(
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
@@ -320,23 +341,23 @@ private fun RecentActivityCard(
         Column(Modifier.padding(18.dp)) {
             SectionTitle("Последнее действие")
             Spacer(Modifier.height(16.dp))
-            when (lastNote) {
-                LastNoteUiState.Loading -> {
+            when (val activity = resolveRecentActivity(lastNote, lastWellbeing)) {
+                RecentActivityState.Loading -> {
                     CircularProgressIndicator(
                         modifier = Modifier.size(24.dp),
                         strokeWidth = 2.dp,
                     )
                 }
 
-                LastNoteUiState.Empty -> {
+                RecentActivityState.Empty -> {
                     Text(
-                        "Пока нет сохранённых заметок",
+                        "Пока нет сохранённых записей",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
 
-                LastNoteUiState.Failed -> {
+                RecentActivityState.Failed -> {
                     Text(
                         "Не удалось прочитать последнее действие",
                         style = MaterialTheme.typography.bodyMedium,
@@ -345,57 +366,311 @@ private fun RecentActivityCard(
                     Spacer(Modifier.height(12.dp))
                     SecondaryActionButton(
                         text = "Повторить",
-                        onClick = onRetryLastNote,
+                        onClick = {
+                            onRetryLastNote()
+                            onRetryLastWellbeing()
+                        },
                     )
                 }
 
-                is LastNoteUiState.Available -> {
-                    val note = lastNote.note
+                is RecentActivityState.Note -> NoteActivityContent(
+                    note = activity.note,
+                    onCorrect = onCorrectNote,
+                    onUndo = onUndoNote,
+                )
+
+                is RecentActivityState.Wellbeing -> WellbeingActivityContent(
+                    wellbeing = activity.wellbeing,
+                    onCorrect = onCorrectWellbeing,
+                    onUndo = onUndoWellbeing,
+                )
+            }
+        }
+    }
+}
+
+internal sealed interface RecentActivityState {
+    data object Loading : RecentActivityState
+    data object Empty : RecentActivityState
+    data object Failed : RecentActivityState
+    data class Note(val note: NoteSummaryUi) : RecentActivityState
+    data class Wellbeing(val wellbeing: WellbeingSummaryUi) : RecentActivityState
+}
+
+internal fun resolveRecentActivity(
+    lastNote: LastNoteUiState,
+    lastWellbeing: LastWellbeingUiState,
+): RecentActivityState {
+    if (lastNote == LastNoteUiState.Loading || lastWellbeing == LastWellbeingUiState.Loading) {
+        return RecentActivityState.Loading
+    }
+    if (lastNote == LastNoteUiState.Failed || lastWellbeing == LastWellbeingUiState.Failed) {
+        return RecentActivityState.Failed
+    }
+    val note = (lastNote as? LastNoteUiState.Available)?.note
+    val wellbeing = (lastWellbeing as? LastWellbeingUiState.Available)?.wellbeing
+    return when {
+        note == null && wellbeing == null -> RecentActivityState.Empty
+        note != null && wellbeing == null -> RecentActivityState.Note(note)
+        note == null && wellbeing != null -> RecentActivityState.Wellbeing(wellbeing)
+        note != null && wellbeing != null && note.recordedAt >= wellbeing.recordedAt ->
+            RecentActivityState.Note(note)
+
+        else -> RecentActivityState.Wellbeing(checkNotNull(wellbeing))
+    }
+}
+
+@Composable
+private fun NoteActivityContent(
+    note: NoteSummaryUi,
+    onCorrect: (NoteSummaryUi) -> Unit,
+    onUndo: (NoteSummaryUi) -> Unit,
+) {
+    Text(
+        if (note.status == NoteRecordStatusUi.Active) note.text else "Заметка отменена",
+        style = MaterialTheme.typography.titleMedium,
+        maxLines = 4,
+        overflow = TextOverflow.Ellipsis,
+    )
+    Spacer(Modifier.height(6.dp))
+    Text(
+        "Заметка · ${note.timestampLabel()} · ${note.timezoneId} · " +
+            formatUtcOffset(note.offsetSeconds),
+        style = MaterialTheme.typography.bodyMedium,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+    ActivityPersistenceStatus(note.status == NoteRecordStatusUi.Active)
+    if (note.status == NoteRecordStatusUi.Active) {
+        ActivityActions(
+            onCorrect = { onCorrect(note) },
+            onUndo = { onUndo(note) },
+        )
+    }
+}
+
+@Composable
+private fun WellbeingActivityContent(
+    wellbeing: WellbeingSummaryUi,
+    onCorrect: (WellbeingSummaryUi) -> Unit,
+    onUndo: (WellbeingSummaryUi) -> Unit,
+) {
+    Column(Modifier.testTag(LATEST_WELLBEING_CARD_TAG)) {
+        Text(
+            if (wellbeing.status == WellbeingRecordStatusUi.Active) {
+                "Самочувствие"
+            } else {
+                "Запись самочувствия отменена"
+            },
+            style = MaterialTheme.typography.titleMedium,
+        )
+        Spacer(Modifier.height(6.dp))
+        wellbeing.values.forEach { value ->
+            Text(
+                "${value.dimensionLabel}: ${value.optionLabel}",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+        }
+        wellbeing.comment?.let { comment ->
+            Spacer(Modifier.height(6.dp))
+            Text(
+                comment,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 4,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.testTag(LATEST_WELLBEING_COMMENT_TAG),
+            )
+        }
+        Spacer(Modifier.height(6.dp))
+        Text(
+            "Самочувствие · ${wellbeing.timestampLabel()} · ${wellbeing.timezoneId} · " +
+                formatUtcOffset(wellbeing.offsetSeconds),
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        ActivityPersistenceStatus(wellbeing.status == WellbeingRecordStatusUi.Active)
+        if (wellbeing.status == WellbeingRecordStatusUi.Active) {
+            ActivityActions(
+                onCorrect = { onCorrect(wellbeing) },
+                onUndo = { onUndo(wellbeing) },
+            )
+        }
+    }
+}
+
+@Composable
+private fun ActivityPersistenceStatus(active: Boolean) {
+    Spacer(Modifier.height(6.dp))
+    Text(
+        if (active) {
+            "Сохранено в зашифрованной базе на устройстве"
+        } else {
+            "Отмена сохранена на устройстве"
+        },
+        style = MaterialTheme.typography.labelMedium,
+        color = MaterialTheme.colorScheme.primary,
+    )
+}
+
+@Composable
+private fun ActivityActions(onCorrect: () -> Unit, onUndo: () -> Unit) {
+    Spacer(Modifier.height(16.dp))
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        SecondaryActionButton(text = "Исправить", onClick = onCorrect)
+        OutlinedButton(
+            onClick = onUndo,
+            modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp),
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.error),
+            shape = MaterialTheme.shapes.medium,
+        ) {
+            Text("Отменить запись", color = MaterialTheme.colorScheme.error)
+        }
+    }
+}
+
+const val LATEST_WELLBEING_CARD_TAG = "latest-wellbeing-card"
+const val LATEST_WELLBEING_COMMENT_TAG = "latest-wellbeing-comment"
+
+@Composable
+fun WellbeingLoadErrorScreen(
+    message: String,
+    onRetry: () -> Unit,
+    onBack: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Scaffold(
+        modifier = modifier.fillMaxSize(),
+        topBar = { DetailTopBar("Самочувствие", onBack) },
+        containerColor = MaterialTheme.colorScheme.background,
+    ) { padding ->
+        Column(
+            modifier = Modifier
+                .padding(padding)
+                .fillMaxSize()
+                .padding(20.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center,
+        ) {
+            Text(
+                text = message,
+                style = MaterialTheme.typography.bodyLarge,
+                color = MaterialTheme.colorScheme.error,
+            )
+            Spacer(Modifier.height(16.dp))
+            SecondaryActionButton(text = "Повторить", onClick = onRetry)
+        }
+    }
+}
+
+@Composable
+fun WellbeingCatalogScreen(
+    state: WellbeingCatalogUiState,
+    onBack: () -> Unit,
+    onRetry: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Scaffold(
+        modifier = modifier
+            .fillMaxSize()
+            .testTag(WELLBEING_CATALOG_TAG),
+        topBar = { DetailTopBar("Самочувствие", onBack) },
+        containerColor = MaterialTheme.colorScheme.background,
+    ) { padding ->
+        when (state) {
+            WellbeingCatalogUiState.Loading -> Box(
+                modifier = Modifier
+                    .padding(padding)
+                    .fillMaxSize(),
+                contentAlignment = Alignment.Center,
+            ) {
+                CircularProgressIndicator()
+            }
+
+            WellbeingCatalogUiState.Failed -> Column(
+                modifier = Modifier
+                    .padding(padding)
+                    .fillMaxSize()
+                    .padding(20.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center,
+            ) {
+                Text(
+                    text = "Не удалось прочитать справочник самочувствия",
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = MaterialTheme.colorScheme.error,
+                )
+                Spacer(Modifier.height(16.dp))
+                SecondaryActionButton(text = "Повторить", onClick = onRetry)
+            }
+
+            WellbeingCatalogUiState.Unavailable -> Box(
+                modifier = Modifier
+                    .padding(padding)
+                    .fillMaxSize()
+                    .padding(20.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    text = "Зашифрованное хранилище недоступно",
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
+
+            is WellbeingCatalogUiState.Available -> LazyColumn(
+                modifier = Modifier
+                    .padding(padding)
+                    .fillMaxSize()
+                    .widthIn(max = 760.dp)
+                    .padding(horizontal = 20.dp),
+                contentPadding = PaddingValues(top = 16.dp, bottom = 32.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                item {
                     Text(
-                        if (note.status == NoteRecordStatusUi.Active) {
-                            note.text
-                        } else {
-                            "Заметка отменена"
-                        },
-                        style = MaterialTheme.typography.titleMedium,
-                        maxLines = 4,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                    Spacer(Modifier.height(6.dp))
-                    Text(
-                        "Заметка · ${note.timestampLabel()} · ${note.timezoneId} · " +
-                            formatUtcOffset(note.offsetSeconds),
+                        text = "Эти показатели хранятся локально и используются " +
+                            "в форме самочувствия. Редактирование пока недоступно.",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
-                    Spacer(Modifier.height(6.dp))
-                    Text(
-                        if (note.status == NoteRecordStatusUi.Active) {
-                            "Сохранено в зашифрованной базе на устройстве"
-                        } else {
-                            "Отмена сохранена на устройстве"
-                        },
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.primary,
-                    )
-                    if (note.status == NoteRecordStatusUi.Active) {
-                        Spacer(Modifier.height(16.dp))
-                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                            SecondaryActionButton(
-                                text = "Исправить",
-                                onClick = { onCorrectNote(note) },
-                            )
-                            OutlinedButton(
-                                onClick = { onUndoNote(note) },
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .heightIn(min = 52.dp),
-                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.error),
-                                shape = MaterialTheme.shapes.medium,
-                            ) {
+                    Spacer(Modifier.height(4.dp))
+                }
+                if (state.dimensions.isEmpty()) {
+                    item {
+                        Text(
+                            text = "В справочнике пока нет показателей",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                } else {
+                    items(
+                        items = state.dimensions,
+                        key = { it.dimensionId },
+                    ) { dimension ->
+                        Card(
+                            colors = CardDefaults.cardColors(
+                                containerColor = MaterialTheme.colorScheme.surface,
+                            ),
+                            shape = MaterialTheme.shapes.large,
+                            border = BorderStroke(
+                                1.dp,
+                                MaterialTheme.colorScheme.outlineVariant,
+                            ),
+                        ) {
+                            Column(Modifier.padding(18.dp)) {
                                 Text(
-                                    "Отменить запись",
-                                    color = MaterialTheme.colorScheme.error,
+                                    text = dimension.label,
+                                    style = MaterialTheme.typography.titleMedium,
+                                )
+                                Spacer(Modifier.height(8.dp))
+                                Text(
+                                    text = dimension.options
+                                        .sortedBy { it.sortOrder }
+                                        .joinToString(separator = " · ") { it.label },
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
                             }
                         }
@@ -405,6 +680,8 @@ private fun RecentActivityCard(
         }
     }
 }
+
+const val WELLBEING_CATALOG_TAG = "wellbeing-catalog"
 
 @Composable
 fun CatalogsScreen(
@@ -422,13 +699,14 @@ fun CatalogsScreen(
         item {
             ScreenTitle(
                 title = "Справочники",
-                subtitle = "Предпросмотр будущего быстрого ввода.",
+                subtitle = "Локальные значения для быстрого ввода.",
             )
             Spacer(Modifier.height(12.dp))
             Text(
-                text = "Изменения справочников пока не сохраняются.",
+                text = "Показатели самочувствия уже используются при записи. " +
+                    "Питание и приёмы пока доступны как демонстрация интерфейса.",
                 style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.error,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
         item {
@@ -455,7 +733,7 @@ fun CatalogsScreen(
         item {
             Spacer(Modifier.height(2.dp))
             Text(
-                text = "Предзаполненные карточки здесь — только демонстрационные.",
+                text = "Редактирование справочника самочувствия появится позже.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -516,8 +794,8 @@ fun SettingsScreen(
     onThemeModeChange: (ThemeMode) -> Unit,
     onNavigate: (DemoRoute) -> Unit,
     modifier: Modifier = Modifier,
-    onExportNotes: () -> Unit = {},
-    notesPersistenceAvailable: Boolean = false,
+    onExportLifeAgent: () -> Unit = {},
+    persistenceAvailable: Boolean = false,
     zoneId: ZoneId = ZoneId.systemDefault(),
     appVersion: String = BuildConfig.VERSION_NAME,
 ) {
@@ -567,13 +845,13 @@ fun SettingsScreen(
                 SettingsRow(
                     icon = Icons.Rounded.Download,
                     title = "Экспорт",
-                    subtitle = if (notesPersistenceAvailable) {
-                        "Заметки · JSON без шифрования"
+                    subtitle = if (persistenceAvailable) {
+                        "Локальный журнал · JSON без шифрования"
                     } else {
                         "Хранилище недоступно"
                     },
-                    onClick = onExportNotes,
-                    enabled = notesPersistenceAvailable,
+                    onClick = onExportLifeAgent,
+                    enabled = persistenceAvailable,
                 )
                 HorizontalDivider(
                     color = MaterialTheme.colorScheme.outlineVariant,
@@ -822,9 +1100,10 @@ fun DiagnosticsScreen(
                     icon = Icons.Rounded.Security,
                     title = "Локальное хранилище",
                     text = if (encryptedStorageAvailable) {
-                        "Зашифрованная база заметок открыта и доступна приложению."
+                        "Зашифрованная база локального журнала открыта и доступна приложению."
                     } else {
-                        "Зашифрованная база заметок не открыта: чтение и сохранение недоступны."
+                        "Зашифрованная база локального журнала не открыта: " +
+                            "чтение и сохранение недоступны."
                     },
                 )
             }
@@ -950,7 +1229,7 @@ fun CatalogListScreen(
     var editorVisible by remember { mutableStateOf(false) }
     val source = when (kind) {
         CatalogKind.Food -> DemoContent.foodItems
-        CatalogKind.Wellbeing -> DemoContent.wellbeingItems
+        CatalogKind.Wellbeing -> emptyList()
         CatalogKind.Medication -> DemoContent.medicationItems
     }
     val filtered = source.filter { it.title.contains(search, ignoreCase = true) }

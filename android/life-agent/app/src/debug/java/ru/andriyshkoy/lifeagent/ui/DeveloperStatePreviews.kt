@@ -14,10 +14,15 @@ import ru.andriyshkoy.lifeagent.ui.notes.NoteAction
 import ru.andriyshkoy.lifeagent.ui.notes.NoteDialogUi
 import ru.andriyshkoy.lifeagent.ui.notes.NoteEditorUiState
 import ru.andriyshkoy.lifeagent.ui.notes.NoteTextError
-import ru.andriyshkoy.lifeagent.ui.notes.NoteTimestampUiState
 import ru.andriyshkoy.lifeagent.ui.notes.NotesController
 import ru.andriyshkoy.lifeagent.ui.notes.NotesUiState
+import ru.andriyshkoy.lifeagent.ui.time.EventTimestampUiState
 import ru.andriyshkoy.lifeagent.ui.theme.ThemeMode
+import ru.andriyshkoy.lifeagent.ui.wellbeing.LastWellbeingUiState
+import ru.andriyshkoy.lifeagent.ui.wellbeing.WellbeingAction
+import ru.andriyshkoy.lifeagent.ui.wellbeing.WellbeingCatalogUiState
+import ru.andriyshkoy.lifeagent.ui.wellbeing.WellbeingController
+import ru.andriyshkoy.lifeagent.ui.wellbeing.WellbeingUiState
 
 /**
  * Stable, debug-only UI states for Android Studio's Compose Preview.
@@ -76,7 +81,7 @@ internal object DeveloperUiFixtures {
         persistenceAvailable = false,
     )
 
-    private fun fixtureTimestamp() = NoteTimestampUiState(
+    private fun fixtureTimestamp() = EventTimestampUiState(
         defaultTimezoneId = zoneId.id,
     )
 }
@@ -188,6 +193,9 @@ private fun FixtureApp(
     showFirstRun: Boolean = false,
 ) {
     val controller = remember(state) { FixtureNotesController(state) }
+    val wellbeingController = remember(state.persistenceAvailable) {
+        FixtureWellbeingController(state.persistenceAvailable)
+    }
     LifeAgentApp(
         initialRoute = route,
         initialThemeMode = ThemeMode.Light,
@@ -195,6 +203,7 @@ private fun FixtureApp(
         zoneId = DeveloperUiFixtures.zoneId,
         appVersion = "0.1.0-fixture",
         notesController = controller,
+        wellbeingController = wellbeingController,
         showFirstRun = showFirstRun,
     )
 }
@@ -203,4 +212,26 @@ private class FixtureNotesController(initialState: NotesUiState) : NotesControll
     override val uiState: StateFlow<NotesUiState> = MutableStateFlow(initialState)
 
     override fun dispatch(action: NoteAction) = Unit
+}
+
+private class FixtureWellbeingController(
+    persistenceAvailable: Boolean,
+) : WellbeingController {
+    override val uiState: StateFlow<WellbeingUiState> = MutableStateFlow(
+        WellbeingUiState(
+            lastCommitted = if (persistenceAvailable) {
+                LastWellbeingUiState.Empty
+            } else {
+                LastWellbeingUiState.Failed
+            },
+            catalog = if (persistenceAvailable) {
+                WellbeingCatalogUiState.Available(emptyList())
+            } else {
+                WellbeingCatalogUiState.Unavailable
+            },
+            persistenceAvailable = persistenceAvailable,
+        ),
+    )
+
+    override fun dispatch(action: WellbeingAction) = Unit
 }

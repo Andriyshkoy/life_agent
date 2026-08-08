@@ -7,7 +7,7 @@ readonly DEBUG_APK="$PROJECT_DIR/app/build/outputs/apk/debug/app-debug.apk"
 readonly TEST_APK="$PROJECT_DIR/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk"
 readonly AVD_NAME="life_agent_local_ci_api35"
 readonly TEST_RESULTS_DIR="$PROJECT_DIR/app/build/outputs/androidTest-results/connected"
-readonly MIN_INSTRUMENTED_TESTS=31
+readonly MIN_INSTRUMENTED_TESTS=35
 
 : "${ANDROID_SERIAL:?ANDROID_SERIAL must select the CI emulator}"
 : "${ANDROID_AVD_HOME:?ANDROID_AVD_HOME must be writable}"

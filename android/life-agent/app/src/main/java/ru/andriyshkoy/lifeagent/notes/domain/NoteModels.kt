@@ -42,6 +42,7 @@ data class NoteSummary(
     val text: String,
     val status: NoteRecordStatus,
     val effectiveTime: ResolvedPointTime,
+    val recordedAt: OffsetDateTime = effectiveTime.toOffsetDateTime(),
 )
 
 data class NoteMutationReceipt(
